@@ -1,0 +1,15 @@
+{
+  "name": "blastgate",
+  "owner": { "name": "Jay Wolberg", "url": "https://github.com/jwolberg" },
+  "metadata": {
+    "description": "Reachability-based security gates for agentic coding — the Blastgate plugin."
+  },
+  "plugins": [
+    {
+      "name": "blastgate",
+      "source": "./",
+      "description": "Reachability-based secret-exfiltration gate for agentic coding",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+# Blastgate
+
+Blastgate is a static analysis tool that identifies reachable attack paths across a
+repository's dependency supply chain, CI configuration, and committed agent/MCP
+configuration. It reports a finding only when an attacker-controllable entry point
+has a concrete path to a sensitive sink such as a secret or credential. It runs as a
+CI/PR gate and as a local command-line tool.
+
+## Purpose
+
+Installing a dependency, or granting a coding agent execution access, runs untrusted
+code with the authority of the surrounding environment. Existing tools evaluate each
+layer in isolation: dependency scanners assess packages, workflow-hardening tools
+assess CI permissions, and agent/MCP scanners assess agent configuration. None of
+them determines whether a weakness in one layer can reach a sensitive resource in
+another. Blastgate addresses that gap by evaluating reachability across all three
+layers, so a finding represents a demonstrable path rather than the presence of a
+risky pattern.
+
+## How it works
+
+Blastgate builds a single graph from the repository's manifests, lockfile, CI
+workflows, and agent/MCP configuration.
+
+- **Dependency / install layer** — lifecycle scripts (`preinstall`, `install`,
+  `postinstall`), newly added or changed dependencies, registry and `.npmrc`
+  changes, and npm provenance regressions.
+- **CI layer** — which jobs execute install or build steps, which secrets and token
+  permissions each job holds, and which jobs are triggerable by untrusted input
+  (for example `pull_request_target` or pull requests from forks).
+- **Agent / MCP layer** — the filesystem, network, shell, and tool capabilities
+  granted by committed agent/MCP configuration.
+
+Edges encode reachability: an install script executes within a job, a job holds a
+secret, an agent grant reaches a capability. A finding is the shortest path from an
+attacker-controllable entry point — a new or modified dependency, an untrusted
+trigger, or a prompt-injectable agent surface — to a sensitive sink. Findings are
+ranked by sink sensitivity and entry-point exposure, and each is labeled with its
+OWASP Agentic Top 10 (2026) and MCP Top 10 category.
+
+Each check is a pass/fail assertion. A repository with no reachable path passes. A
+failure reports the path, the sink it reaches, the reason it is reachable, and a
+remediation.
+
+## Why reachability
+
+Precision is the primary design constraint. A check fails only on a genuinely
+reachable path; the presence of a pattern alone does not produce a finding. For
+example, a `postinstall` script in a job that holds no secrets and is not triggerable
+by untrusted input is not reported. This keeps findings actionable and avoids the
+high false-positive rate of pattern-matching tools.
+
+## Interfaces
+
+- **CI/PR gate** — exits non-zero on a reachable path and surfaces the finding on the
+  pull request.
+- **Local CLI** — runs against the same repository and produces the same findings.
+- **Claude Code plugin** (`plugin/`) — runs the same checks inside an agent session
+  as deterministic hooks on commit and dependency installation, and exposes a tool
+  the agent can call to evaluate a proposed change before it is applied. See
+  [`plugin/README.md`](plugin/README.md).
+
+## Scope (v1)
+
+npm and GitHub Actions. Other package ecosystems, other CI providers, and analysis of
+deployed or running targets are out of scope for v1. See [`docs/plans/`](docs/plans)
+for the product plan and [`docs/implementation-notes.md`](docs/implementation-notes.md)
+for recorded decisions.
+
+## Status
+
+Early development. The reachability engine is not yet implemented;
+`plugin/bin/blastgate` is a stub that passes by default.
+
+## License
+
+Apache-2.0.

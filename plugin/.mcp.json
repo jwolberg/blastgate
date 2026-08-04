@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "checker": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate",
+      "args": ["mcp"],
+      "env": { "BLASTGATE_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}" }
+    }
+  }
+}
