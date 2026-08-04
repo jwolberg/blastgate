@@ -1,0 +1,52 @@
+{
+  "name": "blastgate",
+  "version": "0.1.0",
+  "description": "Cross-layer attack-path gate: fails when a reachable path connects an attacker-controllable entry point to a secret sink.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Jay Wolberg",
+  "repository": "github:jmwolberg/blastgate",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "blastgate": "dist/cli/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "security",
+    "supply-chain",
+    "secrets",
+    "reachability",
+    "owasp",
+    "mcp"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc",
+    "lint": "eslint .",
+    "format": "prettier --write \"{src,test}/**/*.ts\"",
+    "format:check": "prettier --check \"{src,test}/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "graphology": "^0.26.0",
+    "graphology-shortest-path": "^2.1.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.0",
+    "@types/node": "^22.5.0",
+    "eslint": "^9.9.0",
+    "globals": "^15.9.0",
+    "prettier": "^3.3.3",
+    "tsup": "^8.2.0",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.3.0",
+    "vitest": "^2.0.5"
+  }
+}
