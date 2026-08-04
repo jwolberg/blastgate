@@ -35,7 +35,8 @@
   },
   "dependencies": {
     "graphology": "^0.26.0",
-    "graphology-shortest-path": "^2.1.0"
+    "graphology-shortest-path": "^2.1.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.0",
