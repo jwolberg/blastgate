@@ -49,3 +49,31 @@ Running log of decisions, deviations, and tradeoffs for human review.
   the *same* engine the CI gate needs — the plugin adds no product scope.
 - **Validation:** `claude plugin validate ./plugin --strict` passes. Added
   `metadata.description` to the marketplace manifest to satisfy strict mode.
+
+## 2026-08-04 — Engine (U1): npm, not bun (deviation from repo convention)
+
+- **Decision:** The engine package uses **npm** (package.json + package-lock.json,
+  `npm run` scripts), overriding CLAUDE.md [11]'s bun default and the bun-based
+  `.github/workflows/ci.yml` template.
+- **Why:** Blastgate is npm-first and **dogfoods its own dependency layer** — U4's
+  analyzer reads `package-lock.json`, and the plan's Definition of Done requires a
+  self-scan. A bun project produces `bun.lockb`, not `package-lock.json`, so it
+  could not scan itself. The product's own lockfile format dictates the toolchain.
+- **Toolchain:** TypeScript (typecheck-only via `tsc --noEmit`, `moduleResolution:
+  Bundler` so source imports stay extensionless), **tsup** for the `dist` build
+  (avoids NodeNext `.js`-extension friction across tsc/vitest), **vitest** for
+  tests, **eslint** (flat config) + **prettier** (scoped to `src`/`test`).
+- **CI:** rewrote `.github/workflows/ci.yml` (was the bun template) to an npm
+  `quality` job: `npm ci` → format:check → typecheck → lint → build → test.
+- **License:** Apache-2.0 (confirmed by the user, resolving the pending call above);
+  `package.json` `license` set accordingly.
+
+## 2026-08-04 — Engine branch stacked on the plugin branch
+
+- **Decision:** The engine work lands on `feat/blastgate-engine`, branched off the
+  current `scaffold-blastgate-plugin` HEAD rather than `origin/main`.
+- **Why:** `origin/main` holds only `LICENSE` — the plan, `.gitignore`, and the
+  `plugin/` scaffold live only on `scaffold-blastgate-plugin`. Branching off bare
+  main would drop the plan and `.gitignore` from the working tree. Stacking keeps
+  the base coherent; engine commits stay isolated on their own branch (no collision
+  with the plugin agent). Rebase onto `main` once the plugin branch merges.
