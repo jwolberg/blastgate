@@ -77,3 +77,43 @@ Running log of decisions, deviations, and tradeoffs for human review.
   main would drop the plan and `.gitignore` from the working tree. Stacking keeps
   the base coherent; engine commits stay isolated on their own branch (no collision
   with the plugin agent). Rebase onto `main` once the plugin branch merges.
+
+## 2026-08-04 — Engine (U7): cross-layer engine + fail-threshold gate
+
+- **Reachability refinement (R3 → per-(entry,sink)):** The engine reports the
+  shortest path **per (entry, sink) pair**, not the single shortest path per sink
+  that R3's literal wording (and `shortestPathsToSinks`) gives. Why: distinct
+  attacker entry points reaching the same sink are distinct findings with distinct
+  fixes — and a shorter *single-layer* path (fork-PR → job → secret) would
+  otherwise **hide** the longer *cross-layer* path (install-script → dep → job →
+  secret) that is the whole product thesis. Added `reachablePaths()` alongside the
+  untouched `shortestPathsToSinks()`; entries/sinks are visited in id order for
+  byte-identical output (determinism AC).
+- **The one synthesized cross-layer edge — `runs-in`, gated on fork-triggerability:**
+  `build.ts` adds `dep → job (runs-in)` only when `dep.hasInstallScript &&
+  job.runsInstall && job.forkTriggerable`. An install script physically runs in
+  *any* install job, but it is only *attacker-reachable* when the job is triggerable
+  by untrusted input (a fork PR carrying the malicious change). A push-only install
+  job runs the script only after a maintainer merges (trusted) — not an external
+  attack path. This is exactly what makes the plan's non-fork integration case a
+  **pass** (R14 precision) while AE1 fails.
+- **Added `runsInstall: boolean` to `CiJobNode`** (set from the existing
+  `hasInstallStep`), so the engine can wire `runs-in` without re-parsing workflows.
+  Kept the field required (total type); updated the two U2/U3 test helpers that
+  construct `CiJobNode` literals. Analyzers stay pure emitters — this is intra-layer
+  job data, not a cross-layer edge.
+- **Deliberately did NOT synthesize agent-grant → CI-secret edges.** The ticket AC
+  lists "agent grant reaches sink"; that `reaches` edge (grant → privileged-
+  capability sink) is already emitted by the U6 agent analyzer and is preserved
+  through the merge — the engine's reachability turns it into the AE4 warn finding.
+  A speculative agent → *CI secret* edge was rejected: per KD6/KTD6 the agent's
+  blast radius is repo-declared grants, and CI secrets live in GitHub, not where a
+  prompt-injected local agent runs. No fixture backed it; adding it would be
+  aggressive and off-model.
+- **3-state verdict vs binary gate:** `Verdict` is `fail | warn | pass` (informative);
+  `gateFails()` is non-zero **only** on `fail` (KTD4). Warn-tier capability paths are
+  reported without failing — so the plan's "gate verdict = pass (warn, not fail)"
+  reads as verdict `warn`, gate does not fail (CLI will exit 0).
+- **One `Finding` shape (`src/findings/finding.ts`), one entrypoint (`runEngine`).**
+  Every surface (CLI/Action/plugin/MCP, U9–U14) rides `runEngine`; reason and
+  remediation are derived from the path's cross-layer archetype, not free-form.

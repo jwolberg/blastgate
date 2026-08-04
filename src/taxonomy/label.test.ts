@@ -33,6 +33,7 @@ const jobNode: AttackNode = {
   triggers: ['pull_request'],
   secrets: ['AWS_SECRET_ACCESS_KEY'],
   forkTriggerable: true,
+  runsInstall: true,
 };
 const overBaselineGrant: AttackNode = {
   id: 'g',

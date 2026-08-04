@@ -33,6 +33,7 @@ function job(id: string): CiJobNode {
     triggers: ['pull_request_target'],
     secrets: ['AWS_SECRET_ACCESS_KEY'],
     forkTriggerable: true,
+    runsInstall: true,
   };
 }
 function grant(id: string): AgentGrantNode {
