@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "if": "Bash(git commit *)", "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "pre-commit"] },
+          { "type": "command", "if": "Bash(git push *)",   "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "pre-push"] }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "if": "Edit(package.json)",          "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "manifest-edit"] },
+          { "type": "command", "if": "Write(package.json)",         "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "manifest-edit"] },
+          { "type": "command", "if": "Edit(.github/workflows/**)",  "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "workflow-edit"] },
+          { "type": "command", "if": "Write(.github/workflows/**)", "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "workflow-edit"] },
+          { "type": "command", "if": "Edit(.mcp.json)",             "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "mcp-config-edit"] },
+          { "type": "command", "if": "Write(.mcp.json)",            "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "mcp-config-edit"] }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "if": "Bash(npm install *)", "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "dependency-install"] }
+        ]
+      }
+    ]
+  }
+}

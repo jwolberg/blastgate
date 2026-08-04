@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+'use strict';
+
+// Blastgate - scaffold stub.
+//
+// The real cross-layer reachability engine belongs in ../../src (see the plan in
+// docs/plans). This stub wires the two entry points the Claude Code plugin needs
+// so the plugin is installable and testable today:
+//
+//   blastgate check --gate <phase>   hook gate; reads hook JSON on stdin
+//   blastgate check --since <ref>    slash-command / CLI scan surface
+//   blastgate mcp                    minimal stdio MCP server (blastgate_check_change)
+//
+// Default behavior is PASS (green) everywhere, so it never blocks real work while
+// it is a stub. Set BLASTGATE_DEMO_DENY=1 to exercise the deny path end-to-end.
+
+const argv = process.argv.slice(2);
+const cmd = argv[0];
+
+function getFlag(name) {
+  const i = argv.indexOf(name);
+  return i !== -1 ? argv[i + 1] : undefined;
+}
+
+function readStdin() {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) return resolve('');
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c) => (data += c));
+    process.stdin.on('end', () => resolve(data));
+    // Fallback so we never hang if stdin stays open with nothing to read.
+    setTimeout(() => resolve(data), 250);
+  });
+}
+
+async function runCheck() {
+  const gate = getFlag('--gate');
+  const since = getFlag('--since');
+  const raw = await readStdin();
+  let hook = {};
+  try { hook = raw ? JSON.parse(raw) : {}; } catch { /* slash-cmd input, not hook JSON */ }
+
+  // Slash-command / CLI scan surface.
+  if (since !== undefined) {
+    process.stdout.write(
+      `blastgate: scan since ${since} - scaffold stub, engine not wired yet. 0 reachable paths.\n`
+    );
+    return process.exit(0);
+  }
+
+  // === TODO: real engine ===
+  // Build the cross-layer attack-surface graph from the repo's manifests,
+  // lockfile, workflows, and agent/MCP config; compute reachable
+  // attacker-entry -> secret-sink paths; block only on a genuine path.
+  const demoDeny = process.env.BLASTGATE_DEMO_DENY === '1';
+
+  if (demoDeny && (gate === 'pre-commit' || gate === 'pre-push')) {
+    const reason =
+      'Reachable path: new dep `left-pad-evil` postinstall -> process.env.AWS_SECRET_ACCESS_KEY ' +
+      '-> fetch() exfil sink [OWASP Agentic ASI04]. Pin or remove the dependency, ' +
+      'or drop the secret from the untrusted job, before committing.';
+    // PreToolUse block via structured decision (exit 0 + deny JSON on stdout).
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }) + '\n');
+    return process.exit(0);
+  }
+
+  // Pass. Stay quiet on stdout; a note on stderr shows only in hook debug output.
+  process.stderr.write(`blastgate: ${gate || 'check'} - no reachable path (scaffold stub).\n`);
+  return process.exit(0);
+}
+
+// ---- Minimal newline-delimited JSON-RPC 2.0 stdio MCP server ----
+function runMcp() {
+  const TOOL = {
+    name: 'blastgate_check_change',
+    description:
+      'Check whether a proposed change (new dependency, install script, workflow, or ' +
+      'MCP grant) opens a reachable attack path to a secret sink. Returns the path and ' +
+      'a fix if one exists.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'File being added or edited' },
+        change_kind: {
+          type: 'string',
+          enum: ['dependency', 'install-script', 'workflow', 'mcp-config', 'other'],
+        },
+      },
+    },
+  };
+
+  const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\n');
+
+  let buf = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let req;
+      try { req = JSON.parse(line); } catch { continue; }
+      handle(req);
+    }
+  });
+
+  function handle(req) {
+    const { id, method, params } = req;
+    if (id === undefined || id === null) return; // notification: no response
+
+    if (method === 'initialize') {
+      return send({
+        jsonrpc: '2.0',
+        id,
+        result: {
+          protocolVersion: (params && params.protocolVersion) || '2025-06-18',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'blastgate', version: '0.1.0' },
+        },
+      });
+    }
+    if (method === 'tools/list') {
+      return send({ jsonrpc: '2.0', id, result: { tools: [TOOL] } });
+    }
+    if (method === 'tools/call') {
+      const args = (params && params.arguments) || {};
+      const fp = args.file_path || '(unspecified)';
+      const text =
+        `blastgate stub: reachability engine not yet implemented. No blocking path ` +
+        `computed for ${fp}. Wire the engine in src/ to make this real.`;
+      return send({
+        jsonrpc: '2.0',
+        id,
+        result: { content: [{ type: 'text', text }], isError: false },
+      });
+    }
+    if (method === 'ping') {
+      return send({ jsonrpc: '2.0', id, result: {} });
+    }
+    return send({
+      jsonrpc: '2.0',
+      id,
+      error: { code: -32601, message: `Method not found: ${method}` },
+    });
+  }
+}
+
+(async () => {
+  if (cmd === 'check') return runCheck();
+  if (cmd === 'mcp') return runMcp();
+  process.stderr.write(
+    'Usage: blastgate check --gate <phase> | blastgate check --since <ref> | blastgate mcp\n'
+  );
+  process.exit(1);
+})();

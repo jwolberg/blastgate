@@ -1,0 +1,11 @@
+{
+  "name": "blastgate",
+  "displayName": "Blastgate",
+  "version": "0.1.0",
+  "description": "Fails when a change opens a reachable attack path from an attacker-controllable entry point (new dependency, install script, or prompt-injectable agent surface) to a secret sink.",
+  "author": { "name": "Jay Wolberg", "url": "https://github.com/jwolberg" },
+  "homepage": "https://github.com/jwolberg/blastgate",
+  "repository": "https://github.com/jwolberg/blastgate",
+  "license": "Apache-2.0",
+  "keywords": ["security", "supply-chain", "secrets", "reachability", "agentic", "mcp", "owasp"]
+}

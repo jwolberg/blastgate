@@ -1,0 +1,12 @@
+# Local harness / tooling state (machine-specific, not part of the product)
+.TerMinal/
+.claude/
+.codex/
+.status.md
+
+# OS / editor
+.DS_Store
+
+# Node
+node_modules/
+npm-debug.log*
