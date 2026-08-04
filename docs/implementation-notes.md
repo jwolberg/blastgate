@@ -117,3 +117,35 @@ Running log of decisions, deviations, and tradeoffs for human review.
 - **One `Finding` shape (`src/findings/finding.ts`), one entrypoint (`runEngine`).**
   Every surface (CLI/Action/plugin/MCP, U9–U14) rides `runEngine`; reason and
   remediation are derived from the path's cross-layer archetype, not free-form.
+
+## 2026-08-04 — CLI (U9): blastgate command + plugin `--gate` hook mode
+
+- **`runCli(argv, env)` is pure over an injected `CliEnv`** (a `RepoFs` port +
+  stdin + stdout/stderr sinks). The whole CLI surface — scan, `--json`, and the
+  hook gate — is offline-testable with an in-memory fs; the Node adapters
+  (`readFileSync`, `readdirSync`, `git show` for `--base`) and real process I/O
+  live only in the bin at the bottom of `index.ts`. 13 tests, no filesystem.
+- **`import.meta.url === process.argv[1]` guard** around the bin invocation so
+  importing the module for `runCli` in tests does **not** trigger `main()` /
+  `process.exit`. The old U1 stub ran `process.exit(main())` at top level; that
+  can't coexist with an importable `runCli`.
+- **`--base` diff signals via `git show <ref>:<path>`** (KTD5), behind the
+  `RepoFs.gitShow` port. A null base file ⇒ the path is new at head ⇒ every dep is
+  "added" (correct for a brand-new lockfile). Gate mode defaults `--base HEAD` — a
+  hook fires on an in-flight change, so diffing the working tree against HEAD lights
+  up the new-dependency entry (verified in the smoke run: the cross-layer
+  `postinstall → dep → fork job → AWS_SECRET_ACCESS_KEY` path appears only with a
+  base).
+- **Hook payloads match the plugin stub contract (KTD12):** PreToolUse phases
+  (`pre-commit`, `pre-push`, `manifest-edit`, `workflow-edit`, `mcp-config-edit`)
+  emit `{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",
+  permissionDecisionReason:<ranked path → sink → fix>}}` and exit 0; the
+  `dependency-install` PostToolUse phase emits `{decision:"block",reason:…}`
+  (react-only). A non-fail verdict emits nothing (allow). The asymmetry (deny vs
+  block) is the design — PostToolUse can't prevent, only signal a revert.
+- **Exit codes:** scan mode exits non-zero **only** on a fail verdict (pass/warn →
+  0), matching KTD4; gate mode exits 0 and communicates via the JSON payload (the
+  plugin reads the decision, not the code).
+- **`--provenance` is accepted but no-ops with a stderr note** (U8 not built yet);
+  **`mcp` prints a "not wired yet (U13)" note.** Neither blocks U9. Non-existent
+  path arg → clear stderr error + exit 2, no stack trace.
