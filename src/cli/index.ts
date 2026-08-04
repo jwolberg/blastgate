@@ -12,14 +12,13 @@
  * adapters and is the only part with real process I/O.
  */
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { runEngine } from '../engine/gate';
 import { VERSION } from '../index';
 import { collectInputs, type RepoFs } from './collect';
 import { hookOutput } from './gate';
+import { nodeRepoFs } from './node-fs';
 import { renderJson, renderText, scanExitCode } from './render';
 
 /** The injected environment `runCli` runs against (real I/O lives only in the bin). */
@@ -141,39 +140,6 @@ function firstPositional(argv: string[]): string | undefined {
     return tok;
   }
   return undefined;
-}
-
-function nodeRepoFs(root: string): RepoFs {
-  return {
-    read(rel) {
-      try {
-        return readFileSync(join(root, rel), 'utf8');
-      } catch {
-        return null;
-      }
-    },
-    listWorkflows() {
-      const dir = join(root, '.github', 'workflows');
-      try {
-        return readdirSync(dir)
-          .filter((f) => /\.ya?ml$/.test(f))
-          .map((f) => `.github/workflows/${f}`);
-      } catch {
-        return [];
-      }
-    },
-    gitShow(ref, rel) {
-      try {
-        return execFileSync('git', ['show', `${ref}:${rel}`], {
-          cwd: root,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-        });
-      } catch {
-        return null;
-      }
-    },
-  };
 }
 
 function readStdin(): Promise<string> {

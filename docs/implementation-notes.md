@@ -149,3 +149,26 @@ Running log of decisions, deviations, and tradeoffs for human review.
 - **`--provenance` is accepted but no-ops with a stderr note** (U8 not built yet);
   **`mcp` prints a "not wired yet (U13)" note.** Neither blocks U9. Non-existent
   path arg → clear stderr error + exit 2, no stack trace.
+
+## 2026-08-04 — GitHub Action (U10): thin wrapper, structural parity
+
+- **Parity is structural, not coincidental.** `runActionCore(fs, opts)` is literally
+  `runEngine(collectInputs(fs, opts))` — the same call the CLI scan makes — so the
+  Action and CLI cannot drift. The parity test asserts the two produce byte-identical
+  findings JSON on the AE1 fixture; the Action file adds only PR surfacing.
+- **Shared Node fs/git adapter.** Extracted `nodeRepoFs` into `src/cli/node-fs.ts`
+  so the CLI and Action bins read a repo through the exact same adapter (the only
+  code touching `node:fs`/`git`); collect/render/gate stay pure ports.
+- **Surfacing:** `::error`/`::warning title=Blastgate::` workflow annotations (one
+  per finding, message-escaped) + a job-summary markdown table appended to
+  `$GITHUB_STEP_SUMMARY`; table cells escape `|`/newlines. No file/line positions in
+  v1 (findings don't carry them) — annotations render fine without, which is the
+  plan's "missing position info" edge case as the default path.
+- **`base` defaults to `GITHUB_BASE_REF`** so a PR run gets diff signals for free
+  (KTD5). `provenance` input accepted but no-ops with a warning (U8 pending).
+- **Packaging caveat (filed as ticket 0015):** `action.yml` `main:` →
+  `dist/action/index.js`, but `dist/` is gitignored. A consumed action runs that
+  file directly with no build step, so the built JS must be committed at release
+  refs. U10 proves the logic (parity + a real `node dist/action/index.js` smoke run
+  over both fixtures); making the action third-party-consumable is a release-workflow
+  follow-up — deliberately NOT committing `dist/` on every commit.

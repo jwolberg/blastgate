@@ -60,6 +60,39 @@ high false-positive rate of pattern-matching tools.
   the agent can call to evaluate a proposed change before it is applied. See
   [`plugin/README.md`](plugin/README.md).
 
+## Usage
+
+### Local CLI
+
+```bash
+npx blastgate .                 # scan the current repo; exits non-zero on a fail verdict
+npx blastgate . --base main     # add diff signals (new deps, .npmrc changes) vs a ref
+npx blastgate . --json          # emit the findings array as JSON
+```
+
+A fail verdict (a reachable path to a secret or credential) exits non-zero; a clean
+repo or warn-only findings (lower-sensitivity capability paths) exit zero.
+
+### GitHub Action
+
+Runs the same engine as the CLI — findings are identical (asserted by test). It
+defaults the diff base to the pull request's base ref, so change signals light up
+automatically, and surfaces findings as PR annotations plus a job-summary table.
+
+```yaml
+# .github/workflows/blastgate.yml
+name: Blastgate
+on: [pull_request]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # so the base ref is available for diff signals
+      - uses: jwolberg/blastgate@v0
+```
+
 ## Scope (v1)
 
 npm and GitHub Actions. Other package ecosystems, other CI providers, and analysis of
@@ -69,8 +102,9 @@ for recorded decisions.
 
 ## Status
 
-Early development. The reachability engine is not yet implemented;
-`plugin/bin/blastgate` is a stub that passes by default.
+Early development. The reachability engine, the local CLI (`blastgate`), and the
+GitHub Action share one implementation and are working. The Claude Code plugin
+(`plugin/bin/blastgate`) is still a pass-by-default stub, not yet wired to the engine.
 
 ## License
 
