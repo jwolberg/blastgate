@@ -11,3 +11,15 @@
  */
 
 export const VERSION = '0.1.0';
+
+export { buildGraph, type BuildResult, type EngineInputs } from './engine/build';
+export { assembleFindings } from './engine/checks';
+export { gateFails, type GateResult, runEngine, verdictOf } from './engine/gate';
+export {
+  type Finding,
+  type FindingEntry,
+  type FindingSink,
+  type Tier,
+  tierForSink,
+  type Verdict,
+} from './findings/finding';

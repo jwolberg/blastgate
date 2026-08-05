@@ -65,6 +65,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         triggers,
         secrets: secretNames,
         forkTriggerable,
+        runsInstall: hasInstallStep(job),
       };
       result.nodes.push(jobNode);
 

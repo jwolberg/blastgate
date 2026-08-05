@@ -42,6 +42,8 @@ export interface CiJobNode {
   triggers: string[];
   secrets: string[];
   forkTriggerable: boolean;
+  /** The job runs a dependency install step (where a poisoned lifecycle script executes). */
+  runsInstall: boolean;
 }
 
 export interface AgentGrantNode {

@@ -1,0 +1,21 @@
+name: 'Blastgate'
+description: 'Cross-layer attack-path gate — fail a PR when a reachable path connects an attacker-controllable entry point to a secret sink.'
+author: 'Jay Wolberg'
+branding:
+  icon: 'shield'
+  color: 'red'
+inputs:
+  path:
+    description: 'Repository path to scan.'
+    required: false
+    default: '.'
+  base:
+    description: 'Git ref to diff against for change signals (new deps, .npmrc changes). Defaults to the PR base ref.'
+    required: false
+  provenance:
+    description: 'Enable the opt-in npm provenance-regression check (network). Not yet available; ignored for now.'
+    required: false
+    default: 'false'
+runs:
+  using: 'node20'
+  main: 'dist/action/index.js'
