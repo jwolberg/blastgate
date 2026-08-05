@@ -20,6 +20,8 @@ import { runEngine, type GateResult } from '../engine/gate';
 import { VERSION } from '../index';
 import { runStdioServer } from '../mcp/server';
 import { cachedFetcher, httpSource } from '../registry/packument';
+import { osvHttpSource } from '../registry/osv';
+import { enrichWithAdvisories } from '../enrichment/advisories';
 import { collectInputs, type RepoFs } from './collect';
 import { bypassOutput, hookOutput } from './gate';
 import { nodeRepoFs } from './node-fs';
@@ -88,6 +90,7 @@ function usage(): string {
     '  --format <fmt>     output format: text (default), json, or md (human-readable report)',
     '  --json / --md      shorthands for --format json / --format md',
     '  --provenance       opt-in npm provenance-regression check (network; needs --base)',
+    '  --advisories       opt-in CVE/advisory enrichment of reachable deps (network; OSV; never gates)',
     '  --version          print version',
     '',
   ].join('\n');
@@ -126,6 +129,11 @@ async function scanMode(argv: string[], env: CliEnv): Promise<number> {
   });
   inputs.provenance = await provenanceResult(argv, env, base);
   const result = runEngine(inputs);
+  // 0036: opt-in CVE/advisory enrichment. Enrichment only — decorates findings and
+  // re-ranks; it never changes the verdict, so scanExitCode(result) is unaffected.
+  if (argv.includes('--advisories')) {
+    result.findings = await enrichWithAdvisories(result.findings, osvHttpSource());
+  }
   env.stdout(renderResult(result, argv));
   return scanExitCode(result);
 }

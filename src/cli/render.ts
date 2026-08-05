@@ -62,6 +62,9 @@ export function renderText(result: GateResult): string {
     }
     lines.push(`      why:  ${f.reason}`);
     lines.push(`      fix:  ${f.remediation}`);
+    if (f.advisories && f.advisories.length > 0) {
+      lines.push(`      advisories: ${f.advisories.map((a) => a.id).join(', ')}`);
+    }
   }
   lines.push('');
   lines.push(workflowFooterText());
@@ -152,6 +155,9 @@ function markdownFinding(f: Finding): string[] {
   out.push(`- **why:** ${inlineText(f.reason)}`);
   out.push(`- **fix:** ${inlineText(f.remediation)}`);
   out.push(`- **sink:** ${f.sink.kind} \`${f.sink.identity}\``);
+  if (f.advisories && f.advisories.length > 0) {
+    out.push(`- **advisories:** ${f.advisories.map((a) => `\`${a.id}\``).join(', ')}`);
+  }
   if (f.labels.length > 0) {
     out.push(`- **OWASP:** ${f.labels.map((l) => `\`${l}\``).join(', ')}`);
   }

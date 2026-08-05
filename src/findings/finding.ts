@@ -55,6 +55,23 @@ export interface Finding {
    * (U14): the reason, and the tier is downgraded fail→warn. Absent otherwise.
    */
   acknowledged?: string;
+  /**
+   * Known-vulnerability advisories for the dependency on this path (0036). ENRICHMENT
+   * ONLY — set by the opt-in `--advisories` pass, it adds context and bumps ranking
+   * but NEVER changes the tier or verdict. A CVE alone is never a finding; this only
+   * decorates a path that is already reachable.
+   */
+  advisories?: Advisory[];
+}
+
+/** A known-vulnerability advisory (OSV / GHSA / CVE) against a package on a reachable path. */
+export interface Advisory {
+  /** Advisory id, e.g. `GHSA-xxxx-xxxx-xxxx` or `CVE-2025-12345`. */
+  id: string;
+  /** The package the advisory is against. */
+  package: string;
+  /** Optional one-line summary. */
+  summary?: string;
 }
 
 /**
