@@ -394,3 +394,43 @@ Running log of decisions, deviations, and tradeoffs for human review.
   (was 189; +8 renderer/CLI tests). Ran the built CLI on the fork-pr-secret (FAIL,
   exit 1), agent-overprivilege (WARN, exit 0), and self (PASS, exit 0) — report and
   exit codes correct.
+
+## 2026-08-05 — release.yml also ships the Marketplace Action (0027)
+
+- **Why.** `release.yml` published only the npm package. The GitHub Action
+  (`action.yml` → `main: dist/action/index.js`) was unpublishable: `dist/` is
+  gitignored, so no tag's tree contains the file GitHub executes for a
+  `uses: jwolberg/blastgate@vN` reference, and no floating `v0` tag existed.
+- **Decision: build-in-release, not commit-dist-to-main.** Added a second
+  `release-action` job that, on a `v*` tag, builds `dist/`, force-commits it onto
+  the tagged commit, force-moves the exact version tag **and** the floating major
+  tag (`v0`) to that commit, then `gh release create`s a Release. Kept the npm
+  job unchanged; the two run in parallel with separate least-privilege scopes
+  (npm: `id-token: write`; action: `contents: write`).
+- **Tradeoff (accepted, revisit).** This makes the semver tag *mutable* — the
+  workflow rewrites `v0.1.0` to a commit with an extra `build:` commit the local
+  tag didn't have. The GitHub-recommended alternative is to **commit `dist/` to
+  `main`** (un-ignore it + a `check-dist` CI guard that fails on a stale build);
+  that keeps version tags immutable and drops the tag-force-move. Chose
+  build-in-release because the ask was to change `release.yml` only and it keeps
+  `main` free of build artifacts. If mutable tags bite, switch to committed-dist.
+- **Loop-safe.** Tag pushes use the built-in `GITHUB_TOKEN`, which does not
+  re-trigger workflows, so force-moving `v*` tags cannot recurse. Prerelease tags
+  (`-rc.N`) do not advance `v0` and are marked `--prerelease`.
+- **No new third-party actions.** Used the runner's built-in `gh` CLI for the
+  Release instead of a marketplace action — fewer supply-chain deps in a
+  `contents: write` job, consistent with the tool's own posture. `checkout` /
+  `setup-node` stay SHA-pinned as before.
+- **Verified.** YAML parses (`yaml.safe_load`, jobs `publish-npm` +
+  `release-action`, trigger `push.tags [v*]`); tag/major/prerelease shell math
+  checked against `v0.1.0` → `v0 --latest`, `v1.4.2` → `v1 --latest`,
+  `v0.2.0-rc.1` → `v0 --prerelease`. Not exercised on a real tag push (would
+  publish); recommend a dry run on a throwaway `v0.0.0-test` tag first.
+- **Companion self-gate + `scan` script (same PR).** Added
+  `.github/workflows/blastgate.yml` — a `pull_request` job that `npm ci && npm run
+  build`s then runs `node dist/cli/index.js . --base <pr-base> --format md` into the
+  job summary, failing the check on a reachable path. It uses the built CLI, not
+  the (unpublished) Action, so the repo dogfoods **before** the first release;
+  swap to `uses: jwolberg/blastgate@v0` post-publish for inline annotations. Also
+  added `npm run scan` (`build` + whole-repo CLI) for the local loop. `checkout` /
+  `setup-node` SHA-pinned to match release.yml.

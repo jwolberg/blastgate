@@ -31,7 +31,8 @@
     "format": "prettier --write \"{src,test}/**/*.ts\"",
     "format:check": "prettier --check \"{src,test}/**/*.ts\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "scan": "npm run build && node dist/cli/index.js ."
   },
   "dependencies": {
     "graphology": "^0.26.0",
