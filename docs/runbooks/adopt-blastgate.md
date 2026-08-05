@@ -1,0 +1,98 @@
+---
+title: Adopt Blastgate and respond to a finding
+last-verified: 2026-08-05
+anchor: RB-adopt-blastgate
+---
+
+How to turn Blastgate on for a repository and what to do when it fails a change.
+Blastgate fails **only** on a reachable path to a secret/credential sink; it warns
+(does not fail) on lower-severity capability paths. Fixing the path is always
+preferred over accepting it.
+
+## [1] Try it locally first
+
+```bash
+npx blastgate .                 # whole-repo scan; exit non-zero = a fail verdict
+npx blastgate . --base main     # add change signals (new deps, .npmrc) vs a ref
+npx blastgate . --json          # machine-readable findings (has the finding `id`)
+```
+
+A clean repo prints a PASS line and exits 0. Run it against a branch that adds a
+dependency or edits a workflow to see change signals light up (`--base`).
+
+## [2] Enable the CI/PR gate (the Action)
+
+Add `.github/workflows/blastgate.yml`:
+
+```yaml
+name: Blastgate
+on: [pull_request]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # required: the base ref must be available for diff signals
+      - uses: jwolberg/blastgate@v0
+```
+
+`fetch-depth: 0` matters — without the base ref, new-dependency / changed-config
+signals do not appear. The Action defaults its diff base to the PR base ref, fails
+the check on a reachable path, and posts annotations + a job-summary table.
+
+## [3] Enable the agent-loop gate (the plugin)
+
+Inside Claude Code:
+
+```
+/plugin marketplace add jwolberg/blastgate
+/plugin install blastgate@blastgate
+```
+
+The `PreToolUse` hooks then **deny** a `git commit` / `git push` or an edit to
+`package.json` / `.github/workflows/**` / `.mcp.json` that would create a reachable
+path; the `PostToolUse` hook **blocks** (react-only) after an `npm install`. The
+`blastgate_check_change` MCP tool and `/blastgate` command are advisory self-checks —
+the hook is the enforcement layer.
+
+## [4] Respond to a finding
+
+Every finding gives you: the `path` (entry → … → sink), the `sink`, the `reason` it
+is reachable, a `fix`, and the OWASP label(s).
+
+**[4.1] Fix the path (preferred).** Break any edge on it. Typical fixes:
+
+- Install-script → secret: gate lifecycle scripts (`npm ci --ignore-scripts`) or
+  remove the secret from the untrusted-triggerable job.
+- Fork-triggerable job holding a secret: remove the secret from that job, or restrict
+  the trigger to trusted events.
+- Over-privileged agent grant: scope the MCP server / `Bash(...)` rule down, or drop it.
+
+**[4.2] Accept a specific finding (auditable override).** If a finding is a reviewed,
+accepted risk, acknowledge it by **id** — this downgrades it from fail to a reported
+warning. It never silently disables the gate; the acknowledgement is a committed file
+that shows up in the diff and git history.
+
+1. Get the id: `npx blastgate . --base <ref> --json` and copy the finding's `id`
+   (shaped `entry:...=>sink:...`).
+2. Commit `.blastgate/acknowledged.json`:
+
+   ```json
+   {
+     "acknowledged": [
+       { "id": "entry:fork-pr:.github/workflows/ci.yml#test=>sink:secret:AWS_SECRET_ACCESS_KEY",
+         "reason": "reviewed 2026-08-05 — secret is read-only and scoped; accepted by @you" }
+     ]
+   }
+   ```
+
+3. Re-run: the acknowledged finding now shows as a warning and the gate passes. Any
+   **un-acknowledged** fail finding still fails — you cannot blanket-disable the gate.
+
+## [5] Provenance regression check (opt-in, network)
+
+The one check that reaches the npm registry is off by default. Enable it with
+`--provenance` (needs `--base` for a version baseline) to flag a dependency that lost
+its npm attestations between versions. Keep it out of the fast offline hook path;
+run it in CI or on demand.

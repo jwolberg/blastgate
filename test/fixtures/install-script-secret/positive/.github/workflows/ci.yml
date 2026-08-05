@@ -1,0 +1,8 @@
+on:
+  pull_request:
+jobs:
+  test:
+    steps:
+      - run: npm ci
+        env:
+          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

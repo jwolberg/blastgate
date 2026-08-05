@@ -1,0 +1,8 @@
+on:
+  push:
+jobs:
+  deploy:
+    steps:
+      - run: echo deploy
+        env:
+          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

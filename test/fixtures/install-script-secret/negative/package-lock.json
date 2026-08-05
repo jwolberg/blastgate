@@ -1,0 +1,1 @@
+{ "lockfileVersion": 3, "packages": { "": { "name": "app" }, "node_modules/evil-pkg": { "version": "1.0.0", "hasInstallScript": true } } }

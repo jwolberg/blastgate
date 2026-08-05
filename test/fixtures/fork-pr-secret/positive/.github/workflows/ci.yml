@@ -1,0 +1,8 @@
+on:
+  pull_request_target:
+jobs:
+  test:
+    steps:
+      - run: echo build
+        env:
+          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

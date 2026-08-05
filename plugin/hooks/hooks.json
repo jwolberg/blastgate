@@ -4,8 +4,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "if": "Bash(git commit *)", "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "pre-commit"] },
-          { "type": "command", "if": "Bash(git push *)",   "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "pre-push"] }
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "shell-pre"] }
         ]
       },
       {
@@ -24,7 +23,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "if": "Bash(npm install *)", "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "dependency-install"] }
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/blastgate", "args": ["check", "--gate", "shell-post"] }
         ]
       }
     ]

@@ -1,0 +1,31 @@
+# CI for Blastgate. npm-based: the tool is npm-first and dogfoods its own
+# package-lock.json (U4 + the self-scan in the plan's Definition of Done), so the
+# project uses npm rather than the harness default of bun — see
+# docs/implementation-notes.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Format check
+        run: npm run format:check
+      - name: Type check
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+      - name: Tests
+        run: npm test
