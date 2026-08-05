@@ -230,3 +230,32 @@ Running log of decisions, deviations, and tradeoffs for human review.
 - **Self-scan clean:** a test runs the engine over Blastgate's own committed
   `plugin/.mcp.json` (a `${CLAUDE_PROJECT_DIR}`-scoped `blastgate mcp` tool server) and
   asserts no finding — the plugin never flags itself on install (U6 baseline).
+
+## 2026-08-05 — Provenance-regression check (U8): opt-in, network-gated
+
+- **The one network-touching check, off by default (KTD6).** `--provenance` is the
+  only path that hits `registry.npmjs.org`; the whole scan/gate is otherwise offline
+  and deterministic. The fetcher is constructed *inside* the `--provenance` CLI
+  branch only, so the core literally cannot make a request without the flag (the
+  entire offline test suite passing over the network-free sandbox is the proof).
+- **`dist.attestations` presence is the sole primitive.** A package whose version
+  changed and that *had* attestations at the base version but *lost* them at the head
+  version is a regression (the CVE-2025-54313 shape). Absence at both versions is not
+  a regression; a newly added package has no baseline; a fetch failure is a soft
+  `null` (never a gate fail). The network is behind a `PackumentSource` port so tests
+  run against recorded packuments — no live network in CI.
+- **Emitted as a supply-chain `EntryNode`, not a bolt-on finding.** A regression
+  produces `entry:provenance:<pkg>` + a `controls` edge to the head dep node + a
+  diagnostic. It feeds the U7 graph exactly like a new-dependency entry, so it only
+  becomes a *finding* when the regressed package reaches a sink — and then it ranks
+  and labels through the normal pipeline (integration test: a regressed install-script
+  dep in a fork-triggerable secret job → a fail finding). This keeps R14 precision:
+  a provenance regression on an unreachable package is a diagnostic, not a gate fail.
+- **Caching per package.** `cachedFetcher` dedupes by package name, so a base+head
+  check of the same `pkg` is one request (asserted by a call counter). Merged last in
+  `buildGraph` so its `entry→dep` edge targets the dependency node the deps analyzer
+  already emitted.
+- **Wired into both scan and check modes** behind the flag; `--provenance` needs a
+  `--base` for a version baseline (a stderr note + skip otherwise). Provenance stays
+  off in the plugin hooks by default (they must be fast/offline) unless a phase is
+  explicitly invoked with the flag.

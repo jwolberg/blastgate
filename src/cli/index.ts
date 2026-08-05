@@ -14,9 +14,12 @@
 
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { analyzeProvenance } from '../analyzers/deps/provenance';
+import { type EngineInputs } from '../engine/build';
 import { runEngine } from '../engine/gate';
 import { VERSION } from '../index';
 import { runStdioServer } from '../mcp/server';
+import { cachedFetcher, httpSource } from '../registry/packument';
 import { collectInputs, type RepoFs } from './collect';
 import { hookOutput } from './gate';
 import { nodeRepoFs } from './node-fs';
@@ -58,20 +61,41 @@ function usage(): string {
     'Flags:',
     '  --base <ref>    diff against a git ref for change signals (new deps, .npmrc changes)',
     '  --json          emit the findings array as JSON',
-    '  --provenance    (not yet available — U8, network-gated)',
+    '  --provenance    opt-in npm provenance-regression check (network; needs --base)',
     '  --version       print version',
     '',
   ].join('\n');
 }
 
-function scanMode(argv: string[], env: CliEnv): number {
-  if (argv.includes('--provenance')) {
-    env.stderr(
-      'blastgate: --provenance is not available yet (U8, network-gated); running offline.\n',
-    );
+/**
+ * Compute the opt-in provenance-regression result (U8). Returns undefined unless
+ * `--provenance` is set — this is the ONLY path that touches the network (KTD6);
+ * the core scan/gate is fully offline. Needs a base ref for a version baseline.
+ */
+async function provenanceResult(
+  argv: string[],
+  env: CliEnv,
+  base: string | undefined,
+): Promise<EngineInputs['provenance']> {
+  if (!argv.includes('--provenance')) {
+    return undefined;
   }
+  if (!base) {
+    env.stderr('blastgate: --provenance needs --base <ref> for a version baseline; skipping.\n');
+    return undefined;
+  }
+  const headLock = env.fs.read('package-lock.json');
+  if (headLock === null) {
+    return undefined;
+  }
+  const baseLock = env.fs.gitShow ? env.fs.gitShow(base, 'package-lock.json') : null;
+  return analyzeProvenance(baseLock, headLock, cachedFetcher(httpSource()));
+}
+
+async function scanMode(argv: string[], env: CliEnv): Promise<number> {
   const base = baseRef(argv);
   const inputs = collectInputs(env.fs, base !== undefined ? { base } : {});
+  inputs.provenance = await provenanceResult(argv, env, base);
   const result = runEngine(inputs);
   env.stdout(wantsJson(argv) ? renderJson(result) : renderText(result));
   return scanExitCode(result);
@@ -92,7 +116,9 @@ async function checkMode(argv: string[], env: CliEnv): Promise<number> {
   // A hook fires on an in-flight change, so diff the working tree against HEAD to
   // light up new-dependency / changed-config signals (KTD5).
   const base = baseRef(argv) ?? 'HEAD';
-  const result = runEngine(collectInputs(env.fs, { base }));
+  const inputs = collectInputs(env.fs, { base });
+  inputs.provenance = await provenanceResult(argv, env, base);
+  const result = runEngine(inputs);
 
   if (phase === undefined) {
     // `check` with no --gate is the slash-command scan surface.
