@@ -1,24 +1,30 @@
 # Blastgate
 
-**Blastgate fails a change when it opens a reachable path from something an attacker
-controls to something sensitive — across your dependencies, your CI, and your agent
-configuration at once.** It is a change-time security gate that reports a finding only
-when there is a demonstrable path (a new install script that runs in a
-fork-triggerable job that holds an AWS key), never merely a risky-looking pattern.
+**The supply-chain attacks landing in 2026 don't live inside any one layer — they
+live in the path _between_ layers, where nothing is looking.** Installing a dependency
+runs its lifecycle scripts with the authority of wherever they run; handing a coding
+agent shell access is a standing capability an attacker can drive. A repository is an
+**execution surface**, and its real danger is never a risky artifact in isolation — it
+is the **reachable route** from something an attacker controls to something sensitive:
+a malicious `preinstall` that runs in a CI job holding an AWS key on fork-triggered
+pull requests; an over-broad agent grant sitting on a prompt-injectable surface.
+
+Every existing scanner sees one layer and stops at its edge — dependency tools score
+the package, workflow tools audit the job, MCP scanners inspect the agent grant. None
+computes the connective path that turns three separate "maybe" signals into one
+demonstrable attack. **That path is the gap. Blastgate is the gate that computes it.**
+
+Blastgate models your dependencies, your CI, and your agent/MCP configuration as **one
+directed graph** and asserts a single property on every change: _no reachable path
+connects an attacker-controllable entry point to a sensitive sink._ It reports a
+finding only when there is a demonstrable path — a new install script that runs in a
+fork-triggerable job that holds an AWS key — never merely a risky-looking pattern. A
+repository with no such path passes; a failure names the concrete path, the sink it
+reaches, why it is reachable, a fix, and the OWASP category.
 
 It ships as a CI/PR gate, a local CLI, a GitHub Action, and a Claude Code plugin
 (enforcement hooks + an MCP self-check tool + a `/blastgate` command) — all driven by
 one engine, so every surface produces identical findings.
-
-## What it is
-
-A repository is an execution surface. Installing a dependency runs its lifecycle
-scripts with the authority of the environment they run in; handing a coding agent
-shell or filesystem access is a standing capability an attacker can drive. Blastgate
-models that surface as **one directed graph** across three layers, and asserts a single
-property: *no reachable path connects an attacker-controllable entry point to a
-sensitive sink.* A repository with no such path passes; a failure names the concrete
-path, the sink it reaches, why it is reachable, a fix, and the OWASP category.
 
 ## Who it's for
 
@@ -36,16 +42,17 @@ path, the sink it reaches, why it is reachable, a fix, and the OWASP category.
 
 ## Why it's needed — the threats it catches
 
-Existing tools each see one layer. None computes the *connective* path that spans
-layers, which is exactly where these real attacks live:
+Each row below is a live 2026 attack shape, and each is invisible to any single-layer
+tool because the danger is the _connective_ path — the row's middle column — not any
+one artifact on it:
 
-| Threat | The concrete path Blastgate catches | OWASP |
-| --- | --- | --- |
-| **Install-script supply-chain worm** (e.g. Shai-Hulud: a `preinstall` stealer that sweeps npm/GitHub/AWS/Vault creds and propagates) | A newly added dependency's install script runs in a fork-triggerable job that holds `AWS_SECRET_ACCESS_KEY` | `ASI04` / `MCP04` |
-| **CI `pwn-request`** | A `pull_request_target` / fork `pull_request` job runs untrusted code while holding secrets or an over-broad `GITHUB_TOKEN` | `ASI03` |
-| **npm provenance regression** (the CVE-2025-54313 shape) | A dependency that *had* npm attestations and silently *lost* them between versions — a strong compromise signal (opt-in, `--provenance`) | `ASI04` / `MCP04` |
-| **Over-privileged coding agent** | A committed MCP server rooted at `/` or an unrestricted `Bash(*)` / wrapper-bypass grant — a prompt-injectable path to out-of-repo filesystem/network/shell | `ASI01` / `MCP02` |
-| **Slopsquatting & unsigned agent marketplaces** | A newly introduced dependency or agent grant from an unaudited source, evaluated for reachability rather than trusted by name | `ASI04` / `MCP02` |
+| Threat                                                                                                                               | The concrete path Blastgate catches                                                                                                                         | OWASP             |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| **Install-script supply-chain worm** (e.g. Shai-Hulud: a `preinstall` stealer that sweeps npm/GitHub/AWS/Vault creds and propagates) | A newly added dependency's install script runs in a fork-triggerable job that holds `AWS_SECRET_ACCESS_KEY`                                                 | `ASI04` / `MCP04` |
+| **CI `pwn-request`**                                                                                                                 | A `pull_request_target` / fork `pull_request` job runs untrusted code while holding secrets or an over-broad `GITHUB_TOKEN`                                 | `ASI03`           |
+| **npm provenance regression** (the CVE-2025-54313 shape)                                                                             | A dependency that _had_ npm attestations and silently _lost_ them between versions — a strong compromise signal (opt-in, `--provenance`)                    | `ASI04` / `MCP04` |
+| **Over-privileged coding agent**                                                                                                     | A committed MCP server rooted at `/` or an unrestricted `Bash(*)` / wrapper-bypass grant — a prompt-injectable path to out-of-repo filesystem/network/shell | `ASI01` / `MCP02` |
+| **Slopsquatting & unsigned agent marketplaces**                                                                                      | A newly introduced dependency or agent grant from an unaudited source, evaluated for reachability rather than trusted by name                               | `ASI04` / `MCP02` |
 
 Each of these is named and modeled in [`docs/threat-model.md`](docs/threat-model.md),
 which also maps every OWASP category Blastgate emits.
@@ -115,17 +122,38 @@ signals into a path. The full tool-by-tool contrast is in
 
 ## Usage
 
+### Where it fits in your workflow
+
+Blastgate is the same engine run at three moments, each catching a reachable path
+earlier than the last:
+
+1. **Local, while you work** — the Claude Code plugin gates a `git commit` /
+   `git push` or an `npm install` that would open a path, so it never leaves your
+   machine. Run `npx blastgate .` by hand anytime for the same check.
+2. **On the pull request** — the GitHub Action runs on every `pull_request`, fails
+   the check on a reachable path, and posts the finding on the PR.
+3. **At pre-merge review** — the same report (`--format md`) is the job summary a
+   reviewer reads before approving, so the merge decision sees the attack path.
+
+One engine and one `Finding` shape back all three, so a change that passes locally
+passes in CI for the same reason — the surfaces cannot disagree.
+
 ### Local CLI
 
 ```bash
 npx blastgate .                 # scan the current repo; exits non-zero on a fail verdict
 npx blastgate . --base main     # add diff signals (new deps, .npmrc changes) vs a ref
 npx blastgate . --provenance    # opt-in npm provenance-regression check (needs --base)
-npx blastgate . --json          # emit the findings array as JSON
+npx blastgate . --json          # emit the findings array as JSON (has each finding `id`)
+npx blastgate . --format md      # human-readable markdown report (share it, or > report.md)
 ```
 
 A fail verdict (a reachable path to a secret or credential) exits non-zero; a clean
-repo or warn-only findings (lower-sensitivity capability paths) exit zero.
+repo or warn-only findings (lower-sensitivity capability paths) exit zero. The
+`--format md` report leads with the verdict and a "where this runs" banner, gives one
+section per finding (the attacker→sink path, why it is reachable, the fix, and the
+OWASP label), and closes with what to do next — it is the same report the Action posts
+as its PR job summary.
 
 ### GitHub Action
 
