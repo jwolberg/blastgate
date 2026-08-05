@@ -55,8 +55,8 @@ export interface DependencyNode {
   version: string;
   isDirect: boolean;
   hasInstallScript: boolean;
-  /** Which package ecosystem this dependency belongs to. Absent = npm (0028). */
-  ecosystem?: 'npm' | 'python';
+  /** Which package ecosystem this dependency belongs to. Absent = npm (0028, 0032). */
+  ecosystem?: 'npm' | 'python' | 'ruby';
 }
 
 export interface CiJobNode {

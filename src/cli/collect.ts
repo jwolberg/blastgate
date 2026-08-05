@@ -11,6 +11,7 @@ import { AGENT_INSTRUCTION_PATHS, type AgentDiffInputs } from '../analyzers/agen
 import type { DependencyInputs } from '../analyzers/deps/index';
 import { GATE_CONFIG_PATHS } from '../analyzers/integrity/self-integrity';
 import { PYTHON_INSTALL_MANIFESTS } from '../analyzers/pydeps/index';
+import type { RubyGemsInputs } from '../analyzers/rubygems/index';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
 import { parsePolicy, ruleKey } from '../engine/policy';
@@ -116,6 +117,18 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     if (manifests.some((m) => m.head !== null)) {
       inputs.pydeps = { manifests };
     }
+  }
+
+  // 0032: RubyGems. A Gemfile.lock diff surfaces gems an untrusted change adds/bumps;
+  // an added gem is install-capable (bundle install runs native-extension code), so it
+  // reaches any secret held by a fork-triggerable install job. Diff-gated like the others.
+  const headGemLock = fs.read('Gemfile.lock');
+  if (headGemLock !== null) {
+    const rubygems: RubyGemsInputs = { headLockfile: headGemLock };
+    if (opts.base && fs.gitShow) {
+      rubygems.baseLockfile = fs.gitShow(opts.base, 'Gemfile.lock');
+    }
+    inputs.rubygems = rubygems;
   }
 
   const workflows = fs

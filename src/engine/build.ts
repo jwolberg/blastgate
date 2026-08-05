@@ -20,6 +20,7 @@ import {
   type SelfIntegrityInputs,
 } from '../analyzers/integrity/self-integrity';
 import { analyzePyDeps, type PyDepsInputs } from '../analyzers/pydeps/index';
+import { analyzeRubyGems, type RubyGemsInputs } from '../analyzers/rubygems/index';
 import { type AnalyzerResult, applyResult, type Diagnostic } from '../analyzers/types';
 import { AttackGraph } from '../graph/graph';
 import type { CiJobNode, DependencyNode } from '../graph/types';
@@ -33,6 +34,8 @@ export interface EngineInputs {
   agent?: AgentInputs;
   /** Python install-time execution manifests (setup.py), diffed vs base (0028). */
   pydeps?: PyDepsInputs;
+  /** RubyGems lockfile (Gemfile.lock), diffed vs base for added/bumped gems (0032). */
+  rubygems?: RubyGemsInputs;
   /** Repo-own install/build lifecycle scripts scanned for CI-divergent execution (0021). */
   exec?: ExecInputs;
   /** Agent instruction files added/changed by the diff — review-time injection (0023). */
@@ -107,6 +110,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
   const results = [
     inputs.deps ? analyzeDependencies(inputs.deps) : undefined,
     inputs.pydeps ? analyzePyDeps(inputs.pydeps) : undefined,
+    inputs.rubygems ? analyzeRubyGems(inputs.rubygems) : undefined,
     inputs.ci ? analyzeCi(inputs.ci) : undefined,
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,
     inputs.exec ? analyzeExec(inputs.exec) : undefined,

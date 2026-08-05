@@ -93,7 +93,7 @@ export function findSecretRefs(job: JobSpec): { names: string[]; usesAllSecrets:
 }
 
 const INSTALL_RE =
-  /\b(npm\s+(ci|install|i)|yarn(\s+install)?|pnpm\s+(install|i)|pip3?\s+install|python[\d.]*\s+-m\s+pip\s+install|python[\d.]*\s+setup\.py|uv\s+(pip\s+install|sync)|poetry\s+install|pipenv\s+install)\b/;
+  /\b(npm\s+(ci|install|i)|yarn(\s+install)?|pnpm\s+(install|i)|pip3?\s+install|python[\d.]*\s+-m\s+pip\s+install|python[\d.]*\s+setup\.py|uv\s+(pip\s+install|sync)|poetry\s+install|pipenv\s+install|bundle\s+install|gem\s+install)\b/;
 
 /** GitHub `author_association` values that denote a trusted (repo-affiliated) actor. */
 const TRUSTED_ROLE = /\b(OWNER|MEMBER|COLLABORATOR)\b/;

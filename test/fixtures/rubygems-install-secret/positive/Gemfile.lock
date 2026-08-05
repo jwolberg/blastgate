@@ -1,0 +1,12 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rake (13.0.6)
+    evil_gem (1.0.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  evil_gem
+  rake
