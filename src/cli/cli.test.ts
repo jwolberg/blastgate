@@ -166,6 +166,41 @@ describe('blastgate scan (runCli default)', () => {
   });
 });
 
+describe('exception policy (0030) end-to-end', () => {
+  const POLICY = JSON.stringify({
+    accept: [{ sink: 'AWS_SECRET_ACCESS_KEY', reason: 'reviewed — scoped, accepted by @you' }],
+  });
+
+  it('honors a policy.json already on the base ref — downgrades the fail to warn (exit 0)', async () => {
+    const fs = memFs(
+      {
+        'package-lock.json': HEAD_LOCK,
+        '.github/workflows/ci.yml': WORKFLOW,
+        '.blastgate/policy.json': POLICY,
+      },
+      { 'package-lock.json': BASE_LOCK, '.blastgate/policy.json': POLICY },
+    );
+    const { code, out } = await invoke(['.', '--base', 'HEAD'], fs);
+    expect(code).toBe(0);
+    expect(out).toContain('reviewed — scoped'); // the accepted reason is surfaced
+  });
+
+  it('ignores a policy.json introduced only at head — the finding still fails (0019 guard)', async () => {
+    const fs = memFs(
+      {
+        'package-lock.json': HEAD_LOCK,
+        '.github/workflows/ci.yml': WORKFLOW,
+        '.blastgate/policy.json': POLICY,
+      },
+      { 'package-lock.json': BASE_LOCK }, // no policy at base
+    );
+    const { code, out } = await invoke(['.', '--base', 'HEAD'], fs);
+    expect(code).not.toBe(0);
+    expect(out).not.toContain('reviewed — scoped');
+    expect(out).toContain('AWS_SECRET_ACCESS_KEY');
+  });
+});
+
 describe('renderJson', () => {
   it('produces valid JSON of the findings array', () => {
     const json = renderJson({ verdict: 'pass', findings: [], diagnostics: [] });

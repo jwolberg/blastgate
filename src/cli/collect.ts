@@ -11,8 +11,10 @@ import { AGENT_INSTRUCTION_PATHS, type AgentDiffInputs } from '../analyzers/agen
 import type { DependencyInputs } from '../analyzers/deps/index';
 import { GATE_CONFIG_PATHS } from '../analyzers/integrity/self-integrity';
 import { PYTHON_INSTALL_MANIFESTS } from '../analyzers/pydeps/index';
+import type { RubyGemsInputs } from '../analyzers/rubygems/index';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
+import { parsePolicy, ruleKey } from '../engine/policy';
 import type { EngineInputs } from '../engine/build';
 
 /** npm lifecycle + build scripts where install-time execution concealment lives (0021). */
@@ -81,6 +83,8 @@ export interface RepoFs {
 export interface CollectOptions {
   /** A git ref to diff against for change signals (new deps, `.npmrc` changes). */
   base?: string;
+  /** Reference date (`YYYY-MM-DD`) for policy-rule expiry (0030); the bin supplies today. */
+  now?: string;
 }
 
 /** Collect per-layer inputs from a repo checkout. Layers with no source files are omitted. */
@@ -110,9 +114,29 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
       head: fs.read(path),
       base: fs.gitShow!(opts.base!, path),
     }));
-    if (manifests.some((m) => m.head !== null)) {
+    const reqHead = fs.read('requirements.txt');
+    const hasRequirements = reqHead !== null;
+    if (manifests.some((m) => m.head !== null) || hasRequirements) {
       inputs.pydeps = { manifests };
+      if (hasRequirements) {
+        inputs.pydeps.requirements = {
+          head: reqHead,
+          base: fs.gitShow(opts.base, 'requirements.txt'),
+        };
+      }
     }
+  }
+
+  // 0032: RubyGems. A Gemfile.lock diff surfaces gems an untrusted change adds/bumps;
+  // an added gem is install-capable (bundle install runs native-extension code), so it
+  // reaches any secret held by a fork-triggerable install job. Diff-gated like the others.
+  const headGemLock = fs.read('Gemfile.lock');
+  if (headGemLock !== null) {
+    const rubygems: RubyGemsInputs = { headLockfile: headGemLock };
+    if (opts.base && fs.gitShow) {
+      rubygems.baseLockfile = fs.gitShow(opts.base, 'Gemfile.lock');
+    }
+    inputs.rubygems = rubygems;
   }
 
   const workflows = fs
@@ -121,6 +145,21 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     .filter((w) => w.content !== '');
   if (workflows.length > 0) {
     inputs.ci = { workflows };
+  }
+
+  // 0034: GitLab CI. The committed .gitlab-ci.yml is analyzed as-is (like GitHub
+  // workflows) — a merge-request-triggerable job holding a CI/CD secret is a
+  // standing risk regardless of the diff.
+  const gitlabCi = fs.read('.gitlab-ci.yml');
+  if (gitlabCi !== null) {
+    inputs.gitlabci = { content: gitlabCi };
+  }
+
+  // 0035: CircleCI. Advisory only — whether forked-PR builds receive secrets is a
+  // CircleCI project setting not visible in the repo, so this never fails a change.
+  const circleCi = fs.read('.circleci/config.yml');
+  if (circleCi !== null) {
+    inputs.circleci = { content: circleCi };
   }
 
   const mcpJson = fs.read('.mcp.json');
@@ -184,6 +223,31 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     }
   } else if (headAcks.length > 0) {
     inputs.acknowledged = headAcks;
+  }
+
+  // 0030: the typed exception policy — same base-vs-head self-approval guard as acks
+  // (0019). Parse-time rejections (blanket/wildcard/no-reason) are always surfaced.
+  const headPolicy = parsePolicy(fs.read('.blastgate/policy.json'));
+  if (headPolicy.diagnostics.length > 0) {
+    inputs.policyDiagnostics = headPolicy.diagnostics;
+  }
+  if (opts.base && fs.gitShow) {
+    const basePolicy = parsePolicy(fs.gitShow(opts.base, '.blastgate/policy.json'));
+    const baseKeys = new Set(basePolicy.rules.map(ruleKey));
+    const honored = headPolicy.rules.filter((r) => baseKeys.has(ruleKey(r)));
+    const ignored = headPolicy.rules.filter((r) => !baseKeys.has(ruleKey(r)));
+    if (honored.length > 0) {
+      inputs.policy = { rules: honored };
+    }
+    if (ignored.length > 0) {
+      inputs.policyIgnored = ignored;
+    }
+  } else if (headPolicy.rules.length > 0) {
+    inputs.policy = { rules: headPolicy.rules };
+  }
+
+  if (opts.now !== undefined) {
+    inputs.now = opts.now;
   }
 
   return inputs;

@@ -13,6 +13,8 @@
 import { analyzeAgentDiff, type AgentDiffInputs } from '../analyzers/agent/config-diff';
 import { analyzeAgents, type AgentInputs } from '../analyzers/agent/index';
 import { analyzeCi, type CiInputs } from '../analyzers/ci/index';
+import { analyzeGitlabCi, type GitlabCiInputs } from '../analyzers/gitlabci/index';
+import { analyzeCircleCi, type CircleCiInputs } from '../analyzers/circleci/index';
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
 import { analyzeExec, type ExecInputs } from '../analyzers/exec/index';
 import {
@@ -20,10 +22,12 @@ import {
   type SelfIntegrityInputs,
 } from '../analyzers/integrity/self-integrity';
 import { analyzePyDeps, type PyDepsInputs } from '../analyzers/pydeps/index';
+import { analyzeRubyGems, type RubyGemsInputs } from '../analyzers/rubygems/index';
 import { type AnalyzerResult, applyResult, type Diagnostic } from '../analyzers/types';
 import { AttackGraph } from '../graph/graph';
 import type { CiJobNode, DependencyNode } from '../graph/types';
 import type { Acknowledgement } from './acknowledge';
+import type { AcceptRule } from './policy';
 
 /** Per-layer inputs; an omitted layer is simply not analyzed. */
 export interface EngineInputs {
@@ -32,6 +36,12 @@ export interface EngineInputs {
   agent?: AgentInputs;
   /** Python install-time execution manifests (setup.py), diffed vs base (0028). */
   pydeps?: PyDepsInputs;
+  /** RubyGems lockfile (Gemfile.lock), diffed vs base for added/bumped gems (0032). */
+  rubygems?: RubyGemsInputs;
+  /** GitLab CI config (.gitlab-ci.yml) — MR-triggerable jobs holding CI/CD secrets (0034). */
+  gitlabci?: GitlabCiInputs;
+  /** CircleCI config (.circleci/config.yml) — advisory only; fork-secret exposure is out-of-repo (0035). */
+  circleci?: CircleCiInputs;
   /** Repo-own install/build lifecycle scripts scanned for CI-divergent execution (0021). */
   exec?: ExecInputs;
   /** Agent instruction files added/changed by the diff — review-time injection (0023). */
@@ -45,6 +55,14 @@ export interface EngineInputs {
    * honored (0019) — a PR cannot self-approve its own findings. Surfaced as a warn.
    */
   acknowledgedIgnored?: Acknowledgement[];
+  /** Honored exception-policy rules (`.blastgate/policy.json`, base-ref only); downgrades fail→warn (0030). */
+  policy?: { rules: AcceptRule[] };
+  /** Policy rules introduced by the diff and NOT honored (0019 parity) — surfaced as a warn. */
+  policyIgnored?: AcceptRule[];
+  /** Parse-time policy rejections (blanket/wildcard/no-reason rules) — surfaced, not silently dropped. */
+  policyDiagnostics?: Diagnostic[];
+  /** Reference date (`YYYY-MM-DD`) for policy-rule expiry; absent = expiry not enforced. */
+  now?: string;
   /**
    * Pre-computed provenance-regression result (U8). The engine core is offline
    * (KTD6); the network-touching provenance analyzer runs in the CLI behind
@@ -98,7 +116,10 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
   const results = [
     inputs.deps ? analyzeDependencies(inputs.deps) : undefined,
     inputs.pydeps ? analyzePyDeps(inputs.pydeps) : undefined,
+    inputs.rubygems ? analyzeRubyGems(inputs.rubygems) : undefined,
     inputs.ci ? analyzeCi(inputs.ci) : undefined,
+    inputs.gitlabci ? analyzeGitlabCi(inputs.gitlabci) : undefined,
+    inputs.circleci ? analyzeCircleCi(inputs.circleci) : undefined,
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,
     inputs.exec ? analyzeExec(inputs.exec) : undefined,
     inputs.agentDiff ? analyzeAgentDiff(inputs.agentDiff) : undefined,

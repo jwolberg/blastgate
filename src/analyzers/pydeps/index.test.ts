@@ -1,6 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { runEngine } from '../../engine/gate';
-import { analyzePyDeps } from './index';
+import { analyzePyDeps, parseRequirements } from './index';
+
+describe('parseRequirements (0033)', () => {
+  it('parses pinned and unpinned packages, skipping comments and options', () => {
+    const reqs = parseRequirements(
+      ['# deps', 'Flask==2.0.1', 'requests>=2.0', '-r base.txt', '', 'PyYAML'].join('\n'),
+    );
+    expect(reqs.get('flask')).toBe('2.0.1');
+    expect(reqs.get('requests')).toBe(''); // unpinned (constraint, not ==)
+    expect(reqs.get('pyyaml')).toBe('');
+    expect(reqs.has('base.txt')).toBe(false); // the -r option is skipped
+  });
+});
+
+describe('analyzePyDeps requirements.txt diff (0033)', () => {
+  it('emits an install-capable python dep + new-dependency entry for an added package', () => {
+    const r = analyzePyDeps({
+      manifests: [],
+      requirements: { head: 'flask==2.0.1\nevil-pkg==1.0.0', base: 'flask==2.0.1' },
+    });
+    const dep = r.nodes.find((n) => n.kind === 'dependency' && 'pkg' in n && n.pkg === 'evil-pkg');
+    expect(dep && dep.kind === 'dependency' && dep.hasInstallScript).toBe(true);
+    expect(dep && dep.kind === 'dependency' && dep.ecosystem).toBe('python');
+    expect(r.nodes.some((n) => n.kind === 'entry' && n.entryKind === 'new-dependency')).toBe(true);
+  });
+
+  it('does not flag an unchanged requirements package', () => {
+    const r = analyzePyDeps({
+      manifests: [],
+      requirements: { head: 'flask==2.0.1', base: 'flask==2.0.1' },
+    });
+    expect(r.nodes).toHaveLength(0);
+  });
+});
 
 describe('analyzePyDeps (0028)', () => {
   it('emits a python dependency node with an install script for setup.py', () => {

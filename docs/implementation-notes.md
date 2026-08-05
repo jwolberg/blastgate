@@ -478,3 +478,24 @@ Running log of decisions, deviations, and tradeoffs for human review.
   `jwolberg/blastgate@v0`, so they only work after the first published release.
 - **Verified.** `bash -n` clean on both scripts; both workflow YAMLs parse.
   Neither script is executed here (live GitHub side effects).
+
+## 2026-08-05 — Ecosystem/CI/policy expansion (0029-0038): decisions
+
+- **0033 — Python dependency-diff lockfile target: `requirements.txt` (v1).** Python has
+  no single universal lockfile; `requirements.txt` is the most widely present and the
+  simplest to diff (`pkg==version`), so it is the v1 target for the "newly added Python
+  dependency" signal (poetry.lock / uv.lock / Pipfile.lock are format-specific follow-ups).
+  An added/bumped pip package is treated as **install-capable** (a pip sdist runs
+  `setup.py` at install), so it reaches a secret held by a fork-triggerable `pip install`
+  job — the same model as npm's `hasInstallScript` and RubyGems (0032). Precision is
+  diff-gated: an existing requirements.txt is trusted; only added/bumped packages become
+  findings. Lives in the existing `pydeps` analyzer alongside the setup.py handling.
+- **0032 — RubyGems install-capability is assumed, not detected.** Bundler's Gemfile.lock
+  does not record whether a gem runs install-time code (native extension / Rakefile), and
+  we cannot inspect gem internals offline, so an added gem is treated as install-capable.
+  Same reasoning as the Python requirements case. Precision comes from cross-layer
+  reachability (fork-triggerable `bundle install` job holding a secret), not per-gem
+  script detection.
+- **0031 — `provider` field on CiJobNode** (absent = github) mirrors `DependencyNode.ecosystem`.
+- **0030 — policy.json** generalizes acknowledged.json; the three integrity invariants
+  (committed & diffable / specific / self-approval-guarded) are enforced in code + tests.

@@ -31,6 +31,30 @@ export interface PyManifest {
 
 export interface PyDepsInputs {
   manifests: PyManifest[];
+  /**
+   * requirements.txt at head/base (0033). Chosen as the v1 dependency-diff target —
+   * the most universal Python dependency file and the simplest to diff. `base` is
+   * null when the file is new at head. An added/bumped package is install-capable
+   * (a pip sdist runs `setup.py` at install), so it reaches a secret held by a
+   * fork-triggerable `pip install` job — the RubyGems/npm model.
+   */
+  requirements?: { head: string | null; base: string | null };
+}
+
+/** Parse a requirements.txt to package → pinned version ('' if unpinned). Skips comments/options. */
+export function parseRequirements(content: string): Map<string, string> {
+  const pkgs = new Map<string, string>();
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#') || line.startsWith('-')) {
+      continue; // blank, comment, or an option like `-r base.txt` / `-e .`
+    }
+    const m = /^([A-Za-z0-9_.-]+)\s*(?:==\s*([^\s;#]+))?/.exec(line);
+    if (m) {
+      pkgs.set(m[1]!.toLowerCase(), m[2] ?? '');
+    }
+  }
+  return pkgs;
 }
 
 export function analyzePyDeps(inputs: PyDepsInputs): AnalyzerResult {
@@ -65,5 +89,40 @@ export function analyzePyDeps(inputs: PyDepsInputs): AnalyzerResult {
       result.edges.push({ from: entryId, to: depId, edge: { kind: 'controls' } });
     }
   }
+
+  // 0033: requirements.txt dependency diff — a package an untrusted change adds or
+  // bumps is an install-capable dependency reaching a fork-triggerable install job.
+  const req = inputs.requirements;
+  if (req && req.head !== null) {
+    const head = parseRequirements(req.head);
+    const base = req.base ? parseRequirements(req.base) : new Map<string, string>();
+    for (const [pkg, version] of head) {
+      const baseVersion = base.get(pkg);
+      if (baseVersion === version) {
+        continue; // unchanged, trusted
+      }
+      const change = baseVersion === undefined ? 'added' : 'changed';
+      const depId = `dep:python:pkg:${pkg}`;
+      result.nodes.push({
+        id: depId,
+        kind: 'dependency',
+        pkg,
+        version: version || 'unpinned',
+        isDirect: true,
+        hasInstallScript: true,
+        ecosystem: 'python',
+      });
+      const entryId = `entry:new-dep:python:pkg:${pkg}`;
+      result.nodes.push({
+        id: entryId,
+        kind: 'entry',
+        entryKind: 'new-dependency',
+        exposure: 1,
+        label: `${change} Python dependency ${pkg}${version ? `@${version}` : ''}`,
+      });
+      result.edges.push({ from: entryId, to: depId, edge: { kind: 'controls' } });
+    }
+  }
+
   return result;
 }

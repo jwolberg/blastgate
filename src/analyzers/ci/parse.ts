@@ -93,7 +93,7 @@ export function findSecretRefs(job: JobSpec): { names: string[]; usesAllSecrets:
 }
 
 const INSTALL_RE =
-  /\b(npm\s+(ci|install|i)|yarn(\s+install)?|pnpm\s+(install|i)|pip3?\s+install|python[\d.]*\s+-m\s+pip\s+install|python[\d.]*\s+setup\.py|uv\s+(pip\s+install|sync)|poetry\s+install|pipenv\s+install)\b/;
+  /\b(npm\s+(ci|install|i)|yarn(\s+install)?|pnpm\s+(install|i)|pip3?\s+install|python[\d.]*\s+-m\s+pip\s+install|python[\d.]*\s+setup\.py|uv\s+(pip\s+install|sync)|poetry\s+install|pipenv\s+install|bundle\s+install|gem\s+install)\b/;
 
 /** GitHub `author_association` values that denote a trusted (repo-affiliated) actor. */
 const TRUSTED_ROLE = /\b(OWNER|MEMBER|COLLABORATOR)\b/;
@@ -119,10 +119,15 @@ export function hasActorGuard(job: JobSpec): boolean {
   );
 }
 
+/** A shell command that installs dependencies (where a poisoned lifecycle script executes). */
+export function isInstallCommand(command: string): boolean {
+  return INSTALL_RE.test(command);
+}
+
 /** A step that runs a dependency install (where a poisoned lifecycle script would execute). */
 export function hasInstallStep(job: JobSpec): boolean {
   return (job.steps ?? []).some((step) => {
-    if (typeof step.run === 'string' && INSTALL_RE.test(step.run)) {
+    if (typeof step.run === 'string' && isInstallCommand(step.run)) {
       return true;
     }
     return typeof step.uses === 'string' && /^actions\/setup-node@/.test(step.uses);

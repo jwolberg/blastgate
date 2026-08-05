@@ -1,0 +1,8 @@
+on:
+  push:
+jobs:
+  test:
+    steps:
+      - run: pip install -r requirements.txt
+        env:
+          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

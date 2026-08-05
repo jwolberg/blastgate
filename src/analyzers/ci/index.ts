@@ -67,6 +67,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       const jobNode: AttackNode = {
         id: jobNodeId,
         kind: 'ci-job',
+        provider: 'github',
         workflow: wf.path,
         job: jobId,
         triggers,

@@ -1,0 +1,5 @@
+deploy:
+  script:
+    - echo "$AWS_SECRET_ACCESS_KEY" > /tmp/creds
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

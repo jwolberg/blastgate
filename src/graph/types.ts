@@ -29,6 +29,9 @@ export type SinkKind = 'secret' | 'credential' | 'privileged-capability';
 /** The four capability classes an agent/MCP grant can confer. */
 export type CapabilityClass = 'filesystem' | 'network' | 'shell' | 'tool';
 
+/** CI provider a job comes from. Absent = github (the original assumed provider). */
+export type CiProvider = 'github' | 'gitlab' | 'circleci';
+
 /** An attacker-controllable entry point. `exposure` feeds ranking (post-traversal). */
 export interface EntryNode {
   id: string;
@@ -52,13 +55,15 @@ export interface DependencyNode {
   version: string;
   isDirect: boolean;
   hasInstallScript: boolean;
-  /** Which package ecosystem this dependency belongs to. Absent = npm (0028). */
-  ecosystem?: 'npm' | 'python';
+  /** Which package ecosystem this dependency belongs to. Absent = npm (0028, 0032). */
+  ecosystem?: 'npm' | 'python' | 'ruby';
 }
 
 export interface CiJobNode {
   id: string;
   kind: 'ci-job';
+  /** Which CI provider emitted this job. Absent = github (0031). */
+  provider?: CiProvider;
   workflow: string;
   job: string;
   triggers: string[];

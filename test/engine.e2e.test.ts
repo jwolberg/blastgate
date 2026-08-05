@@ -163,6 +163,41 @@ const CHECKS: CheckSpec[] = [
       expect(f!.labels).toContain('ASI04:2026');
     },
   },
+  {
+    name: 'rubygems-install-secret',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.pathNodeIds.some((id) => id.startsWith('dep:ruby:')));
+      expect(f, 'a RubyGems install → secret finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.sink.identity).toBe('AWS_SECRET_ACCESS_KEY');
+      expect(f!.labels).toContain('ASI04:2026');
+    },
+  },
+  {
+    name: 'pypi-dep-secret',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) =>
+        x.pathNodeIds.some((id) => id.startsWith('dep:python:pkg:')),
+      );
+      expect(f, 'a PyPI dependency → secret finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.sink.identity).toBe('AWS_SECRET_ACCESS_KEY');
+      expect(f!.labels).toContain('ASI04:2026');
+    },
+  },
+  {
+    name: 'gitlab-fork-secret',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.pathNodeIds.some((id) => id.startsWith('entry:fork-mr:')));
+      expect(f, 'a GitLab merge-request → secret finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.sink.identity).toBe('AWS_SECRET_ACCESS_KEY');
+      expect(f!.labels).toContain('ASI03:2026');
+    },
+  },
 ];
 
 describe('engine e2e over fixture repos (R13)', () => {
