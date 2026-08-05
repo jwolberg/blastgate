@@ -1,0 +1,40 @@
+# Release: publish to npm with provenance (0026 reference posture).
+#
+# Provenance (`npm publish --provenance`) cryptographically links the published
+# tarball to this workflow run and commit via Sigstore/OIDC — the same npm
+# attestation whose *absence* Blastgate's provenance-regression check flags. It
+# needs `id-token: write` (OIDC) and an `NPM_TOKEN` secret; both are scoped to this
+# push-triggered (trusted, never fork) publish job, so Blastgate's own self-scan
+# does not flag the token as attacker-reachable.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for npm provenance attestation
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      # Gate the release on the repo's own clean self-scan before publishing.
+      - run: node dist/cli/index.js .
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

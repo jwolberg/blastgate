@@ -41,3 +41,17 @@ jobs:
         run: npm run build
       - name: Tests
         run: npm test
+      # Dogfood (0026): Blastgate gates its own repo. The JSON report is written
+      # first (always, for the artifact), then the gate runs — a fail verdict exits
+      # non-zero and fails this required check. "We pass our own gate, here's the
+      # artifact" is the credibility argument for the reference implementation.
+      - name: Self-scan
+        run: |
+          node dist/cli/index.js . --json > blastgate-report.json || true
+          node dist/cli/index.js .
+      - name: Publish self-scan report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: blastgate-self-scan
+          path: blastgate-report.json
