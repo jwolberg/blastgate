@@ -1,0 +1,27 @@
+# CODEOWNERS — require maintainer review on the highest-risk surfaces.
+#
+# These are the paths where a careless or malicious change turns the repo into a
+# supply-chain or privilege-escalation vector — the exact class of attack
+# Blastgate itself models. Combined with branch protection's "Require review from
+# Code Owners" rule, an outside contributor can still open a PR touching any of
+# these, but it cannot merge without a maintainer's review.
+#
+# The GitHub owner of this repo is @jwolberg (per the git remote). Update these
+# handles if maintainership changes.
+
+# Catch-all: nothing ships un-owned.
+*                       @jwolberg
+
+# CI / workflows — the GITHUB_TOKEN permissions and untrusted-trigger surface.
+/.github/               @jwolberg
+/.gitlab/               @jwolberg
+
+# The published GitHub Action entry point and its built bundle (dist/ is what
+# runs when someone references this action — treat it like release infra).
+/action.yml             @jwolberg
+/dist/                  @jwolberg
+
+# The engine and the OWASP taxonomy that findings are labeled against.
+/src/                   @jwolberg
+/package.json           @jwolberg
+/package-lock.json      @jwolberg
