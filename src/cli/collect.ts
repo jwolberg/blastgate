@@ -114,8 +114,16 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
       head: fs.read(path),
       base: fs.gitShow!(opts.base!, path),
     }));
-    if (manifests.some((m) => m.head !== null)) {
+    const reqHead = fs.read('requirements.txt');
+    const hasRequirements = reqHead !== null;
+    if (manifests.some((m) => m.head !== null) || hasRequirements) {
       inputs.pydeps = { manifests };
+      if (hasRequirements) {
+        inputs.pydeps.requirements = {
+          head: reqHead,
+          base: fs.gitShow(opts.base, 'requirements.txt'),
+        };
+      }
     }
   }
 
