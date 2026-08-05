@@ -9,6 +9,7 @@
 
 import type { Diagnostic } from '../analyzers/types';
 import type { Finding, Verdict } from '../findings/finding';
+import { applyAcknowledgements } from './acknowledge';
 import { buildGraph, type EngineInputs } from './build';
 import { assembleFindings } from './checks';
 
@@ -36,9 +37,9 @@ export function gateFails(verdict: Verdict): boolean {
   return verdict === 'fail';
 }
 
-/** Build the graph, assemble ranked findings, and apply the gate — the one engine. */
+/** Build the graph, assemble ranked findings, apply acknowledgements, gate — the one engine. */
 export function runEngine(inputs: EngineInputs): GateResult {
   const build = buildGraph(inputs);
-  const findings = assembleFindings(build);
+  const findings = applyAcknowledgements(assembleFindings(build), inputs.acknowledged ?? []);
   return { verdict: verdictOf(findings), findings, diagnostics: build.diagnostics };
 }

@@ -46,6 +46,11 @@ export interface Finding {
   owasp: OwaspLabels;
   /** Versioned display labels, e.g. `["ASI04:2026","MCP04:2025"]`. */
   labels: string[];
+  /**
+   * Set when a human has accepted this finding via `.blastgate/acknowledged.json`
+   * (U14): the reason, and the tier is downgraded fail→warn. Absent otherwise.
+   */
+  acknowledged?: string;
 }
 
 /**

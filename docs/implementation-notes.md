@@ -172,3 +172,129 @@ Running log of decisions, deviations, and tradeoffs for human review.
   refs. U10 proves the logic (parity + a real `node dist/action/index.js` smoke run
   over both fixtures); making the action third-party-consumable is a release-workflow
   follow-up — deliberately NOT committing `dist/` on every commit.
+
+## 2026-08-05 — MCP self-check server (U13): blastgate mcp
+
+- **Advisory, never enforcement (KTD12).** `blastgate_check_change` wraps the U7
+  engine and returns the same `Finding` verdict the CLI gate produces, but its
+  result is a plain MCP tool result (verdict + ranked paths + an "advisory only"
+  note) — never a `decision:block` / `permissionDecision:deny`. A test asserts the
+  tool output contains neither. The pre-commit hook stays the load-bearing gate; a
+  prompt-injected agent won't voluntarily self-check.
+- **Parity by construction (KTD10).** `checkChange` = `runEngine(collectInputs(...))`
+  — the same call the CLI/Action make. A parity test asserts the tool's
+  `structuredContent.findings` equal the CLI `--json` findings on the AE1 fixture.
+- **`handleRequest` is pure (request → response).** JSON-RPC dispatch is offline-
+  testable with an in-memory `RepoFs`; the newline-delimited stdio transport
+  (`runStdioServer`) is the only stateful part and lives in the bin. Notifications
+  (no `id`) yield no response; unknown methods → JSON-RPC `-32601`; a malformed
+  tool argument or unknown tool name → a structured `isError:true` result (the
+  agent sees it) and the server stays up — protocol errors and tool errors are kept
+  distinct.
+- **Scoped to the project dir.** The bin roots the server's `RepoFs` at
+  `BLASTGATE_PROJECT_DIR ?? CLAUDE_PROJECT_DIR ?? '.'` (what `plugin/.mcp.json`
+  passes), with diff base defaulting to HEAD. Smoke-verified over real stdio:
+  initialize / tools/list / tools/call all respond correctly on the AE1 git fixture
+  (verdict fail, 2 findings incl. the cross-layer ASI04/MCP04 path).
+- **`mcp` handled in the bin, not `runCli`.** The stdio loop needs the real process
+  streams, so `main()` intercepts `mcp` before the pure `runCli` dispatch; `runCli`
+  keeps a harmless fallback note for a direct `mcp` call. Unblocks U14 (the plugin's
+  MCP surface).
+
+## 2026-08-05 — Claude Code plugin (U14): wired to the real engine + override
+
+- **`plugin/bin/blastgate` is now a real shim, not a stub.** It resolves the engine
+  CLI (the co-located `../../dist/cli/index.js` when developing in this repo, else
+  `npx -y blastgate`) and forwards argv/stdin/stdout/stderr/exit-code straight
+  through — re-implementing nothing (KTD10). Dropped the fake `BLASTGATE_DEMO_DENY`
+  path and the stub MCP server (the real U13 server replaces it). Smoke-verified end
+  to end via the actual bin over a git fixture: PreToolUse `deny` (AE5), PostToolUse
+  `block` (npm install), clean → allow, and `/blastgate` (`check --since HEAD`).
+- **CommonJS island:** the repo root is `"type":"module"`, which made Node parse the
+  extensionless CJS bin as ESM (`require is not defined`). Added `plugin/package.json`
+  `{"type":"commonjs"}` so the plugin subtree is CJS both in-repo and when installed
+  standalone (Node resolves the nearest package.json). `claude plugin validate ./plugin
+  --strict` still passes.
+- **Acknowledged-finding override (engine, honored by all surfaces).** A committed
+  `.blastgate/acknowledged.json` (`{acknowledged:[{id,reason}]}`) downgrades a matching
+  **fail → warn** (recording the reason on the `Finding`), so the gate stops failing
+  but the finding is still reported — never silently dropped. Implemented in the engine
+  gate (`applyAcknowledgements` in `runEngine`) and read by `collectInputs`, so the CLI,
+  Action, MCP tool, and plugin hook all honor it identically. Finding `id`
+  (`<entry.id>=><sink.id>`) is the stable key. **No env kill switch** — the only way
+  past a fail is to add its id to a file that shows in the diff/git history (the plan's
+  "auditable override, not an all-or-nothing switch" lean). Expiry/`by` fields are a
+  future enhancement.
+- **`--since` alias:** the `/blastgate` SKILL calls `check --since <ref>`; wired
+  `--since` as an alias for `--base`.
+- **Self-scan clean:** a test runs the engine over Blastgate's own committed
+  `plugin/.mcp.json` (a `${CLAUDE_PROJECT_DIR}`-scoped `blastgate mcp` tool server) and
+  asserts no finding — the plugin never flags itself on install (U6 baseline).
+
+## 2026-08-05 — Provenance-regression check (U8): opt-in, network-gated
+
+- **The one network-touching check, off by default (KTD6).** `--provenance` is the
+  only path that hits `registry.npmjs.org`; the whole scan/gate is otherwise offline
+  and deterministic. The fetcher is constructed *inside* the `--provenance` CLI
+  branch only, so the core literally cannot make a request without the flag (the
+  entire offline test suite passing over the network-free sandbox is the proof).
+- **`dist.attestations` presence is the sole primitive.** A package whose version
+  changed and that *had* attestations at the base version but *lost* them at the head
+  version is a regression (the CVE-2025-54313 shape). Absence at both versions is not
+  a regression; a newly added package has no baseline; a fetch failure is a soft
+  `null` (never a gate fail). The network is behind a `PackumentSource` port so tests
+  run against recorded packuments — no live network in CI.
+- **Emitted as a supply-chain `EntryNode`, not a bolt-on finding.** A regression
+  produces `entry:provenance:<pkg>` + a `controls` edge to the head dep node + a
+  diagnostic. It feeds the U7 graph exactly like a new-dependency entry, so it only
+  becomes a *finding* when the regressed package reaches a sink — and then it ranks
+  and labels through the normal pipeline (integration test: a regressed install-script
+  dep in a fork-triggerable secret job → a fail finding). This keeps R14 precision:
+  a provenance regression on an unreachable package is a diagnostic, not a gate fail.
+- **Caching per package.** `cachedFetcher` dedupes by package name, so a base+head
+  check of the same `pkg` is one request (asserted by a call counter). Merged last in
+  `buildGraph` so its `entry→dep` edge targets the dependency node the deps analyzer
+  already emitted.
+- **Wired into both scan and check modes** behind the flag; `--provenance` needs a
+  `--base` for a version baseline (a stderr note + skip otherwise). Provenance stays
+  off in the plugin hooks by default (they must be fast/offline) unless a phase is
+  explicitly invoked with the flag.
+
+## 2026-08-05 — Fixture-repo test suite (U11): the engine's regression harness
+
+- **On-disk minimal repos, exercised through the real filesystem collector.** Each
+  `test/fixtures/<check>/{positive,negative}/` is a tiny repo (package.json, lockfile,
+  workflow, and/or agent config); `engine.e2e.test.ts` builds a `RepoFs` over it and
+  runs the *full* engine — the same `collectInputs → runEngine` path the CLI uses.
+  This is the credibility deliverable (KD4): real reasoning proven by fixtures, not a
+  staged demo.
+- **Git-free diff signals.** Diff-based checks need a base lockfile; rather than make
+  each fixture a git repo, `fixtureFs.gitShow` serves the base from a committed
+  `package-lock.base.json` sidecar. Provenance fixtures ship a `packuments.json` that
+  a recorded fetcher reads — the e2e stays fully offline.
+- **Positive verdict is per-check, not always "fail."** The agent-overprivilege check
+  is warn-tier (a capability sink), so its true-positive verdict is `warn`; the
+  secret-path checks are `fail`. Each `CheckSpec` declares its expected positive
+  verdict + a path/label assertion; every negative asserts `pass` + zero findings
+  (R14).
+- **Coverage guard enforces the R13 bar mechanically.** One test asserts the on-disk
+  fixture dirs are *exactly* the declared check list and each has both a `positive/`
+  and `negative/` — so adding a check without a fixture pair (or an orphan fixture)
+  fails the suite. Verified it bites by hiding a negative dir (suite red) and restoring
+  (green).
+- Four shipped checks covered: install-script→secret (AE1/AE2), fork-PR→secret,
+  agent-overprivilege (AE4), provenance-regression (AE3). 9 e2e tests; 98 total.
+
+## 2026-08-05 — Threat-model POV doc (U12): the KD5 success measure
+
+- **`docs/threat-model.md` is written for the "distinguishability" reader** (Success
+  Criteria): the threat (repo-as-execution-surface, Shai-Hulud, slopsquatting,
+  unsigned agent marketplaces), the cross-layer reachable-path model (nodes/edges/gate
+  + a mermaid AE1 diagram), a tool-by-tool positioning table (inventory vs
+  dependency/CI/MCP single-layer vs Blastgate's connective layer), the OWASP
+  archetype→category mapping (every category it emits is defined there, with the
+  MCP-draft `:2025` caveat), OWASP-as-asset framing, and the plugin-as-dogfood angle.
+- **OWASP labels verified against `src/taxonomy/owasp.ts`** so the doc's category
+  names match what the engine actually emits (ASI01/ASI03/ASI04, MCP02/MCP04/MCP10).
+- README gained a short Positioning section linking the doc. No code changed — the
+  98-test gate is unaffected (documentation deliverable, `Test expectation: none`).

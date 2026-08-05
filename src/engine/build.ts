@@ -13,15 +13,24 @@
 import { analyzeAgents, type AgentInputs } from '../analyzers/agent/index';
 import { analyzeCi, type CiInputs } from '../analyzers/ci/index';
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
-import { applyResult, type Diagnostic } from '../analyzers/types';
+import { type AnalyzerResult, applyResult, type Diagnostic } from '../analyzers/types';
 import { AttackGraph } from '../graph/graph';
 import type { CiJobNode, DependencyNode } from '../graph/types';
+import type { Acknowledgement } from './acknowledge';
 
 /** Per-layer inputs; an omitted layer is simply not analyzed. */
 export interface EngineInputs {
   deps?: DependencyInputs;
   ci?: CiInputs;
   agent?: AgentInputs;
+  /** Human-accepted findings (`.blastgate/acknowledged.json`); downgrades fail→warn (U14). */
+  acknowledged?: Acknowledgement[];
+  /**
+   * Pre-computed provenance-regression result (U8). The engine core is offline
+   * (KTD6); the network-touching provenance analyzer runs in the CLI behind
+   * `--provenance` and passes its result here to be merged like any other layer.
+   */
+  provenance?: AnalyzerResult;
 }
 
 export interface BuildResult {
@@ -70,6 +79,8 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
     inputs.deps ? analyzeDependencies(inputs.deps) : undefined,
     inputs.ci ? analyzeCi(inputs.ci) : undefined,
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,
+    // Merged last: its entry→dep edge targets a dependency node the deps analyzer emits.
+    inputs.provenance,
   ];
   for (const result of results) {
     if (!result) {
