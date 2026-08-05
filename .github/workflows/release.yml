@@ -33,6 +33,10 @@ permissions:
 
 jobs:
   publish-npm:
+    # Safety: a `v*-test` dry-run tag exercises release-action ONLY — it must
+    # never reach npm (npm publishes package.json's version, not the tag, so a
+    # throwaway tag would otherwise publish the real version). See scripts/release-dry-run.sh.
+    if: ${{ !endsWith(github.ref_name, '-test') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

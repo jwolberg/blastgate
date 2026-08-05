@@ -434,3 +434,26 @@ Running log of decisions, deviations, and tradeoffs for human review.
   swap to `uses: jwolberg/blastgate@v0` post-publish for inline annotations. Also
   added `npm run scan` (`build` + whole-repo CLI) for the local loop. `checkout` /
   `setup-node` SHA-pinned to match release.yml.
+
+## 2026-08-05 — Push-button first release: safe dry run + runbook (0029)
+
+- **Why.** `release-action` had never run on a real tag, and the first tag would
+  otherwise be a live experiment that also publishes to npm. Made the first
+  release turnkey and de-risked.
+- **Safe dry-run lane via a `-test` tag suffix.** Added an `if:
+  ${{ !endsWith(github.ref_name, '-test') }}` guard to `publish-npm`, so a
+  `v0.0.0-test` tag exercises `release-action` **only** — npm is never touched
+  (npm publishes package.json's version, not the tag, so an unguarded throwaway
+  tag would publish the real version). `-test` is also a prerelease, so `v0` is
+  not advanced. `scripts/release-dry-run.sh` (`npm run release:dry`) pushes the
+  tag, watches the run, asserts (Release created · `dist/action/index.js` in the
+  tag tree · `v0` untouched · `publish-npm` skipped), then deletes the tag +
+  release via an EXIT trap.
+- **Runbook.** `docs/runbooks/release.md` documents prereqs (the `NPM_TOKEN`
+  secret — the one missing gate; npm name is free), the dry run, the real
+  `npm version` + `git push --follow-tags`, the one-time Marketplace publish, and
+  post-release verification + rollback.
+- **Verified.** `bash -n` clean on the script; `release.yml` + `package.json`
+  still parse; guard expression checked (`v0.0.0-test`/`v0.1.0-rc.1` → skip only
+  on `-test`). The dry run itself is **not** executed here — it pushes tags to the
+  live repo, which is the human's call.
