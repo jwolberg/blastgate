@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { runEngine } from '../engine/gate';
 import { VERSION } from '../index';
+import { runStdioServer } from '../mcp/server';
 import { collectInputs, type RepoFs } from './collect';
 import { hookOutput } from './gate';
 import { nodeRepoFs } from './node-fs';
@@ -116,7 +117,8 @@ export async function runCli(argv: string[], env: CliEnv): Promise<number> {
     return checkMode(argv, env);
   }
   if (cmd === 'mcp') {
-    env.stderr('blastgate mcp: self-check server not wired yet (U13).\n');
+    // The stdio server needs the real process streams; the bin's main() runs it.
+    env.stderr('blastgate mcp: run via the bin (needs stdio streams).\n');
     return 0;
   }
   return scanMode(argv, env);
@@ -159,7 +161,16 @@ function readStdin(): Promise<string> {
 
 async function main(argv: string[]): Promise<number> {
   const cmd = argv[0];
-  const root = cmd === 'check' || cmd === 'mcp' ? '.' : (firstPositional(argv) ?? '.');
+
+  // `blastgate mcp` runs the long-lived stdio self-check server, scoped to the
+  // project dir the plugin passes (BLASTGATE_PROJECT_DIR / CLAUDE_PROJECT_DIR).
+  if (cmd === 'mcp') {
+    const projectDir = process.env.BLASTGATE_PROJECT_DIR ?? process.env.CLAUDE_PROJECT_DIR ?? '.';
+    await runStdioServer({ fs: nodeRepoFs(projectDir), base: 'HEAD' });
+    return 0;
+  }
+
+  const root = cmd === 'check' ? '.' : (firstPositional(argv) ?? '.');
   if (!existsSync(root)) {
     process.stderr.write(`blastgate: path not found: ${root}\n`);
     return 2;

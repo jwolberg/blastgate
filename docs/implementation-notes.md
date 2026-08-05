@@ -172,3 +172,31 @@ Running log of decisions, deviations, and tradeoffs for human review.
   refs. U10 proves the logic (parity + a real `node dist/action/index.js` smoke run
   over both fixtures); making the action third-party-consumable is a release-workflow
   follow-up — deliberately NOT committing `dist/` on every commit.
+
+## 2026-08-05 — MCP self-check server (U13): blastgate mcp
+
+- **Advisory, never enforcement (KTD12).** `blastgate_check_change` wraps the U7
+  engine and returns the same `Finding` verdict the CLI gate produces, but its
+  result is a plain MCP tool result (verdict + ranked paths + an "advisory only"
+  note) — never a `decision:block` / `permissionDecision:deny`. A test asserts the
+  tool output contains neither. The pre-commit hook stays the load-bearing gate; a
+  prompt-injected agent won't voluntarily self-check.
+- **Parity by construction (KTD10).** `checkChange` = `runEngine(collectInputs(...))`
+  — the same call the CLI/Action make. A parity test asserts the tool's
+  `structuredContent.findings` equal the CLI `--json` findings on the AE1 fixture.
+- **`handleRequest` is pure (request → response).** JSON-RPC dispatch is offline-
+  testable with an in-memory `RepoFs`; the newline-delimited stdio transport
+  (`runStdioServer`) is the only stateful part and lives in the bin. Notifications
+  (no `id`) yield no response; unknown methods → JSON-RPC `-32601`; a malformed
+  tool argument or unknown tool name → a structured `isError:true` result (the
+  agent sees it) and the server stays up — protocol errors and tool errors are kept
+  distinct.
+- **Scoped to the project dir.** The bin roots the server's `RepoFs` at
+  `BLASTGATE_PROJECT_DIR ?? CLAUDE_PROJECT_DIR ?? '.'` (what `plugin/.mcp.json`
+  passes), with diff base defaulting to HEAD. Smoke-verified over real stdio:
+  initialize / tools/list / tools/call all respond correctly on the AE1 git fixture
+  (verdict fail, 2 findings incl. the cross-layer ASI04/MCP04 path).
+- **`mcp` handled in the bin, not `runCli`.** The stdio loop needs the real process
+  streams, so `main()` intercepts `mcp` before the pure `runCli` dispatch; `runCli`
+  keeps a harmless fallback note for a direct `mcp` call. Unblocks U14 (the plugin's
+  MCP surface).
