@@ -53,6 +53,20 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
   const sink: SinkNode = path.sink;
   const isSecret = sink.sinkKind === 'secret' || sink.sinkKind === 'credential';
 
+  if (path.entry.entryKind === 'untrusted-text-injection') {
+    const where = job ? `${job.workflow}#${job.job}` : 'the workflow';
+    return {
+      reason:
+        `${path.entry.label} — attacker-authored text from an untrusted event is read by job ${where}, ` +
+        `which holds ${sink.sinkKind} ${sink.identity}. A prompt/command injection in that text (e.g. an ` +
+        `HTML comment invisible on the rendered page but read via the API) can drive the job to exfiltrate it.`,
+      remediation:
+        `Do not pass untrusted event text (issue/PR/comment body) into a privileged step; restrict the ` +
+        `workflow to trusted actors (author_association / github.actor) and remove ${sink.identity} from the ` +
+        `untrusted-triggered job.`,
+    };
+  }
+
   if (path.entry.entryKind === 'ci-divergent') {
     return {
       reason:

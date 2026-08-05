@@ -1,6 +1,12 @@
 import type { AttackNode } from '../../graph/types';
 import { type AnalyzerResult, emptyResult } from '../types';
 import {
+  agentActionsUsed,
+  injectableTextRefs,
+  isInjectableAgentJob,
+  untrustedTextTriggers,
+} from './injection';
+import {
   findSecretRefs,
   hasActorGuard,
   hasInstallStep,
@@ -103,6 +109,23 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           guarded: hasActorGuard(job),
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'triggers' } });
+      }
+
+      // 0022: attacker-authored event text reaching an agent/step is a prompt-injection
+      // surface. An actor guard (U17/0017) restricts who triggers it, so exempt it.
+      if (isInjectableAgentJob(job, triggers) && !hasActorGuard(job)) {
+        const refs = injectableTextRefs(job);
+        const via = refs.length > 0 ? refs.join(', ') : agentActionsUsed(job).join(', ');
+        const entryId = `entry:injection:${wf.path}#${jobId}`;
+        result.nodes.push({
+          id: entryId,
+          kind: 'entry',
+          entryKind: 'untrusted-text-injection',
+          exposure: 3,
+          label: `untrusted ${untrustedTextTriggers(triggers).join('/')} text reaches job ${jobId} (${via})`,
+          guarded: false,
+        });
+        result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'injects' } });
       }
 
       for (const u of unpinnedActions(job)) {

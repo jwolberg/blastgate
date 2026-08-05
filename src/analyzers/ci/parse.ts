@@ -53,7 +53,7 @@ export function untrustedTriggers(triggers: string[]): string[] {
   return triggers.filter((t) => UNTRUSTED_EVENTS.has(t));
 }
 
-function collectStrings(value: unknown, out: string[]): void {
+export function collectStrings(value: unknown, out: string[]): void {
   if (typeof value === 'string') {
     out.push(value);
   } else if (Array.isArray(value)) {
