@@ -24,6 +24,7 @@ import { type AnalyzerResult, applyResult, type Diagnostic } from '../analyzers/
 import { AttackGraph } from '../graph/graph';
 import type { CiJobNode, DependencyNode } from '../graph/types';
 import type { Acknowledgement } from './acknowledge';
+import type { AcceptRule } from './policy';
 
 /** Per-layer inputs; an omitted layer is simply not analyzed. */
 export interface EngineInputs {
@@ -45,6 +46,14 @@ export interface EngineInputs {
    * honored (0019) — a PR cannot self-approve its own findings. Surfaced as a warn.
    */
   acknowledgedIgnored?: Acknowledgement[];
+  /** Honored exception-policy rules (`.blastgate/policy.json`, base-ref only); downgrades fail→warn (0030). */
+  policy?: { rules: AcceptRule[] };
+  /** Policy rules introduced by the diff and NOT honored (0019 parity) — surfaced as a warn. */
+  policyIgnored?: AcceptRule[];
+  /** Parse-time policy rejections (blanket/wildcard/no-reason rules) — surfaced, not silently dropped. */
+  policyDiagnostics?: Diagnostic[];
+  /** Reference date (`YYYY-MM-DD`) for policy-rule expiry; absent = expiry not enforced. */
+  now?: string;
   /**
    * Pre-computed provenance-regression result (U8). The engine core is offline
    * (KTD6); the network-touching provenance analyzer runs in the CLI behind

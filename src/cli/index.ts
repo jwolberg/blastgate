@@ -32,6 +32,8 @@ export interface CliEnv {
   stdin: () => Promise<string>;
   stdout: (s: string) => void;
   stderr: (s: string) => void;
+  /** Today's date (`YYYY-MM-DD`) for policy-rule expiry (0030); the bin injects a real clock. */
+  now?: () => string;
 }
 
 const VALUE_FLAGS = new Set(['--base', '--since', '--gate', '--format']);
@@ -118,7 +120,10 @@ async function provenanceResult(
 
 async function scanMode(argv: string[], env: CliEnv): Promise<number> {
   const base = baseRef(argv);
-  const inputs = collectInputs(env.fs, base !== undefined ? { base } : {});
+  const inputs = collectInputs(env.fs, {
+    ...(base !== undefined ? { base } : {}),
+    now: env.now?.(),
+  });
   inputs.provenance = await provenanceResult(argv, env, base);
   const result = runEngine(inputs);
   env.stdout(renderResult(result, argv));
@@ -165,7 +170,7 @@ async function checkMode(argv: string[], env: CliEnv): Promise<number> {
   // A hook fires on an in-flight change, so diff the working tree against HEAD to
   // light up new-dependency / changed-config signals (KTD5).
   const base = baseRef(argv) ?? 'HEAD';
-  const inputs = collectInputs(env.fs, { base });
+  const inputs = collectInputs(env.fs, { base, now: env.now?.() });
   inputs.provenance = await provenanceResult(argv, env, base);
   const result = runEngine(inputs);
 
@@ -263,6 +268,7 @@ async function main(argv: string[]): Promise<number> {
     stdin: readStdin,
     stdout: (s) => process.stdout.write(s),
     stderr: (s) => process.stderr.write(s),
+    now: () => new Date().toISOString().slice(0, 10),
   });
 }
 

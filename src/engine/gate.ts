@@ -13,6 +13,7 @@ import { exceedsReachabilityCap, MAX_REACHABILITY_PAIRS, reachabilityCost } from
 import { applyAcknowledgements } from './acknowledge';
 import { buildGraph, type EngineInputs } from './build';
 import { assembleFindings } from './checks';
+import { applyPolicy } from './policy';
 
 export interface GateResult {
   verdict: Verdict;
@@ -81,6 +82,20 @@ export function runEngine(inputs: EngineInputs, opts: EngineOptions = {}): GateR
     });
   }
 
+  // 0030: policy parse-time rejections (blanket/wildcard/no-reason rules) are surfaced,
+  // and a policy rule introduced by this change is ignored (0019 parity for policy.json).
+  if (inputs.policyDiagnostics) {
+    diagnostics.push(...inputs.policyDiagnostics);
+  }
+  if (inputs.policyIgnored && inputs.policyIgnored.length > 0) {
+    diagnostics.push({
+      level: 'warn',
+      message:
+        `${inputs.policyIgnored.length} policy rule(s) introduced by this change were ignored — ` +
+        `only rules already on the base ref are honored (0019/0030)`,
+    });
+  }
+
   // Bound the pairwise reachability search: over the cap, fail closed to UNKNOWN
   // (never hang, never a false pass) instead of running an attacker-inflated O(E×S).
   if (exceedsReachabilityCap(build.graph, cap)) {
@@ -94,6 +109,7 @@ export function runEngine(inputs: EngineInputs, opts: EngineOptions = {}): GateR
     return { verdict: verdictOf([], diagnostics), findings: [], diagnostics };
   }
 
-  const findings = applyAcknowledgements(assembleFindings(build), inputs.acknowledged ?? []);
+  const acked = applyAcknowledgements(assembleFindings(build), inputs.acknowledged ?? []);
+  const findings = applyPolicy(acked, inputs.policy?.rules ?? [], { now: inputs.now });
   return { verdict: verdictOf(findings, diagnostics), findings, diagnostics };
 }

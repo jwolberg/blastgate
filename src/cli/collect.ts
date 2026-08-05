@@ -13,6 +13,7 @@ import { GATE_CONFIG_PATHS } from '../analyzers/integrity/self-integrity';
 import { PYTHON_INSTALL_MANIFESTS } from '../analyzers/pydeps/index';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
+import { parsePolicy, ruleKey } from '../engine/policy';
 import type { EngineInputs } from '../engine/build';
 
 /** npm lifecycle + build scripts where install-time execution concealment lives (0021). */
@@ -81,6 +82,8 @@ export interface RepoFs {
 export interface CollectOptions {
   /** A git ref to diff against for change signals (new deps, `.npmrc` changes). */
   base?: string;
+  /** Reference date (`YYYY-MM-DD`) for policy-rule expiry (0030); the bin supplies today. */
+  now?: string;
 }
 
 /** Collect per-layer inputs from a repo checkout. Layers with no source files are omitted. */
@@ -184,6 +187,31 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     }
   } else if (headAcks.length > 0) {
     inputs.acknowledged = headAcks;
+  }
+
+  // 0030: the typed exception policy — same base-vs-head self-approval guard as acks
+  // (0019). Parse-time rejections (blanket/wildcard/no-reason) are always surfaced.
+  const headPolicy = parsePolicy(fs.read('.blastgate/policy.json'));
+  if (headPolicy.diagnostics.length > 0) {
+    inputs.policyDiagnostics = headPolicy.diagnostics;
+  }
+  if (opts.base && fs.gitShow) {
+    const basePolicy = parsePolicy(fs.gitShow(opts.base, '.blastgate/policy.json'));
+    const baseKeys = new Set(basePolicy.rules.map(ruleKey));
+    const honored = headPolicy.rules.filter((r) => baseKeys.has(ruleKey(r)));
+    const ignored = headPolicy.rules.filter((r) => !baseKeys.has(ruleKey(r)));
+    if (honored.length > 0) {
+      inputs.policy = { rules: honored };
+    }
+    if (ignored.length > 0) {
+      inputs.policyIgnored = ignored;
+    }
+  } else if (headPolicy.rules.length > 0) {
+    inputs.policy = { rules: headPolicy.rules };
+  }
+
+  if (opts.now !== undefined) {
+    inputs.now = opts.now;
   }
 
   return inputs;
