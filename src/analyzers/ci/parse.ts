@@ -12,6 +12,7 @@ export interface JobSpec {
   steps?: StepSpec[];
   env?: Record<string, unknown>;
   secrets?: unknown;
+  if?: unknown;
 }
 
 export interface WorkflowSpec {
@@ -92,6 +93,30 @@ export function findSecretRefs(job: JobSpec): { names: string[]; usesAllSecrets:
 }
 
 const INSTALL_RE = /\b(npm\s+(ci|install|i)|yarn(\s+install)?|pnpm\s+(install|i))\b/;
+
+/** GitHub `author_association` values that denote a trusted (repo-affiliated) actor. */
+const TRUSTED_ROLE = /\b(OWNER|MEMBER|COLLABORATOR)\b/;
+
+/**
+ * Whether a job's `if:` restricts *who* can trigger it to trusted actors (U17).
+ * Conservative and fail-closed: only two recognized patterns count as a guard —
+ * an `author_association` compared against a trusted role, or a `github.actor` /
+ * `github.triggering_actor` comparison/allowlist. A mere content filter (e.g.
+ * `contains(body, '@claude')`) is NOT a guard, so an unrecognized `if:` never
+ * downgrades a finding.
+ */
+export function hasActorGuard(job: JobSpec): boolean {
+  const cond = typeof job.if === 'string' ? job.if : '';
+  if (!cond) {
+    return false;
+  }
+  if (/author_association/.test(cond) && TRUSTED_ROLE.test(cond)) {
+    return true;
+  }
+  return (
+    /\bgithub\.(triggering_actor|actor)\b/.test(cond) && /(==|!=|fromJSON|contains)/.test(cond)
+  );
+}
 
 /** A step that runs a dependency install (where a poisoned lifecycle script would execute). */
 export function hasInstallStep(job: JobSpec): boolean {

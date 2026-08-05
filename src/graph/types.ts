@@ -23,6 +23,12 @@ export interface EntryNode {
   /** Relative attacker-controllability, higher = more exposed. Ranking input only. */
   exposure: number;
   label: string;
+  /**
+   * A `fork-pr` entry whose triggering job restricts *who* can trigger it to trusted
+   * actors (an `if:` actor guard). A guarded path is real (broad scope still applies)
+   * but not externally attacker-controllable, so the gate downgrades it fail→warn (U17).
+   */
+  guarded?: boolean;
 }
 
 export interface DependencyNode {

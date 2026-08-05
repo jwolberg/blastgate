@@ -2,6 +2,7 @@ import type { AttackNode } from '../../graph/types';
 import { type AnalyzerResult, emptyResult } from '../types';
 import {
   findSecretRefs,
+  hasActorGuard,
   hasInstallStep,
   normalizeTriggers,
   parseWorkflow,
@@ -99,6 +100,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           entryKind: 'fork-pr',
           exposure: 3,
           label: `${untrusted.join('/')} reaches job ${jobId}`,
+          guarded: hasActorGuard(job),
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'triggers' } });
       }
