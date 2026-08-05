@@ -79,6 +79,18 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
     };
   }
 
+  if (path.entry.entryKind === 'gate-tamper') {
+    return {
+      reason:
+        `${path.entry.label} — this change removes Blastgate's own enforcement (${sink.identity}). ` +
+        `Disabling the gate before making a change it would block is the obvious bypass, so a change that ` +
+        `takes the gate out is itself flagged for review.`,
+      remediation:
+        `Restore the removed enforcement, or confirm the un-adoption is intentional and reviewed by a ` +
+        `maintainer — do not let an automated change disable the gate.`,
+    };
+  }
+
   if (path.entry.entryKind === 'ci-divergent') {
     return {
       reason:

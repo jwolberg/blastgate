@@ -26,6 +26,8 @@ const ENTRY_KIND_EXPOSURE: Record<EntryKind, number> = {
   'untrusted-text-injection': 3,
   // Agent instructions introduced by an untrusted diff — a prompt injection at review time.
   'agent-config-change': 3,
+  // A change that removes the gate's own enforcement — disabling the control itself.
+  'gate-tamper': 3,
   'fork-pr': 3,
   'injectable-agent-surface': 2,
   'ci-divergent': 2,

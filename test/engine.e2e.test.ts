@@ -144,6 +144,15 @@ const CHECKS: CheckSpec[] = [
       expect(f!.labels).toContain('ASI01:2026');
     },
   },
+  {
+    name: 'gate-tamper',
+    positiveVerdict: 'warn',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.entry.kind === 'gate-tamper');
+      expect(f, 'a gate-tamper finding').toBeDefined();
+      expect(f!.tier).toBe('warn');
+    },
+  },
 ];
 
 describe('engine e2e over fixture repos (R13)', () => {

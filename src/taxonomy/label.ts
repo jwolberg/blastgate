@@ -63,6 +63,9 @@ export function labelPath(path: ReachPath): OwaspLabels {
       agentic = 'ASI01';
       mcp = 'MCP10';
       break;
+    case 'gate-tamper':
+      // Disabling the gate itself has no clean OWASP archetype; report it unlabeled.
+      break;
   }
 
   if (hasOverBaselineGrant) {

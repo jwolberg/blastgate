@@ -15,6 +15,10 @@ import { analyzeAgents, type AgentInputs } from '../analyzers/agent/index';
 import { analyzeCi, type CiInputs } from '../analyzers/ci/index';
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
 import { analyzeExec, type ExecInputs } from '../analyzers/exec/index';
+import {
+  analyzeSelfIntegrity,
+  type SelfIntegrityInputs,
+} from '../analyzers/integrity/self-integrity';
 import { type AnalyzerResult, applyResult, type Diagnostic } from '../analyzers/types';
 import { AttackGraph } from '../graph/graph';
 import type { CiJobNode, DependencyNode } from '../graph/types';
@@ -29,6 +33,8 @@ export interface EngineInputs {
   exec?: ExecInputs;
   /** Agent instruction files added/changed by the diff — review-time injection (0023). */
   agentDiff?: AgentDiffInputs;
+  /** Gate-config files diffed to detect Blastgate's own enforcement being removed (0024). */
+  selfIntegrity?: SelfIntegrityInputs;
   /** Human-accepted findings (`.blastgate/acknowledged.json`); downgrades fail→warn (U14). */
   acknowledged?: Acknowledgement[];
   /**
@@ -92,6 +98,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,
     inputs.exec ? analyzeExec(inputs.exec) : undefined,
     inputs.agentDiff ? analyzeAgentDiff(inputs.agentDiff) : undefined,
+    inputs.selfIntegrity ? analyzeSelfIntegrity(inputs.selfIntegrity) : undefined,
     // Merged last: its entry→dep edge targets a dependency node the deps analyzer emits.
     inputs.provenance,
   ];

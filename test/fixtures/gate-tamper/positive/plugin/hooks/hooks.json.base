@@ -1,0 +1,1 @@
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"${CLAUDE_PLUGIN_ROOT}/bin/blastgate","args":["check","--gate","shell-pre"]}]}]}}
