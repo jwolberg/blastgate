@@ -10,6 +10,7 @@
  * the CLI's job (U9); this module is pure and offline (KTD6).
  */
 
+import { analyzeAgentDiff, type AgentDiffInputs } from '../analyzers/agent/config-diff';
 import { analyzeAgents, type AgentInputs } from '../analyzers/agent/index';
 import { analyzeCi, type CiInputs } from '../analyzers/ci/index';
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
@@ -26,6 +27,8 @@ export interface EngineInputs {
   agent?: AgentInputs;
   /** Repo-own install/build lifecycle scripts scanned for CI-divergent execution (0021). */
   exec?: ExecInputs;
+  /** Agent instruction files added/changed by the diff — review-time injection (0023). */
+  agentDiff?: AgentDiffInputs;
   /** Human-accepted findings (`.blastgate/acknowledged.json`); downgrades fail→warn (U14). */
   acknowledged?: Acknowledgement[];
   /**
@@ -83,6 +86,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
     inputs.ci ? analyzeCi(inputs.ci) : undefined,
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,
     inputs.exec ? analyzeExec(inputs.exec) : undefined,
+    inputs.agentDiff ? analyzeAgentDiff(inputs.agentDiff) : undefined,
     // Merged last: its entry→dep edge targets a dependency node the deps analyzer emits.
     inputs.provenance,
   ];

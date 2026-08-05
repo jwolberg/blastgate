@@ -19,7 +19,8 @@ export type EntryKind =
   | 'injectable-agent-surface'
   | 'ci-divergent'
   | 'privileged-hook'
-  | 'untrusted-text-injection';
+  | 'untrusted-text-injection'
+  | 'agent-config-change';
 
 /** A sensitive thing a reachable path can arrive at. */
 export type SinkKind = 'secret' | 'credential' | 'privileged-capability';

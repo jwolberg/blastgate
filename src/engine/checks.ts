@@ -67,6 +67,18 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
     };
   }
 
+  if (path.entry.entryKind === 'agent-config-change') {
+    return {
+      reason:
+        `${path.entry.label} — an untrusted change that adds or edits an agent instruction file is a ` +
+        `prompt injection against any maintainer who reviews it with a coding agent (the same class as ` +
+        `lockfile poisoning). Hidden content (HTML comments, zero-width/bidi text) makes it invisible on review.`,
+      remediation:
+        `Review ${sink.identity} as untrusted input before running any agent over the change; do not let a ` +
+        `coding agent act on instruction files introduced by an external contributor.`,
+    };
+  }
+
   if (path.entry.entryKind === 'ci-divergent') {
     return {
       reason:

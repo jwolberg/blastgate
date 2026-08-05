@@ -58,6 +58,11 @@ export function labelPath(path: ReachPath): OwaspLabels {
       agentic = 'ASI01';
       mcp = 'MCP10';
       break;
+    case 'agent-config-change':
+      // Instruction files added by an untrusted diff — a review-time prompt injection.
+      agentic = 'ASI01';
+      mcp = 'MCP10';
+      break;
   }
 
   if (hasOverBaselineGrant) {

@@ -33,13 +33,12 @@ function fixtureFs(dir: string): RepoFs {
         return [];
       }
     },
-    // The base ref is the committed `package-lock.base.json` sidecar (else absent).
+    // The base ref is a committed `<path>.base` sidecar (the lockfile keeps its
+    // historical `package-lock.base.json` name); absent sidecar ⇒ new at head.
     gitShow: (_ref, rel) => {
-      if (rel !== 'package-lock.json') {
-        return null;
-      }
+      const sidecar = rel === 'package-lock.json' ? 'package-lock.base.json' : `${rel}.base`;
       try {
-        return readFileSync(join(dir, 'package-lock.base.json'), 'utf8');
+        return readFileSync(join(dir, sidecar), 'utf8');
       } catch {
         return null;
       }
@@ -132,6 +131,16 @@ const CHECKS: CheckSpec[] = [
       const f = r.findings.find((x) => x.entry.kind === 'untrusted-text-injection');
       expect(f, 'an untrusted-text-injection finding').toBeDefined();
       expect(f!.tier).toBe('fail');
+      expect(f!.labels).toContain('ASI01:2026');
+    },
+  },
+  {
+    name: 'agent-config-injection',
+    positiveVerdict: 'warn',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.entry.kind === 'agent-config-change');
+      expect(f, 'an agent-config-change finding').toBeDefined();
+      expect(f!.tier).toBe('warn');
       expect(f!.labels).toContain('ASI01:2026');
     },
   },
