@@ -1,0 +1,1 @@
+{ "mcpServers": { "checker": { "command": "npx", "args": ["-y", "blastgate", "mcp"], "env": { "BLASTGATE_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}" } } } }

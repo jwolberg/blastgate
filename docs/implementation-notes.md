@@ -259,3 +259,28 @@ Running log of decisions, deviations, and tradeoffs for human review.
   `--base` for a version baseline (a stderr note + skip otherwise). Provenance stays
   off in the plugin hooks by default (they must be fast/offline) unless a phase is
   explicitly invoked with the flag.
+
+## 2026-08-05 — Fixture-repo test suite (U11): the engine's regression harness
+
+- **On-disk minimal repos, exercised through the real filesystem collector.** Each
+  `test/fixtures/<check>/{positive,negative}/` is a tiny repo (package.json, lockfile,
+  workflow, and/or agent config); `engine.e2e.test.ts` builds a `RepoFs` over it and
+  runs the *full* engine — the same `collectInputs → runEngine` path the CLI uses.
+  This is the credibility deliverable (KD4): real reasoning proven by fixtures, not a
+  staged demo.
+- **Git-free diff signals.** Diff-based checks need a base lockfile; rather than make
+  each fixture a git repo, `fixtureFs.gitShow` serves the base from a committed
+  `package-lock.base.json` sidecar. Provenance fixtures ship a `packuments.json` that
+  a recorded fetcher reads — the e2e stays fully offline.
+- **Positive verdict is per-check, not always "fail."** The agent-overprivilege check
+  is warn-tier (a capability sink), so its true-positive verdict is `warn`; the
+  secret-path checks are `fail`. Each `CheckSpec` declares its expected positive
+  verdict + a path/label assertion; every negative asserts `pass` + zero findings
+  (R14).
+- **Coverage guard enforces the R13 bar mechanically.** One test asserts the on-disk
+  fixture dirs are *exactly* the declared check list and each has both a `positive/`
+  and `negative/` — so adding a check without a fixture pair (or an orphan fixture)
+  fails the suite. Verified it bites by hiding a negative dir (suite red) and restoring
+  (green).
+- Four shipped checks covered: install-script→secret (AE1/AE2), fork-PR→secret,
+  agent-overprivilege (AE4), provenance-regression (AE3). 9 e2e tests; 98 total.
