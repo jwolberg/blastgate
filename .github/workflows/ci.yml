@@ -9,12 +9,24 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege (Blastgate dogfood): this workflow only checks out, builds, and
+# tests — it needs no write scopes and holds no secrets. Declaring `contents: read`
+# at the top level sets every other GITHUB_TOKEN scope to `none`, so even if the
+# repo/org default is read-write, this job can't be. A fork `pull_request` already
+# runs with a read-only token and no secrets; this makes that guarantee explicit.
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # PR code runs in the build/test steps below; don't leave the token in
+          # .git/config where an untrusted step could reuse it.
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
