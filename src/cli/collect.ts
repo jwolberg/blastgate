@@ -10,6 +10,7 @@
 import { AGENT_INSTRUCTION_PATHS, type AgentDiffInputs } from '../analyzers/agent/config-diff';
 import type { DependencyInputs } from '../analyzers/deps/index';
 import { GATE_CONFIG_PATHS } from '../analyzers/integrity/self-integrity';
+import { PYTHON_INSTALL_MANIFESTS } from '../analyzers/pydeps/index';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
 import type { EngineInputs } from '../engine/build';
@@ -99,6 +100,19 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
       deps.baseNpmrc = fs.gitShow(opts.base, '.npmrc');
     }
     inputs.deps = deps;
+  }
+
+  // 0028: Python install-time execution (setup.py). Head+base per manifest when a base
+  // ref is set, so a fork PR that adds/changes install-time code is attacker-controllable.
+  if (opts.base && fs.gitShow) {
+    const manifests = PYTHON_INSTALL_MANIFESTS.map((path) => ({
+      path,
+      head: fs.read(path),
+      base: fs.gitShow!(opts.base!, path),
+    }));
+    if (manifests.some((m) => m.head !== null)) {
+      inputs.pydeps = { manifests };
+    }
   }
 
   const workflows = fs

@@ -153,6 +153,16 @@ const CHECKS: CheckSpec[] = [
       expect(f!.tier).toBe('warn');
     },
   },
+  {
+    name: 'python-install-secret',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.pathNodeIds.includes('dep:python:setup.py'));
+      expect(f, 'a Python install-time → secret finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.labels).toContain('ASI04:2026');
+    },
+  },
 ];
 
 describe('engine e2e over fixture repos (R13)', () => {

@@ -1,0 +1,9 @@
+on:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pip install .
+        env:
+          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
