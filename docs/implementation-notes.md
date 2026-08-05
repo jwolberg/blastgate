@@ -298,3 +298,19 @@ Running log of decisions, deviations, and tradeoffs for human review.
   names match what the engine actually emits (ASI01/ASI03/ASI04, MCP02/MCP04/MCP10).
 - README gained a short Positioning section linking the doc. No code changed — the
   98-test gate is unaffected (documentation deliverable, `Test expectation: none`).
+
+## 2026-08-05 — Scan scope is gitignore-aware (ticket 0016, dogfood fix)
+
+- **Found by dogfooding on Blastgate's own repo:** `blastgate .` warned on a
+  `type: command` hook in `.claude/settings.json`, but that file is gitignored (local
+  harness config, never committed). Blastgate reasons about the repo's *shipped*
+  surface (KD6), so a gitignored path must not produce a finding.
+- **Fix:** `nodeRepoFs` is now gitignore-aware — `read()` and `listWorkflows()` drop
+  any path `git check-ignore` matches (memoized per path). An untracked-but-**not**-
+  ignored file (an in-flight change a hook fires on) is still scanned; a non-git target
+  falls back to reading the working tree unfiltered. The filter lives in the Node
+  adapter only, so the pure collector and in-memory tests are untouched.
+- **Verified:** a temp-git-repo test asserts a gitignored `.claude/settings.json`
+  command hook scans clean (pass) while a tracked one still warns, plus the non-git
+  fallback. Re-ran the self-scan → clean **PASS**. This closes the first
+  false-positive class found in real use (R14 precision on real repos).
