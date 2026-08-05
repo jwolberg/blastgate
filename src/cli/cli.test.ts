@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Finding } from '../findings/finding';
 import type { RepoFs } from './collect';
 import { hookOutput } from './gate';
-import { renderJson, renderText, scanExitCode } from './render';
+import { renderJson, renderMarkdown, renderText, scanExitCode } from './render';
+import type { GateResult } from '../engine/gate';
 import { runCli } from './index';
 
 /** package-lock.json head that adds `evil-pkg@1.0.0` with a lifecycle script. */
@@ -142,12 +143,117 @@ describe('blastgate scan (runCli default)', () => {
     expect(parsed.length).toBeGreaterThan(0);
     expect(parsed.every((f: Finding) => f.sink && f.path && f.remediation)).toBe(true);
   });
+
+  it('--format md emits a human-readable markdown report (not JSON), exits non-zero on fail', async () => {
+    const { code, out } = await invoke(['.', '--base', 'HEAD', '--format', 'md'], failingFs());
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/^#/m); // markdown headings
+    expect(out).toMatch(/where this runs/i);
+    expect(out).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(() => JSON.parse(out)).toThrow(); // it is a report, not the JSON array
+  });
+
+  it('--md is an alias for --format md', async () => {
+    const { out } = await invoke(['.', '--base', 'HEAD', '--md'], failingFs());
+    expect(out).toMatch(/^#/m);
+    expect(out).toContain('AWS_SECRET_ACCESS_KEY');
+  });
+
+  it('--format markdown is accepted as well as md', async () => {
+    const { out } = await invoke(['.', '--base', 'HEAD', '--format', 'markdown'], cleanFs());
+    expect(out.toUpperCase()).toContain('PASS');
+    expect(out).toMatch(/^#/m);
+  });
 });
 
 describe('renderJson', () => {
   it('produces valid JSON of the findings array', () => {
     const json = renderJson({ verdict: 'pass', findings: [], diagnostics: [] });
     expect(JSON.parse(json)).toEqual([]);
+  });
+});
+
+/** A reachable-secret finding for the markdown-report tests (AE1 install-script shape). */
+function secretFinding(overrides: Partial<Finding> = {}): Finding {
+  return {
+    id: 'entry:new-dep:evil-pkg=>sink:secret:AWS_SECRET_ACCESS_KEY',
+    tier: 'fail',
+    score: 311,
+    path: [
+      'added dependency evil-pkg@1.0.0',
+      'evil-pkg@1.0.0',
+      'ci.yml#test',
+      'AWS_SECRET_ACCESS_KEY',
+    ],
+    pathNodeIds: ['entry:new-dep:evil-pkg', 'dep:evil-pkg@1.0.0', 'job:ci.yml#test', 'sink:secret'],
+    hops: 3,
+    entry: { kind: 'new-dependency', label: 'added dependency evil-pkg@1.0.0' },
+    sink: { kind: 'credential', identity: 'AWS_SECRET_ACCESS_KEY' },
+    reason: 'install script executes in a fork job holding the secret',
+    remediation: 'gate lifecycle scripts (npm ci --ignore-scripts)',
+    owasp: { agentic: 'ASI04', mcp: 'MCP04' },
+    labels: ['ASI04:2026', 'MCP04:2025'],
+    ...overrides,
+  };
+}
+
+describe('renderMarkdown (--format md report)', () => {
+  it('renders a fail run: verdict badge, workflow guidance, the path, why, fix, and labels', () => {
+    const result: GateResult = { verdict: 'fail', findings: [secretFinding()], diagnostics: [] };
+    const md = renderMarkdown(result);
+    expect(md).toContain('Blastgate');
+    expect(md).toContain('FAIL');
+    // "Where this runs" workflow guidance is embedded in the report (U9 / in-output guidance).
+    expect(md).toMatch(/where this runs/i);
+    // The full attacker→sink path is shown with arrows.
+    expect(md).toContain('→');
+    expect(md).toContain('evil-pkg@1.0.0');
+    expect(md).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(md).toContain('install script executes');
+    expect(md).toContain('gate lifecycle scripts');
+    expect(md).toContain('ASI04:2026');
+    // It is markdown, not the plain-text renderer.
+    expect(md).toMatch(/^#/m);
+  });
+
+  it('renders a clean pass run with guidance and no scary FAIL badge', () => {
+    const md = renderMarkdown({ verdict: 'pass', findings: [], diagnostics: [] });
+    expect(md.toUpperCase()).toContain('PASS');
+    expect(md).toMatch(/where this runs/i);
+    // A clean report must not read like a failure.
+    expect(md).not.toContain('blocks the gate');
+    expect(md).not.toContain('❌');
+  });
+
+  it('labels a warn run as WARN, not FAIL', () => {
+    const warn = secretFinding({
+      tier: 'warn',
+      sink: { kind: 'privileged-capability', identity: 'filesystem:/' },
+      labels: ['ASI01:2026'],
+    });
+    const md = renderMarkdown({ verdict: 'warn', findings: [warn], diagnostics: [] });
+    expect(md).toContain('WARN');
+    expect(md).not.toMatch(/—.*FAIL/);
+  });
+
+  it('shows an acknowledged finding with its accepted reason', () => {
+    const ack = secretFinding({
+      tier: 'warn',
+      acknowledged: 'reviewed 2026-08-05 — scoped, accepted by @you',
+    });
+    const md = renderMarkdown({ verdict: 'warn', findings: [ack], diagnostics: [] });
+    expect(md).toContain('reviewed 2026-08-05');
+  });
+
+  it('marks an unknown (un-evaluable) run as blocking, not a pass', () => {
+    const md = renderMarkdown({
+      verdict: 'unknown',
+      findings: [],
+      diagnostics: [{ level: 'error', message: 'could not parse package-lock.json' }],
+    });
+    expect(md).toContain('UNKNOWN');
+    expect(md).toMatch(/block/i);
+    expect(md).toContain('could not parse package-lock.json');
   });
 });
 

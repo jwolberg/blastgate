@@ -364,3 +364,33 @@ Running log of decisions, deviations, and tradeoffs for human review.
 - **Verified:** typecheck + eslint clean, 110/110 tests pass (updated agent/label/scan-scope
   tests assert the new entry kind, labels, and 2-node path; the injectable-MCP e2e + AE4 tests
   are untouched and still green). Re-ran the original CLI command → reframed WARN, exit 0.
+
+## 2026-08-05 — Human-readable markdown report + workflow-fit guidance (--format md)
+
+- **Why.** The tool was functional across all surfaces but the only output was
+  terminal text + a JSON array, and nothing in the output told a user *where
+  Blastgate belongs in their workflow*. Both gaps were UX, not engine.
+- **Decision: one canonical markdown renderer, reused by every surface.** New
+  `renderMarkdown()` in `src/cli/render.ts` is the single human-readable report —
+  verdict headline, a shared `WORKFLOW_GUIDANCE` "where this runs" banner
+  (local hook → CI PR gate → pre-merge) + gate policy, one section per finding
+  (attacker→sink path, why, fix, sink, OWASP labels), and verdict-tailored next
+  steps. `renderText()` gained the same one-line workflow footer.
+- **Parity over a second format.** Rather than add a CLI-only report and leave the
+  Action's bespoke `summaryTable()`, the Action's job summary now calls
+  `renderMarkdown()` too — deleting `summaryTable`/`cell`. So the PR job summary and
+  `blastgate --format md` are literally the same report (KTD10/R7); they cannot
+  drift. The parity test's old `toContain('|')` (table) assertion was updated to the
+  report shape (header + banner + sink + label).
+- **CLI surface.** `--format text|json|md` with `--md`/`--json` shorthands
+  (`outputFormat()` picks the renderer; json wins over md if both given). Chose `md`
+  over `html` per the user — markdown renders natively in PR comments/job summaries
+  and reads fine in a pager, no asset-embedding needed.
+- **Docs pass.** README "Usage" gained a "Where it fits in your workflow" section and
+  the `--format md` example; the adopt-blastgate runbook frames the local→PR→merge
+  order and the report. (README also carried a pre-existing, unrelated intro rewrite
+  in the working tree at the time of this change.)
+- **Verified.** typecheck + eslint + prettier clean; full suite **197 passing**
+  (was 189; +8 renderer/CLI tests). Ran the built CLI on the fork-pr-secret (FAIL,
+  exit 1), agent-overprivilege (WARN, exit 0), and self (PASS, exit 0) — report and
+  exit codes correct.

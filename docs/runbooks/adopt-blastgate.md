@@ -9,16 +9,23 @@ Blastgate fails **only** on a reachable path to a secret/credential sink; it war
 (does not fail) on lower-severity capability paths. Fixing the path is always
 preferred over accepting it.
 
+Blastgate runs at three points in a change's life — **local hook → CI PR gate →
+pre-merge review** — all off the same engine. This runbook turns each on in that
+order, then covers responding to a finding.
+
 ## [1] Try it locally first
 
 ```bash
 npx blastgate .                 # whole-repo scan; exit non-zero = a fail verdict
 npx blastgate . --base main     # add change signals (new deps, .npmrc) vs a ref
 npx blastgate . --json          # machine-readable findings (has the finding `id`)
+npx blastgate . --format md     # human-readable report (the same one CI posts on the PR)
 ```
 
 A clean repo prints a PASS line and exits 0. Run it against a branch that adds a
-dependency or edits a workflow to see change signals light up (`--base`).
+dependency or edits a workflow to see change signals light up (`--base`). Use
+`--format md` when you want a shareable report (`> blastgate-report.md`) rather than
+terminal output.
 
 ## [2] Enable the CI/PR gate (the Action)
 
@@ -39,7 +46,9 @@ jobs:
 
 `fetch-depth: 0` matters — without the base ref, new-dependency / changed-config
 signals do not appear. The Action defaults its diff base to the PR base ref, fails
-the check on a reachable path, and posts annotations + a job-summary table.
+the check on a reachable path, and posts per-finding annotations plus the full
+markdown report (the same output as `blastgate --format md`) as the job summary a
+reviewer reads at merge time.
 
 ## [3] Enable the agent-loop gate (the plugin)
 

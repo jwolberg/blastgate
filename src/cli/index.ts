@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { analyzeProvenance } from '../analyzers/deps/provenance';
 import { type EngineInputs } from '../engine/build';
-import { runEngine } from '../engine/gate';
+import { runEngine, type GateResult } from '../engine/gate';
 import { VERSION } from '../index';
 import { runStdioServer } from '../mcp/server';
 import { cachedFetcher, httpSource } from '../registry/packument';
@@ -24,7 +24,7 @@ import { collectInputs, type RepoFs } from './collect';
 import { bypassOutput, hookOutput } from './gate';
 import { nodeRepoFs } from './node-fs';
 import { classifyShellCommand } from './shell-guard';
-import { renderJson, renderText, scanExitCode } from './render';
+import { renderJson, renderMarkdown, renderText, scanExitCode } from './render';
 
 /** The injected environment `runCli` runs against (real I/O lives only in the bin). */
 export interface CliEnv {
@@ -46,8 +46,30 @@ function flagValue(argv: string[], name: string): string | undefined {
   return i !== -1 ? argv[i + 1] : undefined;
 }
 
-function wantsJson(argv: string[]): boolean {
-  return argv.includes('--json') || flagValue(argv, '--format') === 'json';
+type OutputFormat = 'text' | 'json' | 'markdown';
+
+/** Pick the output renderer from flags. `--json`/`--md` are shorthands for `--format`. */
+function outputFormat(argv: string[]): OutputFormat {
+  const fmt = flagValue(argv, '--format');
+  if (argv.includes('--json') || fmt === 'json') {
+    return 'json';
+  }
+  if (argv.includes('--md') || fmt === 'md' || fmt === 'markdown') {
+    return 'markdown';
+  }
+  return 'text';
+}
+
+/** Render a gate result in the format the flags asked for (text is the default). */
+function renderResult(result: GateResult, argv: string[]): string {
+  switch (outputFormat(argv)) {
+    case 'json':
+      return renderJson(result);
+    case 'markdown':
+      return renderMarkdown(result);
+    default:
+      return renderText(result);
+  }
 }
 
 function usage(): string {
@@ -60,10 +82,11 @@ function usage(): string {
     '  blastgate mcp                              stdio MCP self-check server',
     '',
     'Flags:',
-    '  --base <ref>    diff against a git ref for change signals (new deps, .npmrc changes)',
-    '  --json          emit the findings array as JSON',
-    '  --provenance    opt-in npm provenance-regression check (network; needs --base)',
-    '  --version       print version',
+    '  --base <ref>       diff against a git ref for change signals (new deps, .npmrc changes)',
+    '  --format <fmt>     output format: text (default), json, or md (human-readable report)',
+    '  --json / --md      shorthands for --format json / --format md',
+    '  --provenance       opt-in npm provenance-regression check (network; needs --base)',
+    '  --version          print version',
     '',
   ].join('\n');
 }
@@ -98,7 +121,7 @@ async function scanMode(argv: string[], env: CliEnv): Promise<number> {
   const inputs = collectInputs(env.fs, base !== undefined ? { base } : {});
   inputs.provenance = await provenanceResult(argv, env, base);
   const result = runEngine(inputs);
-  env.stdout(wantsJson(argv) ? renderJson(result) : renderText(result));
+  env.stdout(renderResult(result, argv));
   return scanExitCode(result);
 }
 
@@ -148,7 +171,7 @@ async function checkMode(argv: string[], env: CliEnv): Promise<number> {
 
   if (phase === undefined) {
     // `check` with no --gate is the slash-command scan surface.
-    env.stdout(wantsJson(argv) ? renderJson(result) : renderText(result));
+    env.stdout(renderResult(result, argv));
     return scanExitCode(result);
   }
 
