@@ -80,16 +80,29 @@ describe('analyzeAgents — settings permissions', () => {
     expect(net.filter((n) => n.kind === 'agent-grant' && !n.exceedsBaseline)).toHaveLength(1);
   });
 
-  it('treats a committed command hook as a shell grant even without a Bash rule', () => {
+  it('treats a committed command hook as a deterministic privileged capability, not an injectable surface (U18)', () => {
     const settings = JSON.stringify({
       hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: './x.sh' }] }] },
     });
     const r = analyzeAgents({ claudeSettings: settings });
+    // still recorded as an over-baseline shell grant
     expect(
       r.nodes.some(
         (n) => n.kind === 'agent-grant' && n.capabilityClass === 'shell' && n.exceedsBaseline,
       ),
     ).toBe(true);
+    // but the entry is a privileged-hook — NOT a prompt-injectable agent surface
+    const entry = r.nodes.find((n) => n.kind === 'entry');
+    expect(entry && entry.kind === 'entry' && entry.entryKind).toBe('privileged-hook');
+    expect(
+      r.nodes.some((n) => n.kind === 'entry' && n.entryKind === 'injectable-agent-surface'),
+    ).toBe(false);
+    // clean two-node path label; no injected middleman → a `reaches` edge, never `injects`
+    expect(entry && entry.kind === 'entry' && entry.label).toBe(
+      '.claude/settings.json (committed hook)',
+    );
+    expect(r.edges.some((e) => e.edge.kind === 'reaches')).toBe(true);
+    expect(r.edges.some((e) => e.edge.kind === 'injects')).toBe(false);
   });
 });
 

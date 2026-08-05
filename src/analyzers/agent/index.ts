@@ -53,6 +53,11 @@ function parseSettings(json: string, result: AnalyzerResult): Grant[] {
         capabilityClass: 'shell',
         scope: 'command hook',
         exceedsBaseline: true,
+        // Deterministic: a hook fires on an event, not because an injected prompt steered
+        // the agent into it — so it is a privileged capability to review, not an injectable
+        // surface (U18). The ` (hook)` source suffix keeps its entry id distinct from a
+        // permission-rule shell grant on the same file.
+        injectable: false,
       });
     }
     return grants;
@@ -81,20 +86,38 @@ function emitGrant(result: AnalyzerResult, grant: Grant, index: number): void {
   const entryId = `entry:agent:${grant.source}`;
   const sinkId = `sink:capability:${grant.capabilityClass}:${grant.scope}`;
   result.nodes.push({
-    id: entryId,
-    kind: 'entry',
-    entryKind: 'injectable-agent-surface',
-    exposure: 2,
-    label: `injectable agent surface (${grant.source})`,
-  });
-  result.nodes.push({
     id: sinkId,
     kind: 'sink',
     sinkKind: 'privileged-capability',
     identity: `${grant.capabilityClass}:${grant.scope}`,
   });
-  result.edges.push({ from: entryId, to: grantId, edge: { kind: 'injects' } });
-  result.edges.push({ from: grantId, to: sinkId, edge: { kind: 'reaches' } });
+
+  if (grant.injectable === false) {
+    // A committed `type: command` hook fires deterministically — not via a prompt the agent
+    // can be injected into. Model it as a standing privileged capability reaching the sink
+    // directly (no injection middleman): the finding reads as a scope-review advisory, not a
+    // manufactured attacker→sink chain, and its rendered path is the clean two-node
+    // `<location> (committed hook) → <capability>` instead of a triple-restated one (U18).
+    const location = grant.source.replace(/ \(hook\)$/, '');
+    result.nodes.push({
+      id: entryId,
+      kind: 'entry',
+      entryKind: 'privileged-hook',
+      exposure: 1,
+      label: `${location} (committed hook)`,
+    });
+    result.edges.push({ from: entryId, to: sinkId, edge: { kind: 'reaches' } });
+  } else {
+    result.nodes.push({
+      id: entryId,
+      kind: 'entry',
+      entryKind: 'injectable-agent-surface',
+      exposure: 2,
+      label: `injectable agent surface (${grant.source})`,
+    });
+    result.edges.push({ from: entryId, to: grantId, edge: { kind: 'injects' } });
+    result.edges.push({ from: grantId, to: sinkId, edge: { kind: 'reaches' } });
+  }
   result.diagnostics.push({
     level: 'warn',
     message: `${grant.source}: ${grant.capabilityClass} grant "${grant.scope}" exceeds the least-privilege baseline (OWASP MCP02)`,

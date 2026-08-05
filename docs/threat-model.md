@@ -72,7 +72,7 @@ entry point to a sensitive sink.*
 | --- | --- | --- |
 | Dependencies / install scripts | a newly added or changed dependency; a provenance regression | — |
 | CI (GitHub Actions) | a job reachable from an untrusted trigger (fork `pull_request`, `pull_request_target`, `workflow_run`, …) | a secret or credential the job holds; an over-broad `GITHUB_TOKEN` |
-| Agent / MCP config | a prompt-injectable agent surface (an over-baseline grant) | a privileged filesystem / network / shell / tool capability |
+| Agent / MCP config | a prompt-injectable agent surface (an over-baseline grant the agent invokes); a committed `type: command` hook is instead a deterministic *standing* capability, not an injectable entry | a privileged filesystem / network / shell / tool capability |
 
 ### [3.2] Edges encode reachability
 
@@ -152,6 +152,7 @@ renumber is a one-line change and no finding ever carries an unversioned categor
 | New / changed dependency, install script (supply chain) | `ASI04:2026` Agentic Supply Chain Vulnerabilities | `MCP04:2025` Software Supply Chain Attacks & Dependency Tampering |
 | Fork-triggerable CI job reaching a secret (pure CI) | `ASI03:2026` Identity & Privilege Abuse | *(none — no MCP-server relevance)* |
 | Prompt-injectable agent surface | `ASI01:2026` Agent Goal Hijack | `MCP10:2025` Context Injection & Over-Sharing |
+| Committed command hook (deterministic, not injectable) | `ASI03:2026` Identity & Privilege Abuse | `MCP02:2025` Privilege Escalation via Scope Creep |
 | Any path through an over-baseline agent grant (scope creep) | `ASI03:2026` (if not already set) | `MCP02:2025` Privilege Escalation via Scope Creep *(takes precedence)* |
 
 Every category Blastgate emits is defined in this table; the full `ASI01–ASI10` and
