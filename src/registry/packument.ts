@@ -56,7 +56,13 @@ export function httpSource(): PackumentSource {
   return {
     async fetch(pkg) {
       try {
-        const res = await fetch(`https://registry.npmjs.org/${pkg.replace(/\//g, '%2F')}`);
+        // `redirect: 'error'` pins the request to the npm registry: a redirect is
+        // treated as a (soft) failure rather than followed, so a misbehaving or
+        // MITM'd host cannot bounce this into an internal target (e.g. cloud
+        // metadata at 169.254.169.254) when the Action runs in CI.
+        const res = await fetch(`https://registry.npmjs.org/${pkg.replace(/\//g, '%2F')}`, {
+          redirect: 'error',
+        });
         if (!res.ok) {
           return null;
         }
