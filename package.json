@@ -32,7 +32,8 @@
     "format:check": "prettier --check \"{src,test}/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "scan": "npm run build && node dist/cli/index.js ."
+    "scan": "npm run build && node dist/cli/index.js .",
+    "release:dry": "bash scripts/release-dry-run.sh"
   },
   "dependencies": {
     "graphology": "^0.26.0",
