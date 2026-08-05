@@ -175,13 +175,21 @@ jobs:
       - uses: jwolberg/blastgate@v0
 ```
 
-## Scope (v1)
+## Scope
 
-npm and GitHub Actions. Other package ecosystems, other CI providers, CVE/known-vuln
-scanning, and analysis of deployed or running targets are out of scope for v1. See
-[`docs/plans/`](docs/plans) for the product plan, [`docs/threat-model.md`](docs/threat-model.md)
-for the model, and [`docs/implementation-notes.md`](docs/implementation-notes.md) for
-recorded decisions.
+**Supported today.** On the dependency side, npm (lifecycle scripts, lockfile diff,
+`.npmrc`) and Python install-time execution (`setup.py`); on the CI side, GitHub Actions;
+plus committed agent/MCP configuration. One engine, one finding shape across all surfaces.
+
+**On the roadmap.** More package ecosystems (RubyGems, a PyPI dependency-diff signal,
+Maven), more CI providers (GitLab CI, CircleCI), and opt-in advisory (CVE) enrichment.
+That last one is deliberately **enrichment, not gating** — Blastgate fails only on a
+reachable path, never because a package is known-bad by name; an advisory only adds
+context and severity to a finding that is *already* a reachable path.
+
+**Out of scope.** Analysis of deployed or running targets. See [`docs/plans/`](docs/plans)
+for the product plan, [`docs/threat-model.md`](docs/threat-model.md) for the model, and
+[`docs/implementation-notes.md`](docs/implementation-notes.md) for recorded decisions.
 
 ## Status
 
