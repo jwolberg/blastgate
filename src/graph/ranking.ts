@@ -20,6 +20,7 @@ const SINK_WEIGHT: Record<SinkKind, number> = {
 const ENTRY_KIND_EXPOSURE: Record<EntryKind, number> = {
   'fork-pr': 3,
   'injectable-agent-surface': 2,
+  'ci-divergent': 2,
   'new-dependency': 1,
 };
 

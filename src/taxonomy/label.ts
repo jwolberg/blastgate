@@ -40,6 +40,12 @@ export function labelPath(path: ReachPath): OwaspLabels {
       agentic = 'ASI01';
       mcp = 'MCP10';
       break;
+    case 'ci-divergent':
+      // Install/build-time execution concealment — supply-chain tradecraft. No
+      // MCP-server relevance (it is a lifecycle script, not an MCP grant).
+      agentic = 'ASI04';
+      mcp = undefined;
+      break;
   }
 
   if (hasOverBaselineGrant) {

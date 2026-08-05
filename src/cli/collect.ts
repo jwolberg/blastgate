@@ -8,8 +8,63 @@
  */
 
 import type { DependencyInputs } from '../analyzers/deps/index';
+import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
 import type { EngineInputs } from '../engine/build';
+
+/** npm lifecycle + build scripts where install-time execution concealment lives (0021). */
+const LIFECYCLE_SCRIPTS = [
+  'preinstall',
+  'install',
+  'postinstall',
+  'prepare',
+  'prepublishOnly',
+  'build',
+];
+
+/** Extract repo-local file paths a script command invokes (`node scripts/x.js`, `bash ./y.sh`). */
+function referencedLocalFiles(cmd: string): string[] {
+  const files = new Set<string>();
+  const re = /(?:^|[\s'"=(])(\.{0,2}\/?[\w.\-/]+\.(?:js|cjs|mjs|ts|sh|py))\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    files.add(m[1]!.replace(/^\.\//, ''));
+  }
+  return [...files];
+}
+
+/**
+ * Gather the repo's OWN install/build lifecycle scripts (and the local files they
+ * invoke) as sources to scan for CI-divergent execution (0021). A malformed
+ * package.json yields no exec inputs; the deps analyzer surfaces the parse error.
+ */
+function collectExec(fs: RepoFs): ExecInputs | undefined {
+  const raw = fs.read('package.json');
+  if (raw === null) {
+    return undefined;
+  }
+  let scripts: Record<string, unknown> = {};
+  try {
+    scripts = (JSON.parse(raw) as { scripts?: Record<string, unknown> }).scripts ?? {};
+  } catch {
+    return undefined;
+  }
+  const out: ExecScript[] = [];
+  for (const name of LIFECYCLE_SCRIPTS) {
+    const cmd = scripts[name];
+    if (typeof cmd !== 'string') {
+      continue;
+    }
+    out.push({ name, source: cmd });
+    for (const rel of referencedLocalFiles(cmd)) {
+      const content = fs.read(rel);
+      if (content !== null) {
+        out.push({ name: `${name} → ${rel}`, source: content });
+      }
+    }
+  }
+  return out.length > 0 ? { scripts: out } : undefined;
+}
 
 /** Filesystem port: relative paths from the repo root; `read` returns null if absent. */
 export interface RepoFs {
@@ -61,6 +116,11 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
       claudeSettings: claudeSettings ?? undefined,
       cursorMcpJson: cursorMcpJson ?? undefined,
     };
+  }
+
+  const exec = collectExec(fs);
+  if (exec) {
+    inputs.exec = exec;
   }
 
   const acknowledged = parseAcknowledgements(fs.read('.blastgate/acknowledged.json'));

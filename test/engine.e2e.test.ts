@@ -114,6 +114,17 @@ const CHECKS: CheckSpec[] = [
       expect(f!.tier).toBe('fail');
     },
   },
+  {
+    name: 'ci-divergent-install',
+    positiveVerdict: 'warn',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.entry.kind === 'ci-divergent');
+      expect(f, 'a ci-divergent finding').toBeDefined();
+      expect(f!.tier).toBe('warn');
+      expect(f!.sink.kind).toBe('privileged-capability');
+      expect(f!.labels).toContain('ASI04:2026');
+    },
+  },
 ];
 
 describe('engine e2e over fixture repos (R13)', () => {

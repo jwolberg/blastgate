@@ -7,7 +7,7 @@
 export type NodeKind = 'entry' | 'dependency' | 'ci-job' | 'agent-grant' | 'sink';
 
 /** How an attacker-controllable entry point is reachable. */
-export type EntryKind = 'new-dependency' | 'fork-pr' | 'injectable-agent-surface';
+export type EntryKind = 'new-dependency' | 'fork-pr' | 'injectable-agent-surface' | 'ci-divergent';
 
 /** A sensitive thing a reachable path can arrive at. */
 export type SinkKind = 'secret' | 'credential' | 'privileged-capability';
