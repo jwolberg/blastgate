@@ -457,3 +457,24 @@ Running log of decisions, deviations, and tradeoffs for human review.
   still parse; guard expression checked (`v0.0.0-test`/`v0.1.0-rc.1` → skip only
   on `-test`). The dry run itself is **not** executed here — it pushes tags to the
   live repo, which is the human's call.
+
+## 2026-08-05 — Queue: required-check enforcement + multi-repo rollout (0030)
+
+- **Why.** The self-gate reports but doesn't block, and adopting Blastgate in
+  other repos was undocumented. Prepared both as runnable tooling (not applied —
+  they change live GitHub settings / other repos, and the rollout needs the Action
+  published first).
+- **Required check.** `scripts/require-checks.sh` sets `main` branch protection to
+  require `quality` + `self-scan` (JSON body via `gh api --input`, `enforce_admins
+  false`, `REVIEWS` env for solo maintainers), matching the branch-protection
+  runbook — which was updated to list `self-scan` alongside `quality`.
+- **Rollout.** `.github/workflows/blastgate-reusable.yml` (a `workflow_call` recipe
+  wrapping `uses: jwolberg/blastgate@v0`) lets other repos adopt with a one-line
+  caller; `scripts/rollout-blastgate.sh` opens that PR across repos (idempotent,
+  never merges). `docs/runbooks/rollout.md` covers the personal-account path, the
+  org-ruleset path (one ruleset, zero per-repo files), required-check, and the
+  global plugin layer.
+- **Blocked on release.** The reusable workflow and rollout reference
+  `jwolberg/blastgate@v0`, so they only work after the first published release.
+- **Verified.** `bash -n` clean on both scripts; both workflow YAMLs parse.
+  Neither script is executed here (live GitHub side effects).

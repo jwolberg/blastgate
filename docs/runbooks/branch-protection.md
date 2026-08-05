@@ -15,7 +15,8 @@ Settings → Branches → add a ruleset / protection rule for `main`:
 
 - [ ] Require a pull request before merging (≥ 1 approval)
 - [ ] Require review from **Code Owners** (pairs with a `.github/CODEOWNERS`)
-- [ ] Require status checks to pass — select the CI `quality` job
+- [ ] Require status checks to pass — the CI `quality` job **and** the Blastgate
+  `self-scan` job (so a reachable-path finding blocks merge)
 - [ ] Require branches to be up to date before merging
 - [ ] Block force pushes
 - [ ] Restrict deletions
@@ -28,7 +29,7 @@ flags do **not** build the nested objects this endpoint needs; they fail with a 
 ```bash
 gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input - <<'JSON'
 {
-  "required_status_checks": { "strict": true, "checks": [{ "context": "quality" }] },
+  "required_status_checks": { "strict": true, "checks": [{ "context": "quality" }, { "context": "self-scan" }] },
   "required_pull_request_reviews": {
     "required_approving_review_count": 1,
     "require_code_owner_reviews": true
@@ -41,7 +42,9 @@ gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input - <<'JSON'
 JSON
 ```
 
-Verify with `gh api repos/<owner>/<repo>/branches/main/protection`.
+Verify with `gh api repos/<owner>/<repo>/branches/main/protection`. Or run
+[`scripts/require-checks.sh`](../../scripts/require-checks.sh) (`REVIEWS=0` while
+solo), which applies exactly this for the current repo with both required checks.
 
 ### [1.1] `enforce_admins` and solo maintainers
 

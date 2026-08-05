@@ -1,0 +1,27 @@
+# Reusable Blastgate gate. Other repos call this so their own workflow is one
+# line and the recipe (checkout depth, diff base, engine version) lives here and
+# is upgraded in one place. Requires the Blastgate Action to be published
+# (`uses: jwolberg/blastgate@v0`). See docs/runbooks/rollout.md.
+name: Blastgate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: Diff base ref for change signals (defaults to the PR base).
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # base ref must be available for change signals
+      - uses: jwolberg/blastgate@v0
+        with:
+          base: ${{ inputs.base || github.base_ref }}
