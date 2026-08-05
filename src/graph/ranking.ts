@@ -24,6 +24,8 @@ const SINK_WEIGHT: Record<SinkKind, number> = {
 const ENTRY_KIND_EXPOSURE: Record<EntryKind, number> = {
   // Untrusted public text (issue/PR body) reaching an agent is the most exposed entry.
   'untrusted-text-injection': 3,
+  // Agent instructions introduced by an untrusted diff — a prompt injection at review time.
+  'agent-config-change': 3,
   'fork-pr': 3,
   'injectable-agent-surface': 2,
   'ci-divergent': 2,

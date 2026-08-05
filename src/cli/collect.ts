@@ -7,6 +7,7 @@
  * Node fs/git adapter.
  */
 
+import { AGENT_INSTRUCTION_PATHS, type AgentDiffInputs } from '../analyzers/agent/config-diff';
 import type { DependencyInputs } from '../analyzers/deps/index';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
@@ -121,6 +122,20 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
   const exec = collectExec(fs);
   if (exec) {
     inputs.exec = exec;
+  }
+
+  // 0023: agent instruction files introduced/changed by the diff (needs a base ref;
+  // a repo's own committed CLAUDE.md is not a finding). Head+base per watched path.
+  if (opts.base && fs.gitShow) {
+    const files = AGENT_INSTRUCTION_PATHS.map((path) => ({
+      path,
+      head: fs.read(path),
+      base: fs.gitShow!(opts.base!, path),
+    }));
+    const agentDiff: AgentDiffInputs = { files };
+    if (files.some((f) => f.head !== null)) {
+      inputs.agentDiff = agentDiff;
+    }
   }
 
   const acknowledged = parseAcknowledgements(fs.read('.blastgate/acknowledged.json'));
