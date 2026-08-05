@@ -30,7 +30,12 @@ export interface CliEnv {
   stderr: (s: string) => void;
 }
 
-const VALUE_FLAGS = new Set(['--base', '--gate', '--format']);
+const VALUE_FLAGS = new Set(['--base', '--since', '--gate', '--format']);
+
+/** `--base <ref>`, or its `/blastgate` slash-command alias `--since <ref>`. */
+function baseRef(argv: string[]): string | undefined {
+  return flagValue(argv, '--base') ?? flagValue(argv, '--since');
+}
 
 function flagValue(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -65,7 +70,7 @@ function scanMode(argv: string[], env: CliEnv): number {
       'blastgate: --provenance is not available yet (U8, network-gated); running offline.\n',
     );
   }
-  const base = flagValue(argv, '--base');
+  const base = baseRef(argv);
   const inputs = collectInputs(env.fs, base !== undefined ? { base } : {});
   const result = runEngine(inputs);
   env.stdout(wantsJson(argv) ? renderJson(result) : renderText(result));
@@ -86,7 +91,7 @@ async function checkMode(argv: string[], env: CliEnv): Promise<number> {
   }
   // A hook fires on an in-flight change, so diff the working tree against HEAD to
   // light up new-dependency / changed-config signals (KTD5).
-  const base = flagValue(argv, '--base') ?? 'HEAD';
+  const base = baseRef(argv) ?? 'HEAD';
   const result = runEngine(collectInputs(env.fs, { base }));
 
   if (phase === undefined) {

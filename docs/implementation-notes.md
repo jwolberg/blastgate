@@ -200,3 +200,33 @@ Running log of decisions, deviations, and tradeoffs for human review.
   streams, so `main()` intercepts `mcp` before the pure `runCli` dispatch; `runCli`
   keeps a harmless fallback note for a direct `mcp` call. Unblocks U14 (the plugin's
   MCP surface).
+
+## 2026-08-05 — Claude Code plugin (U14): wired to the real engine + override
+
+- **`plugin/bin/blastgate` is now a real shim, not a stub.** It resolves the engine
+  CLI (the co-located `../../dist/cli/index.js` when developing in this repo, else
+  `npx -y blastgate`) and forwards argv/stdin/stdout/stderr/exit-code straight
+  through — re-implementing nothing (KTD10). Dropped the fake `BLASTGATE_DEMO_DENY`
+  path and the stub MCP server (the real U13 server replaces it). Smoke-verified end
+  to end via the actual bin over a git fixture: PreToolUse `deny` (AE5), PostToolUse
+  `block` (npm install), clean → allow, and `/blastgate` (`check --since HEAD`).
+- **CommonJS island:** the repo root is `"type":"module"`, which made Node parse the
+  extensionless CJS bin as ESM (`require is not defined`). Added `plugin/package.json`
+  `{"type":"commonjs"}` so the plugin subtree is CJS both in-repo and when installed
+  standalone (Node resolves the nearest package.json). `claude plugin validate ./plugin
+  --strict` still passes.
+- **Acknowledged-finding override (engine, honored by all surfaces).** A committed
+  `.blastgate/acknowledged.json` (`{acknowledged:[{id,reason}]}`) downgrades a matching
+  **fail → warn** (recording the reason on the `Finding`), so the gate stops failing
+  but the finding is still reported — never silently dropped. Implemented in the engine
+  gate (`applyAcknowledgements` in `runEngine`) and read by `collectInputs`, so the CLI,
+  Action, MCP tool, and plugin hook all honor it identically. Finding `id`
+  (`<entry.id>=><sink.id>`) is the stable key. **No env kill switch** — the only way
+  past a fail is to add its id to a file that shows in the diff/git history (the plan's
+  "auditable override, not an all-or-nothing switch" lean). Expiry/`by` fields are a
+  future enhancement.
+- **`--since` alias:** the `/blastgate` SKILL calls `check --since <ref>`; wired
+  `--since` as an alias for `--base`.
+- **Self-scan clean:** a test runs the engine over Blastgate's own committed
+  `plugin/.mcp.json` (a `${CLAUDE_PROJECT_DIR}`-scoped `blastgate mcp` tool server) and
+  asserts no finding — the plugin never flags itself on install (U6 baseline).

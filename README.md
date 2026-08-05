@@ -102,9 +102,14 @@ for recorded decisions.
 
 ## Status
 
-Early development. The reachability engine, the local CLI (`blastgate`), and the
-GitHub Action share one implementation and are working. The Claude Code plugin
-(`plugin/bin/blastgate`) is still a pass-by-default stub, not yet wired to the engine.
+Early development, but functional across all surfaces. The reachability engine, the
+local CLI (`blastgate`), the GitHub Action, the Claude Code plugin hooks, and the
+`blastgate_check_change` MCP self-check all share one engine implementation. A
+reachable secret/credential path fails the gate; a human can accept a specific finding
+by id in a committed `.blastgate/acknowledged.json` (an auditable override that
+downgrades it to a reported warning — never a silent kill switch). Still to come: the
+opt-in npm provenance-regression check, a fixture-repo test suite, and the
+threat-model document.
 
 ## License
 

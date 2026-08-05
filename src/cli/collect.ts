@@ -8,6 +8,7 @@
  */
 
 import type { DependencyInputs } from '../analyzers/deps/index';
+import { parseAcknowledgements } from '../engine/acknowledge';
 import type { EngineInputs } from '../engine/build';
 
 /** Filesystem port: relative paths from the repo root; `read` returns null if absent. */
@@ -60,6 +61,11 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
       claudeSettings: claudeSettings ?? undefined,
       cursorMcpJson: cursorMcpJson ?? undefined,
     };
+  }
+
+  const acknowledged = parseAcknowledgements(fs.read('.blastgate/acknowledged.json'));
+  if (acknowledged.length > 0) {
+    inputs.acknowledged = acknowledged;
   }
 
   return inputs;

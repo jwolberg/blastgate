@@ -16,12 +16,15 @@ import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/in
 import { applyResult, type Diagnostic } from '../analyzers/types';
 import { AttackGraph } from '../graph/graph';
 import type { CiJobNode, DependencyNode } from '../graph/types';
+import type { Acknowledgement } from './acknowledge';
 
 /** Per-layer inputs; an omitted layer is simply not analyzed. */
 export interface EngineInputs {
   deps?: DependencyInputs;
   ci?: CiInputs;
   agent?: AgentInputs;
+  /** Human-accepted findings (`.blastgate/acknowledged.json`); downgrades fail→warn (U14). */
+  acknowledged?: Acknowledgement[];
 }
 
 export interface BuildResult {

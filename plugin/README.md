@@ -46,10 +46,17 @@ dependency.
 
 ## CLI contract
 
-The plugin is a wrapper over two commands provided by `bin/blastgate`, which is
-currently a stub that passes by default (set `BLASTGATE_DEMO_DENY=1` to exercise the
-block path):
+The plugin is a thin wrapper over the shared engine CLI: `bin/blastgate` forwards
+argv, stdin, stdout, and exit code to the real `blastgate` command (the co-located
+build when developing in this repo, otherwise `npx blastgate`) — it re-implements no
+logic, so every surface produces identical findings.
 
-- `blastgate check --gate <phase>` — reads hook JSON on stdin; exits non-zero or
-  emits a deny decision on a reachable path. This is the same engine the CI gate uses.
-- `blastgate mcp` — stdio MCP server exposing `blastgate_check_change`.
+- `blastgate check --gate <phase>` — reads hook JSON on stdin; on a reachable path a
+  PreToolUse phase emits a `permissionDecision: deny` and the `dependency-install`
+  PostToolUse phase emits a `decision: block` (react-only). Same engine as the CI gate.
+- `blastgate mcp` — stdio MCP server exposing `blastgate_check_change` (advisory).
+
+A blocked change proceeds only by acknowledging the specific finding in a committed
+`.blastgate/acknowledged.json` (id + reason) — an auditable, per-finding override that
+downgrades it to a reported warning. There is no environment kill switch that silently
+disables the gate.

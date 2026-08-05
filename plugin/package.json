@@ -1,0 +1,6 @@
+{
+  "name": "blastgate-plugin",
+  "private": true,
+  "type": "commonjs",
+  "description": "Claude Code plugin shell for Blastgate — a CommonJS island so bin/blastgate runs standalone and inside the (ESM) engine repo."
+}
