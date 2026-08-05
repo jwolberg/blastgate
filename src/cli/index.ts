@@ -21,8 +21,9 @@ import { VERSION } from '../index';
 import { runStdioServer } from '../mcp/server';
 import { cachedFetcher, httpSource } from '../registry/packument';
 import { collectInputs, type RepoFs } from './collect';
-import { hookOutput } from './gate';
+import { bypassOutput, hookOutput } from './gate';
 import { nodeRepoFs } from './node-fs';
+import { classifyShellCommand } from './shell-guard';
 import { renderJson, renderText, scanExitCode } from './render';
 
 /** The injected environment `runCli` runs against (real I/O lives only in the bin). */
@@ -103,16 +104,41 @@ async function scanMode(argv: string[], env: CliEnv): Promise<number> {
 
 async function checkMode(argv: string[], env: CliEnv): Promise<number> {
   const phase = flagValue(argv, '--gate');
-  // Hook JSON (tool_input.command / .file_path) is read for scoping; v1 scopes to
-  // the working tree. Parse defensively — slash-command input may not be hook JSON.
+  // Hook JSON (tool_input.command / .file_path) is read for scoping and, for the
+  // shell-guard phases, command classification. Parse defensively — a slash-command
+  // invocation may not be hook JSON.
   const raw = await env.stdin();
+  let hook: { tool_input?: { command?: string } } | undefined;
   if (raw) {
     try {
-      JSON.parse(raw);
+      hook = JSON.parse(raw) as { tool_input?: { command?: string } };
     } catch {
       /* not hook JSON; ignore */
     }
   }
+
+  // Shell-guard phases (0025): inspect the ACTUAL command rather than trust a literal
+  // matcher, so a wrapped/chained commit or a hook-disabling bypass can't route
+  // around the gate. `ignore` → allow fast (no engine run); `bypass` → deny; `gate`
+  // → fall through and run the engine as usual.
+  if (phase === 'shell-pre' || phase === 'shell-post') {
+    const command = hook?.tool_input?.command;
+    const cls = command ? classifyShellCommand(command) : 'ignore';
+    if (cls === 'ignore') {
+      return 0;
+    }
+    if (cls === 'bypass') {
+      const out = bypassOutput(phase, command ?? '');
+      if (out.stdout) {
+        env.stdout(out.stdout);
+      }
+      if (out.stderr) {
+        env.stderr(out.stderr);
+      }
+      return out.exitCode;
+    }
+  }
+
   // A hook fires on an in-flight change, so diff the working tree against HEAD to
   // light up new-dependency / changed-config signals (KTD5).
   const base = baseRef(argv) ?? 'HEAD';

@@ -16,10 +16,40 @@ export const PRE_PHASES = new Set([
   'manifest-edit',
   'workflow-edit',
   'mcp-config-edit',
+  // 0025: a Bash command classified as a commit/push verb (however wrapped).
+  'shell-pre',
 ]);
 
 /** PostToolUse phases — react-only; can block/signal a revert, cannot prevent. */
-export const POST_PHASES = new Set(['dependency-install']);
+export const POST_PHASES = new Set([
+  'dependency-install',
+  // 0025: a Bash command classified as an install verb.
+  'shell-post',
+]);
+
+/**
+ * A gate-bypass attempt (0025): the command disables commit/push verification
+ * (`--no-verify`, `core.hooksPath=…`). A PreToolUse phase DENIES it; a PostToolUse
+ * phase can only warn (react-only). Denying the bypass is the whole point — an
+ * agent that can turn the gate off before doing the blocked thing is the obvious
+ * hole.
+ */
+export function bypassOutput(phase: string, command: string): HookOutput {
+  const reason =
+    `Blastgate: this command disables commit/push verification (gate-bypass attempt) — ` +
+    `"${command}". Run without \`--no-verify\` / \`core.hooksPath\` overrides.`;
+  if (POST_PHASES.has(phase)) {
+    return { stdout: '', stderr: `${reason}\n`, exitCode: 0 };
+  }
+  const payload = {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
+  return { stdout: `${JSON.stringify(payload)}\n`, exitCode: 0 };
+}
 
 export interface HookOutput {
   stdout: string;
