@@ -6,6 +6,13 @@ export interface Grant {
   capabilityClass: CapabilityClass;
   scope: string;
   exceedsBaseline: boolean;
+  /**
+   * False for a deterministic committed capability (a `type: command` hook) that fires
+   * without any agent decision — a standing privileged capability, not a prompt-injectable
+   * agent surface (U18). Absent/true for grants the agent itself invokes, which an injected
+   * prompt can steer. Drives entry framing + taxonomy in `emitGrant`.
+   */
+  injectable?: boolean;
 }
 
 /** Env vars that resolve inside the repo/workspace, vs. ones that escape it. */

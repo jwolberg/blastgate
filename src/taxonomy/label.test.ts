@@ -58,6 +58,12 @@ describe('labelPath', () => {
     expect(labels.agentic).toBe('ASI01');
   });
 
+  it('labels a committed command hook ASI03 / MCP02 — scope creep, not ASI01 goal hijack (U18)', () => {
+    const labels = labelPath(pathThrough('privileged-hook', []));
+    expect(labels.agentic).toBe('ASI03');
+    expect(labels.mcp).toBe('MCP02');
+  });
+
   it('leaves the MCP label unset for a pure CI fork-PR finding (no applicable MCP category)', () => {
     const labels = labelPath(pathThrough('fork-pr', [jobNode]));
     expect(labels.agentic).toBe('ASI03');

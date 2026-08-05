@@ -339,3 +339,28 @@ Running log of decisions, deviations, and tradeoffs for human review.
 - **Follow-up polish (not blocking):** ranking could sort fails above warns of equal
   score; a dedicated U11 fixture pair could be added — the behavior is already covered
   by inline-workflow engine tests.
+
+## 2026-08-04 — Reframe committed command hooks: capability advisory, not injectable path (U18)
+
+- **Dogfood finding.** Scanning `../TerMinal` surfaced a WARN that read as a manufactured
+  attack path: `injectable agent surface (.claude/settings.json (hook)) → .claude/settings.json
+  (hook) (shell:command hook) → shell:command hook`, labelled `ASI01:2026`. A committed
+  `type: command` hook fires **deterministically** on an event — it is never selected by a
+  prompt-injected model — so tagging it an "injectable agent surface" / ASI01 Agent Goal
+  Hijack is a category error. It is a real *privileged capability* worth reviewing, but not
+  an attacker-injectable entry. Foothold's own settings.json (block-main-merge / stop-notify /
+  remote-check hooks) trips the same rule, so the noise was self-inflicted.
+- **Decision (chosen by user): reframe, keep firing.** Still WARN on a tracked command hook,
+  but drop the injection framing. New `EntryKind: 'privileged-hook'` (types.ts); the hook grant
+  is tagged `injectable: false` (capability.ts) and `emitGrant` wires `entry --reaches--> sink`
+  **directly** (no injected-grant middleman), so the rendered path is the clean two-node
+  `.claude/settings.json (committed hook) → shell:command hook` instead of a triple-restated
+  chain. Only the command hook is affected — permission-rule shell grants (`Bash(*)`) and
+  over-baseline MCP servers stay `injectable-agent-surface` / ASI01, since the agent *does*
+  invoke those and an injected prompt can steer them.
+- **Taxonomy:** `privileged-hook → ASI03` (Identity & Privilege Abuse) + `MCP02` (Privilege
+  Escalation via Scope Creep); **no ASI01**. Ranks below a genuine injectable capability
+  (entry exposure 1 vs 2). Reason/remediation reworded as a scope-review advisory.
+- **Verified:** typecheck + eslint clean, 110/110 tests pass (updated agent/label/scan-scope
+  tests assert the new entry kind, labels, and 2-node path; the injectable-MCP e2e + AE4 tests
+  are untouched and still green). Re-ran the original CLI command → reframed WARN, exit 0.
