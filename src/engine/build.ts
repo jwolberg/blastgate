@@ -13,6 +13,7 @@
 import { analyzeAgentDiff, type AgentDiffInputs } from '../analyzers/agent/config-diff';
 import { analyzeAgents, type AgentInputs } from '../analyzers/agent/index';
 import { analyzeCi, type CiInputs } from '../analyzers/ci/index';
+import { analyzeGitlabCi, type GitlabCiInputs } from '../analyzers/gitlabci/index';
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
 import { analyzeExec, type ExecInputs } from '../analyzers/exec/index';
 import {
@@ -36,6 +37,8 @@ export interface EngineInputs {
   pydeps?: PyDepsInputs;
   /** RubyGems lockfile (Gemfile.lock), diffed vs base for added/bumped gems (0032). */
   rubygems?: RubyGemsInputs;
+  /** GitLab CI config (.gitlab-ci.yml) — MR-triggerable jobs holding CI/CD secrets (0034). */
+  gitlabci?: GitlabCiInputs;
   /** Repo-own install/build lifecycle scripts scanned for CI-divergent execution (0021). */
   exec?: ExecInputs;
   /** Agent instruction files added/changed by the diff — review-time injection (0023). */
@@ -112,6 +115,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
     inputs.pydeps ? analyzePyDeps(inputs.pydeps) : undefined,
     inputs.rubygems ? analyzeRubyGems(inputs.rubygems) : undefined,
     inputs.ci ? analyzeCi(inputs.ci) : undefined,
+    inputs.gitlabci ? analyzeGitlabCi(inputs.gitlabci) : undefined,
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,
     inputs.exec ? analyzeExec(inputs.exec) : undefined,
     inputs.agentDiff ? analyzeAgentDiff(inputs.agentDiff) : undefined,

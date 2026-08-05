@@ -147,6 +147,14 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     inputs.ci = { workflows };
   }
 
+  // 0034: GitLab CI. The committed .gitlab-ci.yml is analyzed as-is (like GitHub
+  // workflows) — a merge-request-triggerable job holding a CI/CD secret is a
+  // standing risk regardless of the diff.
+  const gitlabCi = fs.read('.gitlab-ci.yml');
+  if (gitlabCi !== null) {
+    inputs.gitlabci = { content: gitlabCi };
+  }
+
   const mcpJson = fs.read('.mcp.json');
   const claudeSettings = fs.read('.claude/settings.json');
   const cursorMcpJson = fs.read('.cursor/mcp.json');

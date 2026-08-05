@@ -119,10 +119,15 @@ export function hasActorGuard(job: JobSpec): boolean {
   );
 }
 
+/** A shell command that installs dependencies (where a poisoned lifecycle script executes). */
+export function isInstallCommand(command: string): boolean {
+  return INSTALL_RE.test(command);
+}
+
 /** A step that runs a dependency install (where a poisoned lifecycle script would execute). */
 export function hasInstallStep(job: JobSpec): boolean {
   return (job.steps ?? []).some((step) => {
-    if (typeof step.run === 'string' && INSTALL_RE.test(step.run)) {
+    if (typeof step.run === 'string' && isInstallCommand(step.run)) {
       return true;
     }
     return typeof step.uses === 'string' && /^actions\/setup-node@/.test(step.uses);
