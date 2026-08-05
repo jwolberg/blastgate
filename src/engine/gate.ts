@@ -69,6 +69,18 @@ export function runEngine(inputs: EngineInputs, opts: EngineOptions = {}): GateR
   const cap = opts.maxPairs ?? MAX_REACHABILITY_PAIRS;
   const diagnostics = [...build.diagnostics];
 
+  // 0019: an ack introduced by this change was dropped (only base-ref acks are honored),
+  // so the finding it would have downgraded stands — surface that plainly.
+  if (inputs.acknowledgedIgnored && inputs.acknowledgedIgnored.length > 0) {
+    diagnostics.push({
+      level: 'warn',
+      message:
+        `${inputs.acknowledgedIgnored.length} acknowledgement(s) introduced by this change were ` +
+        `ignored — only acks already on the base ref are honored (0019): ` +
+        inputs.acknowledgedIgnored.map((a) => a.id).join(', '),
+    });
+  }
+
   // Bound the pairwise reachability search: over the cap, fail closed to UNKNOWN
   // (never hang, never a false pass) instead of running an attacker-inflated O(E×S).
   if (exceedsReachabilityCap(build.graph, cap)) {
