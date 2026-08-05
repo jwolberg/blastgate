@@ -53,6 +53,11 @@ export function labelPath(path: ReachPath): OwaspLabels {
       agentic = 'ASI03';
       mcp = 'MCP02';
       break;
+    case 'untrusted-text-injection':
+      // Prompt injection from untrusted event text → goal hijack + context injection.
+      agentic = 'ASI01';
+      mcp = 'MCP10';
+      break;
   }
 
   if (hasOverBaselineGrant) {

@@ -22,6 +22,8 @@ const SINK_WEIGHT: Record<SinkKind, number> = {
  * bottom — a real capability to review, but never attacker-controllable (U18).
  */
 const ENTRY_KIND_EXPOSURE: Record<EntryKind, number> = {
+  // Untrusted public text (issue/PR body) reaching an agent is the most exposed entry.
+  'untrusted-text-injection': 3,
   'fork-pr': 3,
   'injectable-agent-surface': 2,
   'ci-divergent': 2,

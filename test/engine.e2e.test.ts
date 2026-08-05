@@ -125,6 +125,16 @@ const CHECKS: CheckSpec[] = [
       expect(f!.labels).toContain('ASI04:2026');
     },
   },
+  {
+    name: 'untrusted-text-injection',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.entry.kind === 'untrusted-text-injection');
+      expect(f, 'an untrusted-text-injection finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.labels).toContain('ASI01:2026');
+    },
+  },
 ];
 
 describe('engine e2e over fixture repos (R13)', () => {

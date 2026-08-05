@@ -14,7 +14,12 @@ export type NodeKind = 'entry' | 'dependency' | 'ci-job' | 'agent-grant' | 'sink
  * engineered to behave differently under observation to evade CI (0021).
  */
 export type EntryKind =
-  'new-dependency' | 'fork-pr' | 'injectable-agent-surface' | 'ci-divergent' | 'privileged-hook';
+  | 'new-dependency'
+  | 'fork-pr'
+  | 'injectable-agent-surface'
+  | 'ci-divergent'
+  | 'privileged-hook'
+  | 'untrusted-text-injection';
 
 /** A sensitive thing a reachable path can arrive at. */
 export type SinkKind = 'secret' | 'credential' | 'privileged-capability';
