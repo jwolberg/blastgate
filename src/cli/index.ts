@@ -126,9 +126,12 @@ async function checkMode(argv: string[], env: CliEnv): Promise<number> {
     return scanExitCode(result);
   }
 
-  const { stdout, exitCode } = hookOutput(phase, result);
+  const { stdout, stderr, exitCode } = hookOutput(phase, result);
   if (stdout) {
     env.stdout(stdout);
+  }
+  if (stderr) {
+    env.stderr(stderr);
   }
   return exitCode;
 }

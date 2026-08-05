@@ -3,7 +3,9 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'plugin/**', 'coverage/**'] },
+  // Fixtures are intentionally-suspicious sample repos (e.g. a dropper's
+  // `require('child_process')`), not project source — never lint them.
+  { ignores: ['dist/**', 'node_modules/**', 'plugin/**', 'coverage/**', 'test/fixtures/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
