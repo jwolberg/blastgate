@@ -121,6 +121,17 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
     const untrusted = job.forkTriggerable
       ? ', which is triggered by untrusted input (fork PRs)'
       : '';
+    if (dep.ecosystem === 'python') {
+      return {
+        reason:
+          `${dep.pkg} runs code at install time (\`pip install\` executes it), and it runs in job ` +
+          `${job.workflow}#${job.job}${untrusted}, which holds ${sink.sinkKind} ${sink.identity} — ` +
+          `the shape of a malicious setup.py executed in CI / a Dependabot container.`,
+        remediation:
+          `Do not \`pip install\` untrusted code in that job (prefer \`--only-binary=:all:\` or a ` +
+          `locked, hash-pinned install), or remove ${sink.identity} from ${job.workflow}#${job.job}.`,
+      };
+    }
     return {
       reason:
         `New or changed dependency ${dep.pkg}@${dep.version} declares an install script that ` +

