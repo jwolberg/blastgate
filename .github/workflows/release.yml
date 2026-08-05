@@ -1,22 +1,38 @@
-# Release: publish to npm with provenance (0026 reference posture).
+# Release: publish the npm package AND the GitHub Marketplace Action, both from a
+# single pushed `v*` tag (0027 reference posture).
 #
-# Provenance (`npm publish --provenance`) cryptographically links the published
-# tarball to this workflow run and commit via Sigstore/OIDC — the same npm
-# attestation whose *absence* Blastgate's provenance-regression check flags. It
-# needs `id-token: write` (OIDC) and an `NPM_TOKEN` secret; both are scoped to this
-# push-triggered (trusted, never fork) publish job, so Blastgate's own self-scan
-# does not flag the token as attacker-reachable.
+# Two independent, push-triggered (trusted, never fork) jobs:
+#
+#   publish-npm     — build, test, self-scan, then `npm publish --provenance`.
+#                     Provenance links the tarball to this run/commit via
+#                     Sigstore/OIDC — the same npm attestation whose *absence*
+#                     Blastgate's provenance-regression check flags.
+#
+#   release-action  — `dist/` is gitignored, so the source tree a tag points at
+#                     does NOT contain `dist/action/index.js` (the file
+#                     `action.yml` runs). A JavaScript action is executed
+#                     as-committed — GitHub never builds it — so this job builds
+#                     `dist/`, commits it onto the tagged commit, force-moves the
+#                     version tag and the floating major tag (e.g. `v0`) to that
+#                     commit, and cuts a GitHub Release. `uses: jwolberg/blastgate@v0`
+#                     then resolves to a tree that actually has `dist/`. Ticking
+#                     "Publish to the GitHub Marketplace" on that Release is the one
+#                     remaining manual step (done once).
+#
+# Tag pushes here use the built-in GITHUB_TOKEN, which by design does NOT
+# re-trigger this workflow — so force-moving `v*` tags cannot loop.
 name: Release
 
 on:
   push:
     tags: ['v*']
 
+# Least privilege by default; each job widens only what it needs.
 permissions:
   contents: read
 
 jobs:
-  publish:
+  publish-npm:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,3 +54,62 @@ jobs:
       - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  release-action:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # cut the GitHub Release and move the release tags
+    steps:
+      # fetch-depth: 0 and persisted credentials (default) so we can move tags.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      # Same clean-self-scan gate as the npm job: never ship a failing action.
+      - run: node dist/cli/index.js .
+      - name: Package dist/ into the release tags
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"                 # e.g. v0.1.0
+          V="${VERSION#v}"                             # 0.1.0
+          MAJOR="v${V%%.*}"                            # v0
+          case "$V" in *-*) PRERELEASE=1 ;; *) PRERELEASE=0 ;; esac
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # dist/ is gitignored; -f stages the freshly built artifact so the tag's
+          # tree contains dist/action/index.js (the file `uses:` executes).
+          git add -f dist
+          git commit -m "build: package dist for ${VERSION}" \
+            || echo "dist already present at this tag; nothing to commit"
+
+          # Point the exact version tag at the built commit so its tree has dist.
+          git tag -f "${VERSION}"
+          git push --force origin "refs/tags/${VERSION}"
+
+          # Advance the floating major tag (e.g. v0) only for a real release.
+          if [ "${PRERELEASE}" -eq 0 ]; then
+            git tag -f "${MAJOR}"
+            git push --force origin "refs/tags/${MAJOR}"
+          fi
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          V="${VERSION#v}"
+          case "$V" in *-*) MARK="--prerelease" ;; *) MARK="--latest" ;; esac
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release edit "${VERSION}" ${MARK}
+          else
+            gh release create "${VERSION}" --verify-tag --generate-notes \
+              --title "${VERSION}" ${MARK}
+          fi

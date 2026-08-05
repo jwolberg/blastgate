@@ -1,0 +1,30 @@
+# Self-gate: Blastgate scans its own pull requests (dogfood). It runs the built
+# CLI directly — no published npm package or Marketplace Action required — so it
+# works today, before the first release. Once `v0` is published you can swap the
+# scan step for `uses: jwolberg/blastgate@v0` to also get inline PR annotations.
+name: Blastgate
+
+on: [pull_request]
+
+# Least privilege: the scan only reads the checkout (the job summary needs no scope).
+permissions:
+  contents: read
+
+jobs:
+  self-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the base ref must be available for change signals
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Fails the check on a reachable secret/credential path and posts the full
+      # markdown report as the job summary. `--base` is the PR base ref, so
+      # new-dependency / changed-workflow signals light up.
+      - name: Blastgate scan
+        run: node dist/cli/index.js . --base "${{ github.base_ref }}" --format md >> "$GITHUB_STEP_SUMMARY"
