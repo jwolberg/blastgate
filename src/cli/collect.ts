@@ -138,9 +138,23 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     }
   }
 
-  const acknowledged = parseAcknowledgements(fs.read('.blastgate/acknowledged.json'));
-  if (acknowledged.length > 0) {
-    inputs.acknowledged = acknowledged;
+  // 0019: only honor acknowledgements already on the trusted base ref — a PR must not
+  // self-approve its own findings by committing an ack in the same diff. Head-introduced
+  // acks are ignored and surfaced. Without a base (a local whole-repo scan of your own
+  // repo), honor the committed head acks as before.
+  const headAcks = parseAcknowledgements(fs.read('.blastgate/acknowledged.json'));
+  if (opts.base && fs.gitShow) {
+    const baseAcks = parseAcknowledgements(fs.gitShow(opts.base, '.blastgate/acknowledged.json'));
+    const baseIds = new Set(baseAcks.map((a) => a.id));
+    const ignored = headAcks.filter((a) => !baseIds.has(a.id));
+    if (baseAcks.length > 0) {
+      inputs.acknowledged = baseAcks;
+    }
+    if (ignored.length > 0) {
+      inputs.acknowledgedIgnored = ignored;
+    }
+  } else if (headAcks.length > 0) {
+    inputs.acknowledged = headAcks;
   }
 
   return inputs;

@@ -32,6 +32,11 @@ export interface EngineInputs {
   /** Human-accepted findings (`.blastgate/acknowledged.json`); downgrades fail→warn (U14). */
   acknowledged?: Acknowledgement[];
   /**
+   * Acks introduced by the diff (present at head, absent on base) that were NOT
+   * honored (0019) — a PR cannot self-approve its own findings. Surfaced as a warn.
+   */
+  acknowledgedIgnored?: Acknowledgement[];
+  /**
    * Pre-computed provenance-regression result (U8). The engine core is offline
    * (KTD6); the network-touching provenance analyzer runs in the CLI behind
    * `--provenance` and passes its result here to be merged like any other layer.
