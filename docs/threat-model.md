@@ -163,9 +163,13 @@ proxying and not endpoint monitoring.
 | CVE / vuln scanning | Snyk, Socket | "Does this dep have a known CVE?" | Blastgate reasons about reachable paths, not vulnerability databases |
 
 Blastgate is **not** a replacement for these — it is the connective layer that
-composes their signals into a reachable path. It does not do deep per-layer rule
-coverage, non-GitHub CI, non-npm ecosystems, runtime enforcement, or laptop endpoint
-monitoring (see the plan's Scope Boundaries).
+composes their signals into a reachable path. It reads **repo files only**, so
+out-of-repo configuration is a documented blind spot: CircleCI's "pass secrets to
+builds from forked pull requests" is a project setting in the CircleCI UI, not in
+`.circleci/config.yml`, so Blastgate surfaces it as an advisory warning and never
+fails a change on it — an honest gap beats a false PASS. It does not do deep
+per-layer rule coverage, runtime enforcement, or laptop endpoint monitoring (see the
+plan's Scope Boundaries).
 
 ## [5] OWASP mapping
 

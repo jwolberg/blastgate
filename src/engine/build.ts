@@ -14,6 +14,7 @@ import { analyzeAgentDiff, type AgentDiffInputs } from '../analyzers/agent/confi
 import { analyzeAgents, type AgentInputs } from '../analyzers/agent/index';
 import { analyzeCi, type CiInputs } from '../analyzers/ci/index';
 import { analyzeGitlabCi, type GitlabCiInputs } from '../analyzers/gitlabci/index';
+import { analyzeCircleCi, type CircleCiInputs } from '../analyzers/circleci/index';
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
 import { analyzeExec, type ExecInputs } from '../analyzers/exec/index';
 import {
@@ -39,6 +40,8 @@ export interface EngineInputs {
   rubygems?: RubyGemsInputs;
   /** GitLab CI config (.gitlab-ci.yml) — MR-triggerable jobs holding CI/CD secrets (0034). */
   gitlabci?: GitlabCiInputs;
+  /** CircleCI config (.circleci/config.yml) — advisory only; fork-secret exposure is out-of-repo (0035). */
+  circleci?: CircleCiInputs;
   /** Repo-own install/build lifecycle scripts scanned for CI-divergent execution (0021). */
   exec?: ExecInputs;
   /** Agent instruction files added/changed by the diff — review-time injection (0023). */
@@ -116,6 +119,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
     inputs.rubygems ? analyzeRubyGems(inputs.rubygems) : undefined,
     inputs.ci ? analyzeCi(inputs.ci) : undefined,
     inputs.gitlabci ? analyzeGitlabCi(inputs.gitlabci) : undefined,
+    inputs.circleci ? analyzeCircleCi(inputs.circleci) : undefined,
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,
     inputs.exec ? analyzeExec(inputs.exec) : undefined,
     inputs.agentDiff ? analyzeAgentDiff(inputs.agentDiff) : undefined,

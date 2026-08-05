@@ -50,6 +50,21 @@ the check on a reachable path, and posts per-finding annotations plus the full
 markdown report (the same output as `blastgate --format md`) as the job summary a
 reviewer reads at merge time.
 
+## [2.1] Other CI providers (GitLab, CircleCI)
+
+Blastgate also reads `.gitlab-ci.yml` and `.circleci/config.yml` when present.
+
+- **GitLab CI** is a full gate: a merge-request-triggerable job holding a CI/CD
+  credential variable fails the same way a GitHub fork job does. (GitLab's *protected*
+  variables are withheld from fork-MR pipelines — Blastgate flags the reachable shape;
+  confirm the variable isn't exposed to fork pipelines.)
+- **CircleCI is advisory only.** Whether a **forked-PR build receives your secrets is a
+  CircleCI project setting** ("Pass secrets to builds from forked pull requests"),
+  configured in the CircleCI UI — it is **not** in `.circleci/config.yml`. Blastgate reads
+  repo files, so it cannot see that toggle and will **not** fail a change on it (a false
+  PASS would be worse than an honest gap). Instead it emits an advisory warning naming any
+  secret a job references. **You must verify that setting is disabled yourself.**
+
 ## [3] Enable the agent-loop gate (the plugin)
 
 Inside Claude Code:

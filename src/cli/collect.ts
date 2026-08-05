@@ -155,6 +155,13 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     inputs.gitlabci = { content: gitlabCi };
   }
 
+  // 0035: CircleCI. Advisory only — whether forked-PR builds receive secrets is a
+  // CircleCI project setting not visible in the repo, so this never fails a change.
+  const circleCi = fs.read('.circleci/config.yml');
+  if (circleCi !== null) {
+    inputs.circleci = { content: circleCi };
+  }
+
   const mcpJson = fs.read('.mcp.json');
   const claudeSettings = fs.read('.claude/settings.json');
   const cursorMcpJson = fs.read('.cursor/mcp.json');
