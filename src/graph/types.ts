@@ -6,8 +6,14 @@
 
 export type NodeKind = 'entry' | 'dependency' | 'ci-job' | 'agent-grant' | 'sink';
 
-/** How an attacker-controllable entry point is reachable. */
-export type EntryKind = 'new-dependency' | 'fork-pr' | 'injectable-agent-surface';
+/**
+ * How a finding's entry point arises. Most are attacker-controllable; `privileged-hook`
+ * is the exception — a committed, deterministic privileged capability (a `type: command`
+ * hook) that fires without any prompt injection, surfaced as a scope-review advisory
+ * rather than an injectable surface (U18).
+ */
+export type EntryKind =
+  'new-dependency' | 'fork-pr' | 'injectable-agent-surface' | 'privileged-hook';
 
 /** A sensitive thing a reachable path can arrive at. */
 export type SinkKind = 'secret' | 'credential' | 'privileged-capability';

@@ -58,7 +58,14 @@ describe('scan scope is gitignore-aware (ticket 0016)', () => {
 
     const result = scan(dir);
     expect(result.verdict).toBe('warn');
-    expect(result.findings.some((f) => f.sink.kind === 'privileged-capability')).toBe(true);
+    const finding = result.findings.find((f) => f.sink.kind === 'privileged-capability');
+    expect(finding).toBeDefined();
+    // reframed as a deterministic privileged capability, not an injectable surface (U18)
+    expect(finding!.entry.kind).toBe('privileged-hook');
+    expect(finding!.path).toEqual(['.claude/settings.json (committed hook)', 'shell:command hook']);
+    expect(finding!.labels).toContain('MCP02:2025');
+    expect(finding!.labels).not.toContain('ASI01:2026');
+    expect(finding!.reason.toLowerCase()).toContain('deterministic');
   });
 
   it('falls back to scanning the working tree when the target is not a git repo', () => {

@@ -53,6 +53,20 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
   const sink: SinkNode = path.sink;
   const isSecret = sink.sinkKind === 'secret' || sink.sinkKind === 'credential';
 
+  if (path.entry.entryKind === 'privileged-hook') {
+    const location = path.entry.label.replace(/ \(committed hook\)$/, '');
+    return {
+      reason:
+        `${path.entry.label} runs a shell command outside Claude Code's permission gate — a ` +
+        `standing privileged capability (${sink.identity}). It fires deterministically, not via ` +
+        `prompt injection, so it is not externally attacker-controllable; the risk is an ` +
+        `over-scoped or untrusted hook command.`,
+      remediation:
+        `Review the hook command in ${location}, keep it minimal and repo-local, and remove the ` +
+        `hook if it is not required.`,
+    };
+  }
+
   if (dep && job && isSecret) {
     const untrusted = job.forkTriggerable
       ? ', which is triggered by untrusted input (fork PRs)'
