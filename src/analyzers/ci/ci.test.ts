@@ -54,6 +54,12 @@ describe('analyzeCi', () => {
     expect(r.diagnostics.some((d) => d.message.includes('unpinned'))).toBe(true);
   });
 
+  it('tags every ci-job node with its provider (github) for multi-provider support', () => {
+    const r = analyzeCi({ workflows: [{ path: '.github/workflows/ci.yml', content: AE1 }] });
+    const job = r.nodes.find((n) => n.kind === 'ci-job');
+    expect(job && job.kind === 'ci-job' && job.provider).toBe('github');
+  });
+
   it('emits no entry or sink for a secretless, non-fork job (AE2 shape)', () => {
     const r = analyzeCi({ workflows: [{ path: 'ci.yml', content: AE2 }] });
     expect(r.nodes.some((n) => n.kind === 'entry')).toBe(false);

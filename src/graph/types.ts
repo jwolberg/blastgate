@@ -29,6 +29,9 @@ export type SinkKind = 'secret' | 'credential' | 'privileged-capability';
 /** The four capability classes an agent/MCP grant can confer. */
 export type CapabilityClass = 'filesystem' | 'network' | 'shell' | 'tool';
 
+/** CI provider a job comes from. Absent = github (the original assumed provider). */
+export type CiProvider = 'github' | 'gitlab' | 'circleci';
+
 /** An attacker-controllable entry point. `exposure` feeds ranking (post-traversal). */
 export interface EntryNode {
   id: string;
@@ -59,6 +62,8 @@ export interface DependencyNode {
 export interface CiJobNode {
   id: string;
   kind: 'ci-job';
+  /** Which CI provider emitted this job. Absent = github (0031). */
+  provider?: CiProvider;
   workflow: string;
   job: string;
   triggers: string[];
