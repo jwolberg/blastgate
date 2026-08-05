@@ -12,7 +12,9 @@
  * adapters and is the only part with real process I/O.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { analyzeProvenance } from '../analyzers/deps/provenance';
 import { type EngineInputs } from '../engine/build';
@@ -22,6 +24,8 @@ import { runStdioServer } from '../mcp/server';
 import { cachedFetcher, httpSource } from '../registry/packument';
 import { osvHttpSource } from '../registry/osv';
 import { enrichWithAdvisories } from '../enrichment/advisories';
+import { parseRunRecords, toRunRecord } from '../report/run-record';
+import { renderTrendReport } from '../report/trend';
 import { collectInputs, type RepoFs } from './collect';
 import { bypassOutput, hookOutput } from './gate';
 import { nodeRepoFs } from './node-fs';
@@ -36,9 +40,11 @@ export interface CliEnv {
   stderr: (s: string) => void;
   /** Today's date (`YYYY-MM-DD`) for policy-rule expiry (0030); the bin injects a real clock. */
   now?: () => string;
+  /** Sink that records a scan for the trend dashboard (0037); set by the bin when `--record` is given. */
+  recordRun?: (result: GateResult) => void;
 }
 
-const VALUE_FLAGS = new Set(['--base', '--since', '--gate', '--format']);
+const VALUE_FLAGS = new Set(['--base', '--since', '--gate', '--format', '--record', '--out']);
 
 /** `--base <ref>`, or its `/blastgate` slash-command alias `--since <ref>`. */
 function baseRef(argv: string[]): string | undefined {
@@ -83,6 +89,7 @@ function usage(): string {
     'Usage:',
     '  blastgate [path] [--base <ref>] [--json]   scan a repo for reachable attacker→sink paths',
     '  blastgate check --gate <phase>             plugin hook gate (reads hook JSON on stdin)',
+    '  blastgate report <dir> [--out <file>]      static HTML trend over recorded runs (0037)',
     '  blastgate mcp                              stdio MCP self-check server',
     '',
     'Flags:',
@@ -91,6 +98,7 @@ function usage(): string {
     '  --json / --md      shorthands for --format json / --format md',
     '  --provenance       opt-in npm provenance-regression check (network; needs --base)',
     '  --advisories       opt-in CVE/advisory enrichment of reachable deps (network; OSV; never gates)',
+    '  --record <dir>     append this run to a directory of records for `blastgate report`',
     '  --version          print version',
     '',
   ].join('\n');
@@ -135,6 +143,8 @@ async function scanMode(argv: string[], env: CliEnv): Promise<number> {
     result.findings = await enrichWithAdvisories(result.findings, osvHttpSource());
   }
   env.stdout(renderResult(result, argv));
+  // 0037: record this run for the trend dashboard when `--record <dir>` is set.
+  env.recordRun?.(result);
   return scanExitCode(result);
 }
 
@@ -223,7 +233,7 @@ export async function runCli(argv: string[], env: CliEnv): Promise<number> {
 // ---- Node bin wiring (the only part with real process I/O) ----
 
 function firstPositional(argv: string[]): string | undefined {
-  const subcommands = new Set(['check', 'mcp', 'help']);
+  const subcommands = new Set(['check', 'mcp', 'help', 'report']);
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i]!;
     if (tok.startsWith('-')) {
@@ -255,6 +265,47 @@ function readStdin(): Promise<string> {
   });
 }
 
+/** `blastgate report <dir> [--out <file>]` — render a static HTML trend over recorded runs (0037). */
+function reportCommand(argv: string[]): number {
+  const dir = firstPositional(argv) ?? '.';
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    process.stderr.write(`blastgate: cannot read run directory: ${dir}\n`);
+    return 2;
+  }
+  const jsons: string[] = [];
+  for (const f of files) {
+    try {
+      jsons.push(readFileSync(join(dir, f), 'utf8'));
+    } catch {
+      /* skip an unreadable record */
+    }
+  }
+  const html = renderTrendReport(parseRunRecords(jsons));
+  const out = flagValue(argv, '--out');
+  if (out) {
+    writeFileSync(out, html);
+    process.stdout.write(`blastgate: wrote ${out}\n`);
+  } else {
+    process.stdout.write(html);
+  }
+  return 0;
+}
+
+/** `git -C <root> rev-parse --short HEAD`, or undefined if not a git repo. */
+function gitShaShort(root: string): string | undefined {
+  try {
+    return execFileSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   const cmd = argv[0];
 
@@ -266,17 +317,49 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (cmd === 'report') {
+    return reportCommand(argv);
+  }
+
   const root = cmd === 'check' ? '.' : (firstPositional(argv) ?? '.');
   if (!existsSync(root)) {
     process.stderr.write(`blastgate: path not found: ${root}\n`);
     return 2;
   }
+
+  // 0037: when `--record <dir>` is set, write a versioned run record after the scan.
+  // All I/O (clock, git sha, filesystem) lives here in the bin; scanMode just triggers it.
+  const recordDir = flagValue(argv, '--record');
+  const recordRun = recordDir
+    ? (result: GateResult): void => {
+        try {
+          mkdirSync(recordDir, { recursive: true });
+          const timestamp = new Date().toISOString();
+          const sha = gitShaShort(root);
+          const base = baseRef(argv);
+          const record = toRunRecord(result, {
+            timestamp,
+            repo: basename(resolve(root)),
+            ...(sha ? { sha } : {}),
+            ...(base ? { base } : {}),
+          });
+          writeFileSync(
+            join(recordDir, `run-${timestamp.replace(/[:.]/g, '-')}.json`),
+            `${JSON.stringify(record, null, 2)}\n`,
+          );
+        } catch {
+          /* recording is best-effort — never fail a scan because a record couldn't be written */
+        }
+      }
+    : undefined;
+
   return runCli(argv, {
     fs: nodeRepoFs(root),
     stdin: readStdin,
     stdout: (s) => process.stdout.write(s),
     stderr: (s) => process.stderr.write(s),
     now: () => new Date().toISOString().slice(0, 10),
+    ...(recordRun ? { recordRun } : {}),
   });
 }
 
