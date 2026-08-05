@@ -40,6 +40,11 @@ function find<T extends AttackNode>(path: ReachPath, kind: T['kind']): T | undef
   return path.nodes.find((n): n is T => n.kind === kind);
 }
 
+/** A fork-PR path whose triggering job is actor-gated to trusted roles (U17). */
+function isGuardedForkPr(path: ReachPath): boolean {
+  return path.entry.entryKind === 'fork-pr' && path.entry.guarded === true;
+}
+
 /** Derive the reachability reason + remediation from the path's cross-layer shape. */
 function describe(path: ReachPath): { reason: string; remediation: string } {
   const dep = find<DependencyNode>(path, 'dependency');
@@ -86,6 +91,18 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
   }
 
   if (job && isSecret) {
+    if (isGuardedForkPr(path)) {
+      return {
+        reason:
+          `Job ${job.workflow}#${job.job} triggers on untrusted events ` +
+          `(${job.triggers.join(', ')}) and holds ${sink.sinkKind} ${sink.identity}, but its ` +
+          `\`if:\` is actor-gated to trusted roles — so it is not externally triggerable, though ` +
+          `the broad credential scope remains a least-privilege risk.`,
+        remediation:
+          `Scope ${sink.identity} down to least privilege for ${job.workflow}#${job.job}; the ` +
+          `actor guard limits who can trigger the job but not its blast radius when it runs.`,
+      };
+    }
     return {
       reason:
         `Job ${job.workflow}#${job.job} is triggered by untrusted input ` +
@@ -113,7 +130,9 @@ function toFinding(ranked: RankedFinding): Finding {
 
   return {
     id: `${path.entry.id}=>${path.sink.id}`,
-    tier: tierForSink(path.sink.sinkKind),
+    // An actor-gated fork-PR path is not externally attacker-controllable → warn, not
+    // fail (U17); still reported because the broad credential scope is a real risk.
+    tier: isGuardedForkPr(path) ? 'warn' : tierForSink(path.sink.sinkKind),
     score,
     path: path.nodes.map(nodeLabel),
     pathNodeIds: path.nodes.map((n) => n.id),

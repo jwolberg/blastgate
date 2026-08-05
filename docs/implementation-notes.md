@@ -314,3 +314,28 @@ Running log of decisions, deviations, and tradeoffs for human review.
   command hook scans clean (pass) while a tracked one still warns, plus the non-git
   fallback. Re-ran the self-scan → clean **PASS**. This closes the first
   false-positive class found in real use (R14 precision on real repos).
+
+## 2026-08-05 — Model if: actor/trigger guards (ticket 0017, dogfood-driven)
+
+- **Motivated by the volscan finding:** Blastgate failed the Claude Action job, which
+  is correct — but it couldn't see whether an `if:` actor guard mitigated the untrusted
+  trigger. 0017 teaches it to recognize one.
+- **`hasActorGuard(job)` (parse.ts) is conservative and fail-closed.** Only two patterns
+  count as a guard: an `author_association` compared against a trusted role
+  (OWNER/MEMBER/COLLABORATOR), or a `github.actor`/`github.triggering_actor`
+  comparison/allowlist. Anything else — including volscan's `contains(body, '@claude')`
+  cost filter — is *not* a guard, so an unrecognized `if:` never downgrades a finding.
+  Re-scanned volscan after the change: still FAILs (exit 1), as it should.
+- **Guard lives on the fork-PR `EntryNode` (`guarded?`), not `CiJobNode`.** Deviation
+  from the ticket's suggestion, on purpose: the gate downgrade keys off the path's
+  entry, and a guarded entry ("triggerable, but only by trusted actors") is the natural
+  carrier. Set by the CI analyzer from `hasActorGuard(job)`.
+- **Downgrade, don't suppress (KTD4 refinement).** `checks.ts` downgrades a guarded
+  fork-PR → secret path from **fail → warn** with a reason that says the trigger is
+  actor-gated but the broad credential scope is still a least-privilege risk. The gate
+  stops failing on a properly-gated job while still reporting it; an ungated one still
+  fails. Covered by unit tests (`hasActorGuard`), analyzer tests (entry.guarded), and
+  engine tests (gated=warn / ungated=fail).
+- **Follow-up polish (not blocking):** ranking could sort fails above warns of equal
+  score; a dedicated U11 fixture pair could be added — the behavior is already covered
+  by inline-workflow engine tests.
