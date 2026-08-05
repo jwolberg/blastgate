@@ -20,7 +20,8 @@ export type EntryKind =
   | 'ci-divergent'
   | 'privileged-hook'
   | 'untrusted-text-injection'
-  | 'agent-config-change';
+  | 'agent-config-change'
+  | 'gate-tamper';
 
 /** A sensitive thing a reachable path can arrive at. */
 export type SinkKind = 'secret' | 'credential' | 'privileged-capability';

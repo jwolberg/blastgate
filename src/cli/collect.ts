@@ -9,6 +9,7 @@
 
 import { AGENT_INSTRUCTION_PATHS, type AgentDiffInputs } from '../analyzers/agent/config-diff';
 import type { DependencyInputs } from '../analyzers/deps/index';
+import { GATE_CONFIG_PATHS } from '../analyzers/integrity/self-integrity';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
 import type { EngineInputs } from '../engine/build';
@@ -135,6 +136,20 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     const agentDiff: AgentDiffInputs = { files };
     if (files.some((f) => f.head !== null)) {
       inputs.agentDiff = agentDiff;
+    }
+  }
+
+  // 0024: gate-config files diffed to detect Blastgate's own enforcement being removed
+  // (an agent disabling the gate before doing the blocked thing). Needs a base ref, and
+  // only fires when the gate was wired at base (a repo that never used Blastgate is safe).
+  if (opts.base && fs.gitShow) {
+    const files = GATE_CONFIG_PATHS.map((path) => ({
+      path,
+      head: fs.read(path),
+      base: fs.gitShow!(opts.base!, path),
+    }));
+    if (files.some((f) => f.base !== null)) {
+      inputs.selfIntegrity = { files };
     }
   }
 
