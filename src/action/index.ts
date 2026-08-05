@@ -10,7 +10,7 @@ import { appendFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { collectInputs, type CollectOptions, type RepoFs } from '../cli/collect';
 import { nodeRepoFs } from '../cli/node-fs';
-import { scanExitCode } from '../cli/render';
+import { renderMarkdown, scanExitCode } from '../cli/render';
 import { type GateResult, runEngine } from '../engine/gate';
 import type { Finding } from '../findings/finding';
 
@@ -35,40 +35,15 @@ function annotationMessage(f: Finding): string {
   return `${f.path.join(' → ')} — ${f.reason} Fix: ${f.remediation}${labels}`;
 }
 
-/** Escape a cell so a path/reason containing `|` can't break the markdown table. */
-function cell(s: string): string {
-  return s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
-}
-
-function summaryTable(result: GateResult): string {
-  if (result.findings.length === 0) {
-    return '## Blastgate\n\n✓ No reachable attacker→sink path. **PASS**\n';
-  }
-  const verdict = result.verdict === 'fail' ? 'FAIL' : 'WARN';
-  const rows = result.findings.map((f) => {
-    const tier = f.tier === 'fail' ? '🔴 fail' : '🟡 warn';
-    const labels = f.labels.join(', ') || '—';
-    return `| ${tier} | ${cell(f.path.join(' → '))} | ${cell(f.sink.identity)} | ${labels} | ${cell(f.remediation)} |`;
-  });
-  return [
-    '## Blastgate',
-    '',
-    `**${verdict}** — ${result.findings.length} reachable path(s).`,
-    '',
-    '| Tier | Path | Sink | OWASP | Fix |',
-    '| --- | --- | --- | --- | --- |',
-    ...rows,
-    '',
-  ].join('\n');
-}
-
 /** Run the engine, surface findings on the PR, and return the process exit code. */
 export function runAction(env: ActionEnv): number {
   const result = runActionCore(env.fs, env.base !== undefined ? { base: env.base } : {});
   for (const f of result.findings) {
     env.annotate(f.tier === 'fail' ? 'error' : 'warning', annotationMessage(f));
   }
-  env.summary(summaryTable(result));
+  // The job summary is the same markdown report as `blastgate --format md`, so the
+  // PR surface and the CLI cannot drift (KTD10 / R7 parity).
+  env.summary(renderMarkdown(result));
   return scanExitCode(result);
 }
 

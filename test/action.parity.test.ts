@@ -89,7 +89,7 @@ describe('runAction exit codes', () => {
 });
 
 describe('runAction PR surfacing', () => {
-  it('emits an error annotation and a job-summary table for a failing run', () => {
+  it('emits an error annotation and the shared markdown report as the job summary', () => {
     const { env, sink } = captureEnv(failingFs(), 'HEAD');
     runAction(env);
 
@@ -97,11 +97,14 @@ describe('runAction PR surfacing', () => {
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.some((a) => a.message.includes('AWS_SECRET_ACCESS_KEY'))).toBe(true);
 
+    // The summary is the same report `blastgate --format md` prints (KTD10 parity):
+    // verdict header, the workflow-guidance banner, the sink, and the OWASP label.
     expect(sink.summaries.length).toBe(1);
-    const table = sink.summaries[0]!;
-    expect(table).toContain('|'); // a markdown table
-    expect(table).toContain('AWS_SECRET_ACCESS_KEY');
-    expect(table).toContain('ASI04:2026');
+    const summary = sink.summaries[0]!;
+    expect(summary).toMatch(/^#/m);
+    expect(summary).toMatch(/where this runs/i);
+    expect(summary).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(summary).toContain('ASI04:2026');
   });
 
   it('renders a clean summary and no error annotations for a passing run', () => {
