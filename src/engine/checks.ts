@@ -48,6 +48,18 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
   const sink: SinkNode = path.sink;
   const isSecret = sink.sinkKind === 'secret' || sink.sinkKind === 'credential';
 
+  if (path.entry.entryKind === 'ci-divergent') {
+    return {
+      reason:
+        `${path.entry.label} — an install/build script that changes behavior based on whether ` +
+        `it runs in CI, a container, or an interactive terminal is the concealment technique used ` +
+        `to keep a malicious lifecycle payload dormant exactly where it would be observed.`,
+      remediation:
+        `Remove the environment-conditional branch from the install/build script (or justify it in ` +
+        `review); where lifecycle scripts are not required, install with \`npm ci --ignore-scripts\`.`,
+    };
+  }
+
   if (dep && job && isSecret) {
     const untrusted = job.forkTriggerable
       ? ', which is triggered by untrusted input (fork PRs)'
