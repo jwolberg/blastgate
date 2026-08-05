@@ -21,10 +21,18 @@ export interface GateResult {
   diagnostics: Diagnostic[];
 }
 
-/** Whole-run verdict from per-finding tiers (KTD4). */
-export function verdictOf(findings: Finding[]): Verdict {
+/**
+ * Whole-run verdict (KTD4, fail-closed 0020). Precedence fail > unknown > warn >
+ * pass: a real reachable secret path fails; otherwise an `error`-level diagnostic
+ * means a layer could not be evaluated, so the run is `unknown` (never a false
+ * pass); otherwise a capability path warns; otherwise pass.
+ */
+export function verdictOf(findings: Finding[], diagnostics: Diagnostic[] = []): Verdict {
   if (findings.some((f) => f.tier === 'fail')) {
     return 'fail';
+  }
+  if (diagnostics.some((d) => d.level === 'error')) {
+    return 'unknown';
   }
   if (findings.some((f) => f.tier === 'warn')) {
     return 'warn';
@@ -32,14 +40,27 @@ export function verdictOf(findings: Finding[]): Verdict {
   return 'pass';
 }
 
-/** The gate exits non-zero only on a fail verdict; warn and pass exit 0 (KTD4). */
+/** A real reachable secret/credential finding (KTD4) — distinct from `unknown`. */
 export function gateFails(verdict: Verdict): boolean {
   return verdict === 'fail';
+}
+
+/**
+ * The CI/scan blocking predicate: block on a real fail OR an un-evaluable run
+ * (`unknown`). Fail-closed — a gate that could not evaluate must not wave a change
+ * through. warn/pass do not block (0020).
+ */
+export function gateBlocks(verdict: Verdict): boolean {
+  return verdict === 'fail' || verdict === 'unknown';
 }
 
 /** Build the graph, assemble ranked findings, apply acknowledgements, gate — the one engine. */
 export function runEngine(inputs: EngineInputs): GateResult {
   const build = buildGraph(inputs);
   const findings = applyAcknowledgements(assembleFindings(build), inputs.acknowledged ?? []);
-  return { verdict: verdictOf(findings), findings, diagnostics: build.diagnostics };
+  return {
+    verdict: verdictOf(findings, build.diagnostics),
+    findings,
+    diagnostics: build.diagnostics,
+  };
 }

@@ -7,8 +7,12 @@
 import type { EntryKind, SinkKind } from '../graph/types';
 import type { OwaspLabels } from '../taxonomy/label';
 
-/** Whole-run outcome: any fail-tier finding → fail; any warn-tier → warn; none → pass. */
-export type Verdict = 'fail' | 'warn' | 'pass';
+/**
+ * Whole-run outcome. `unknown` means the run could not be fully evaluated (a parse
+ * or analysis error) — it is NOT a pass: CI blocks on it, the local hook warns
+ * loudly. Precedence fail > unknown > warn > pass (0020, KTD4 fail-closed).
+ */
+export type Verdict = 'fail' | 'warn' | 'pass' | 'unknown';
 
 /** Per-finding gate tier under KTD4 (secret/credential fail, capability warns). */
 export type Tier = 'fail' | 'warn';

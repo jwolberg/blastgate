@@ -5,16 +5,31 @@
  * reasons draw from the same data, so every surface stays in parity (R7).
  */
 
-import { gateFails, type GateResult } from '../engine/gate';
+import { gateBlocks, type GateResult } from '../engine/gate';
 
 /** Human output: each ranked path (entry → … → sink), the sink, why, the fix, and labels. */
 export function renderText(result: GateResult): string {
-  if (result.findings.length === 0) {
-    return 'blastgate: no reachable attacker→sink path. PASS\n';
-  }
+  const lines: string[] = [];
 
-  const header = result.verdict === 'fail' ? 'FAIL' : 'WARN';
-  const lines: string[] = [`blastgate: ${result.findings.length} reachable path(s) — ${header}`];
+  if (result.verdict === 'unknown') {
+    // Could-not-evaluate is never a PASS (0020): show it, and any error, plainly.
+    lines.push(
+      'blastgate: could not fully evaluate the change — UNKNOWN (blocking in CI, not a pass)',
+    );
+    for (const e of result.diagnostics.filter((d) => d.level === 'error')) {
+      lines.push(`      error: ${e.message}`);
+    }
+    if (result.findings.length === 0) {
+      lines.push('');
+      return lines.join('\n');
+    }
+    lines.push(''); // fall through to also list any partial findings
+  } else if (result.findings.length === 0) {
+    return 'blastgate: no reachable attacker→sink path. PASS\n';
+  } else {
+    const header = result.verdict === 'fail' ? 'FAIL' : 'WARN';
+    lines.push(`blastgate: ${result.findings.length} reachable path(s) — ${header}`);
+  }
 
   for (const f of result.findings) {
     const tag = f.tier === 'fail' ? '✗ FAIL' : '! WARN';
@@ -34,7 +49,7 @@ export function renderJson(result: GateResult): string {
   return `${JSON.stringify(result.findings, null, 2)}\n`;
 }
 
-/** Scan exit code: non-zero only on a fail verdict; pass/warn exit 0 (KTD4). */
+/** Scan/CI exit code: non-zero on a fail OR an un-evaluable (unknown) run; pass/warn exit 0 (0020). */
 export function scanExitCode(result: GateResult): number {
-  return gateFails(result.verdict) ? 1 : 0;
+  return gateBlocks(result.verdict) ? 1 : 0;
 }

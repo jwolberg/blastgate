@@ -23,6 +23,8 @@ export const POST_PHASES = new Set(['dependency-install']);
 
 export interface HookOutput {
   stdout: string;
+  /** A loud warning shown to the user (e.g. an UNKNOWN verdict) without blocking. */
+  stderr?: string;
   exitCode: number;
 }
 
@@ -41,6 +43,18 @@ function reasonFrom(result: GateResult): string {
  * emits nothing (allow). Unknown phases are treated as PreToolUse (deny-capable).
  */
 export function hookOutput(phase: string, result: GateResult): HookOutput {
+  if (result.verdict === 'unknown') {
+    // Fail-closed but non-blocking locally (0020): a hung/errored evaluation is
+    // never a silent pass — warn loudly and let the developer proceed; CI blocks.
+    const n = result.diagnostics.filter((d) => d.level === 'error').length;
+    return {
+      stdout: '',
+      stderr:
+        `blastgate: could not fully evaluate this change — UNKNOWN, not a pass ` +
+        `(${n} evaluation error(s)). Allowing locally; re-run \`blastgate\` — CI blocks on UNKNOWN.\n`,
+      exitCode: 0,
+    };
+  }
   if (!gateFails(result.verdict)) {
     return { stdout: '', exitCode: 0 };
   }

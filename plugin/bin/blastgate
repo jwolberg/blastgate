@@ -33,14 +33,23 @@ function resolveEngine() {
 }
 
 const { cmd, base } = resolveEngine();
-const result = spawnSync(cmd, [...base, ...args], { stdio: 'inherit', env: process.env });
+// A bounded timeout so a hung engine can never hang the gate forever (0020). On
+// timeout spawnSync kills the child and returns an ETIMEDOUT error, handled below.
+const result = spawnSync(cmd, [...base, ...args], {
+  stdio: 'inherit',
+  env: process.env,
+  timeout: 30000,
+});
 
 if (result.error) {
   // Never SILENTLY disable the gate: surface the failure loudly and exit non-zero
   // (a non-block error the user sees), rather than allowing quietly.
+  const timedOut = result.error.code === 'ETIMEDOUT' || result.signal === 'SIGTERM';
   process.stderr.write(
-    `blastgate: could not run the engine (${result.error.message}). ` +
-      `Install it (\`npm i -g blastgate\`) or build it in the repo.\n`,
+    timedOut
+      ? `blastgate: engine timed out after 30s — treating as UNKNOWN (not a pass); exiting non-zero.\n`
+      : `blastgate: could not run the engine (${result.error.message}). ` +
+          `Install it (\`npm i -g blastgate\`) or build it in the repo.\n`,
   );
   process.exit(1);
 }
