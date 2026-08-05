@@ -16,12 +16,17 @@ const SINK_WEIGHT: Record<SinkKind, number> = {
   'privileged-capability': 1,
 };
 
-/** How exposed the entry point is: public fork PR > injectable agent > new dep. */
+/**
+ * How exposed the entry point is: public fork PR > injectable agent > new dep. A
+ * `privileged-hook` is deterministic and not externally triggerable, so it sits at the
+ * bottom — a real capability to review, but never attacker-controllable (U18).
+ */
 const ENTRY_KIND_EXPOSURE: Record<EntryKind, number> = {
   'fork-pr': 3,
   'injectable-agent-surface': 2,
   'ci-divergent': 2,
   'new-dependency': 1,
+  'privileged-hook': 1,
 };
 
 function score(path: ReachPath): number {

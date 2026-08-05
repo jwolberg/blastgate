@@ -314,3 +314,53 @@ Running log of decisions, deviations, and tradeoffs for human review.
   command hook scans clean (pass) while a tracked one still warns, plus the non-git
   fallback. Re-ran the self-scan → clean **PASS**. This closes the first
   false-positive class found in real use (R14 precision on real repos).
+
+## 2026-08-05 — Model if: actor/trigger guards (ticket 0017, dogfood-driven)
+
+- **Motivated by the volscan finding:** Blastgate failed the Claude Action job, which
+  is correct — but it couldn't see whether an `if:` actor guard mitigated the untrusted
+  trigger. 0017 teaches it to recognize one.
+- **`hasActorGuard(job)` (parse.ts) is conservative and fail-closed.** Only two patterns
+  count as a guard: an `author_association` compared against a trusted role
+  (OWNER/MEMBER/COLLABORATOR), or a `github.actor`/`github.triggering_actor`
+  comparison/allowlist. Anything else — including volscan's `contains(body, '@claude')`
+  cost filter — is *not* a guard, so an unrecognized `if:` never downgrades a finding.
+  Re-scanned volscan after the change: still FAILs (exit 1), as it should.
+- **Guard lives on the fork-PR `EntryNode` (`guarded?`), not `CiJobNode`.** Deviation
+  from the ticket's suggestion, on purpose: the gate downgrade keys off the path's
+  entry, and a guarded entry ("triggerable, but only by trusted actors") is the natural
+  carrier. Set by the CI analyzer from `hasActorGuard(job)`.
+- **Downgrade, don't suppress (KTD4 refinement).** `checks.ts` downgrades a guarded
+  fork-PR → secret path from **fail → warn** with a reason that says the trigger is
+  actor-gated but the broad credential scope is still a least-privilege risk. The gate
+  stops failing on a properly-gated job while still reporting it; an ungated one still
+  fails. Covered by unit tests (`hasActorGuard`), analyzer tests (entry.guarded), and
+  engine tests (gated=warn / ungated=fail).
+- **Follow-up polish (not blocking):** ranking could sort fails above warns of equal
+  score; a dedicated U11 fixture pair could be added — the behavior is already covered
+  by inline-workflow engine tests.
+
+## 2026-08-04 — Reframe committed command hooks: capability advisory, not injectable path (U18)
+
+- **Dogfood finding.** Scanning `../TerMinal` surfaced a WARN that read as a manufactured
+  attack path: `injectable agent surface (.claude/settings.json (hook)) → .claude/settings.json
+  (hook) (shell:command hook) → shell:command hook`, labelled `ASI01:2026`. A committed
+  `type: command` hook fires **deterministically** on an event — it is never selected by a
+  prompt-injected model — so tagging it an "injectable agent surface" / ASI01 Agent Goal
+  Hijack is a category error. It is a real *privileged capability* worth reviewing, but not
+  an attacker-injectable entry. Foothold's own settings.json (block-main-merge / stop-notify /
+  remote-check hooks) trips the same rule, so the noise was self-inflicted.
+- **Decision (chosen by user): reframe, keep firing.** Still WARN on a tracked command hook,
+  but drop the injection framing. New `EntryKind: 'privileged-hook'` (types.ts); the hook grant
+  is tagged `injectable: false` (capability.ts) and `emitGrant` wires `entry --reaches--> sink`
+  **directly** (no injected-grant middleman), so the rendered path is the clean two-node
+  `.claude/settings.json (committed hook) → shell:command hook` instead of a triple-restated
+  chain. Only the command hook is affected — permission-rule shell grants (`Bash(*)`) and
+  over-baseline MCP servers stay `injectable-agent-surface` / ASI01, since the agent *does*
+  invoke those and an injected prompt can steer them.
+- **Taxonomy:** `privileged-hook → ASI03` (Identity & Privilege Abuse) + `MCP02` (Privilege
+  Escalation via Scope Creep); **no ASI01**. Ranks below a genuine injectable capability
+  (entry exposure 1 vs 2). Reason/remediation reworded as a scope-review advisory.
+- **Verified:** typecheck + eslint clean, 110/110 tests pass (updated agent/label/scan-scope
+  tests assert the new entry kind, labels, and 2-node path; the injectable-MCP e2e + AE4 tests
+  are untouched and still green). Re-ran the original CLI command → reframed WARN, exit 0.

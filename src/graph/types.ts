@@ -6,8 +6,19 @@
 
 export type NodeKind = 'entry' | 'dependency' | 'ci-job' | 'agent-grant' | 'sink';
 
-/** How an attacker-controllable entry point is reachable. */
-export type EntryKind = 'new-dependency' | 'fork-pr' | 'injectable-agent-surface' | 'ci-divergent';
+/**
+ * How a finding's entry point arises. Most are attacker-controllable; `privileged-hook`
+ * is the exception — a committed, deterministic privileged capability (a `type: command`
+ * hook) that fires without any prompt injection, surfaced as a scope-review advisory
+ * rather than an injectable surface (U18). `ci-divergent` is an install/build script
+ * engineered to behave differently under observation to evade CI (0021).
+ */
+export type EntryKind =
+  | 'new-dependency'
+  | 'fork-pr'
+  | 'injectable-agent-surface'
+  | 'ci-divergent'
+  | 'privileged-hook';
 
 /** A sensitive thing a reachable path can arrive at. */
 export type SinkKind = 'secret' | 'credential' | 'privileged-capability';
@@ -23,6 +34,12 @@ export interface EntryNode {
   /** Relative attacker-controllability, higher = more exposed. Ranking input only. */
   exposure: number;
   label: string;
+  /**
+   * A `fork-pr` entry whose triggering job restricts *who* can trigger it to trusted
+   * actors (an `if:` actor guard). A guarded path is real (broad scope still applies)
+   * but not externally attacker-controllable, so the gate downgrades it fail→warn (U17).
+   */
+  guarded?: boolean;
 }
 
 export interface DependencyNode {

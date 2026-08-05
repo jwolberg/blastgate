@@ -16,6 +16,9 @@ export interface OwaspLabels {
  *   no MCP-server relevance — "no applicable MCP category")
  * - prompt-injectable agent surface → ASI01 (Agent Goal Hijack) + MCP10
  *   (Context Injection & Over-Sharing)
+ * - committed command hook (deterministic, not injectable) → ASI03 (Identity &
+ *   Privilege Abuse) + MCP02 (Privilege Escalation via Scope Creep). It is a standing
+ *   over-privilege, so it carries no ASI01 goal-hijack claim (U18).
  * - any path through an over-baseline agent grant is scope creep → MCP02, which
  *   takes precedence over the entry-derived MCP category.
  */
@@ -45,6 +48,10 @@ export function labelPath(path: ReachPath): OwaspLabels {
       // MCP-server relevance (it is a lifecycle script, not an MCP grant).
       agentic = 'ASI04';
       mcp = undefined;
+      break;
+    case 'privileged-hook':
+      agentic = 'ASI03';
+      mcp = 'MCP02';
       break;
   }
 
