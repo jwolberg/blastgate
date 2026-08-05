@@ -284,3 +284,17 @@ Running log of decisions, deviations, and tradeoffs for human review.
   (green).
 - Four shipped checks covered: install-script→secret (AE1/AE2), fork-PR→secret,
   agent-overprivilege (AE4), provenance-regression (AE3). 9 e2e tests; 98 total.
+
+## 2026-08-05 — Threat-model POV doc (U12): the KD5 success measure
+
+- **`docs/threat-model.md` is written for the "distinguishability" reader** (Success
+  Criteria): the threat (repo-as-execution-surface, Shai-Hulud, slopsquatting,
+  unsigned agent marketplaces), the cross-layer reachable-path model (nodes/edges/gate
+  + a mermaid AE1 diagram), a tool-by-tool positioning table (inventory vs
+  dependency/CI/MCP single-layer vs Blastgate's connective layer), the OWASP
+  archetype→category mapping (every category it emits is defined there, with the
+  MCP-draft `:2025` caveat), OWASP-as-asset framing, and the plugin-as-dogfood angle.
+- **OWASP labels verified against `src/taxonomy/owasp.ts`** so the doc's category
+  names match what the engine actually emits (ASI01/ASI03/ASI04, MCP02/MCP04/MCP10).
+- README gained a short Positioning section linking the doc. No code changed — the
+  98-test gate is unaffected (documentation deliverable, `Test expectation: none`).

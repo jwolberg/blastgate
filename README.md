@@ -50,6 +50,17 @@ example, a `postinstall` script in a job that holds no secrets and is not trigge
 by untrusted input is not reported. This keeps findings actionable and avoids the
 high false-positive rate of pattern-matching tools.
 
+## Positioning
+
+Inventory tools (StepSecurity Dev Machine Guard) enumerate what exists. Single-layer
+tools assess one layer each — dependencies (Socket, Aikido, Endor), CI workflows
+(Harden-Runner, OpenSSF Scorecard), or MCP configuration (Invariant `mcp-scan`, Cisco
+`mcp-scanner`). None computes the connective, cross-layer reachable path — "this new
+install script runs in this fork-triggerable job that holds this secret." Blastgate is
+that connective layer, and it labels each finding with the OWASP Agentic (2026) and MCP
+(draft) taxonomies. The full articulation, the tool-by-tool contrast, and the OWASP
+mapping are in [`docs/threat-model.md`](docs/threat-model.md).
+
 ## Interfaces
 
 - **CI/PR gate** — exits non-zero on a reachable path and surfaces the finding on the
