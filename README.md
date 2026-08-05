@@ -34,8 +34,9 @@ one engine, so every surface produces identical findings.
 - **Teams adopting coding agents / MCP servers.** Committed `.mcp.json` and
   `.claude/settings.json` grants are a blast radius most teams never audit. Blastgate
   measures it and flags over-privilege against a least-privilege baseline.
-- **npm package maintainers** worried about supply-chain compromise — install-script
-  behavior and npm provenance regressions, evaluated offline from the lockfile.
+- **npm / PyPI / RubyGems maintainers** worried about supply-chain compromise —
+  install-time execution and newly introduced dependencies, evaluated offline from the
+  lockfile (plus opt-in npm provenance regressions).
 - **Security engineers** who want a gate with a low false-positive rate: it fails only
   on a reachable secret/credential path, and warns (does not fail) on lower-severity
   capability paths.
@@ -74,12 +75,17 @@ which also maps every OWASP category Blastgate emits.
 Blastgate builds a single graph from the repository's manifests, lockfile, CI
 workflows, and agent/MCP configuration.
 
-- **Dependency / install layer** — lifecycle scripts (`preinstall`, `install`,
-  `postinstall`), newly added or changed dependencies, registry and `.npmrc` changes,
-  and npm provenance regressions.
+- **Dependency / install layer** — install-time execution and newly added or changed
+  dependencies across **npm** (lifecycle scripts, lockfile diff, `.npmrc`, provenance
+  regressions), **Python** (`setup.py`, `requirements.txt` diff), and **RubyGems**
+  (`Gemfile.lock` diff, native-extension gems). A dependency an untrusted change
+  introduces that runs code at install is the shared shape across all three.
 - **CI layer** — which jobs execute install/build steps, which secrets and token
-  permissions each job holds, and which jobs are triggerable by untrusted input (for
-  example `pull_request_target` or pull requests from forks).
+  permissions each job holds, and which jobs are triggerable by untrusted input —
+  across **GitHub Actions** (`pull_request_target`, fork PRs), **GitLab CI**
+  (merge-request pipelines, CI/CD variables), and **CircleCI** (advisory only: its
+  forked-PR-secret exposure is a project setting outside the repo — Blastgate surfaces
+  it rather than falsely passing; see the threat model).
 - **Agent / MCP layer** — the filesystem, network, shell, and tool capabilities granted
   by committed agent/MCP configuration, checked against a least-privilege baseline.
 
@@ -96,9 +102,12 @@ Precision is the primary design constraint. A check fails only on a genuinely re
 path; the presence of a pattern alone does not produce a finding. A `postinstall` script
 in a job that holds no secrets and is not triggerable by untrusted input is not
 reported. This keeps findings actionable and avoids the false-positive rate of
-pattern-matching tools. A human can accept a specific finding by id in a committed
-`.blastgate/acknowledged.json` — an auditable, per-finding override that downgrades it
-to a reported warning, never a silent kill switch.
+pattern-matching tools. A human can accept a finding via a committed
+`.blastgate/acknowledged.json` (by id) or the more expressive `.blastgate/policy.json`
+(accept by finding id, sink identity, or archetype, with an optional review-by date) —
+an auditable exception that downgrades a finding to a reported warning, never a silent
+kill switch: blanket/wildcard rules are rejected at parse, and a rule introduced by the
+same change is ignored (a PR cannot self-approve its own finding).
 
 ## Positioning
 
@@ -146,6 +155,9 @@ npx blastgate . --base main     # add diff signals (new deps, .npmrc changes) vs
 npx blastgate . --provenance    # opt-in npm provenance-regression check (needs --base)
 npx blastgate . --json          # emit the findings array as JSON (has each finding `id`)
 npx blastgate . --format md      # human-readable markdown report (share it, or > report.md)
+npx blastgate . --advisories     # opt-in CVE/advisory enrichment of reachable deps (never gates)
+npx blastgate . --record runs/   # append a run record for the trend dashboard
+npx blastgate report runs/ --out trend.html   # static HTML trend over recorded runs
 ```
 
 A fail verdict (a reachable path to a secret or credential) exits non-zero; a clean
@@ -159,7 +171,8 @@ as its PR job summary.
 
 Runs the same engine as the CLI — findings are identical (asserted by test). It
 defaults the diff base to the pull request's base ref, so change signals light up
-automatically, and surfaces findings as PR annotations plus a job-summary table.
+automatically, and surfaces findings as PR annotations plus a job-summary report (the
+same output as `blastgate --format md`).
 
 ```yaml
 # .github/workflows/blastgate.yml
@@ -177,15 +190,23 @@ jobs:
 
 ## Scope
 
-**Supported today.** On the dependency side, npm (lifecycle scripts, lockfile diff,
-`.npmrc`) and Python install-time execution (`setup.py`); on the CI side, GitHub Actions;
-plus committed agent/MCP configuration. One engine, one finding shape across all surfaces.
+**Supported today.** One engine, one finding shape across all surfaces:
 
-**On the roadmap.** More package ecosystems (RubyGems, a PyPI dependency-diff signal,
-Maven), more CI providers (GitLab CI, CircleCI), and opt-in advisory (CVE) enrichment.
-That last one is deliberately **enrichment, not gating** — Blastgate fails only on a
-reachable path, never because a package is known-bad by name; an advisory only adds
-context and severity to a finding that is *already* a reachable path.
+- **Ecosystems** — npm (lifecycle scripts, lockfile diff, `.npmrc`, provenance), Python
+  (`setup.py`, `requirements.txt` diff), RubyGems (`Gemfile.lock` diff).
+- **CI providers** — GitHub Actions and GitLab CI (full gate), CircleCI (advisory only —
+  the fork-secret toggle is out-of-repo).
+- **Agent / MCP** — committed grants checked against a least-privilege baseline.
+- **Exceptions** — `.blastgate/policy.json` / `acknowledged.json` (auditable, specific,
+  self-approval-guarded).
+- **Opt-in enrichment** — npm provenance regressions (`--provenance`) and CVE/GHSA
+  advisories on reachable deps (`--advisories`), deliberately **enrichment, not gating**:
+  Blastgate fails only on a reachable path, never because a package is known-bad by name.
+- **History** — per-run records (`--record`) and a static HTML trend (`blastgate report`).
+
+**On the roadmap.** Maven / Gradle (build-script execution — the design spike recommends
+GO, see [`docs/learnings/`](docs/learnings)); more Python lockfiles (poetry / uv / Pipfile);
+a hosted collaboration dashboard (the current dashboard is local/static only).
 
 **Out of scope.** Analysis of deployed or running targets. See [`docs/plans/`](docs/plans)
 for the product plan, [`docs/threat-model.md`](docs/threat-model.md) for the model, and
@@ -193,12 +214,14 @@ for the product plan, [`docs/threat-model.md`](docs/threat-model.md) for the mod
 
 ## Status
 
-Functional across all surfaces. One engine backs the CLI (`blastgate`), the GitHub
-Action, the Claude Code plugin hooks, and the `blastgate_check_change` MCP self-check;
-the opt-in provenance-regression check is wired; and the engine is covered by a
-fixture-repo regression suite (a true-positive and true-negative repo per shipped
-check). Remaining before a public release: publishing the Action's built artifact for
-third-party consumers.
+Functional across all surfaces, ecosystems, and CI providers. One engine backs the CLI
+(`blastgate`), the GitHub Action, the Claude Code plugin hooks, and the
+`blastgate_check_change` MCP self-check. Ecosystems (npm, Python, RubyGems), CI providers
+(GitHub, GitLab, advisory CircleCI), the exception-policy engine, opt-in provenance and
+CVE-advisory enrichment, and the run-record trend report are all wired, and the engine is
+covered by unit tests plus a fixture-repo regression suite (a true-positive and
+true-negative repo per shipped check). Remaining before a public release: publishing the
+Action's built artifact for third-party consumers.
 
 ## License
 
