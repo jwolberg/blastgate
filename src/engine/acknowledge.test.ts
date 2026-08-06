@@ -58,7 +58,7 @@ function ae1(acknowledged?: EngineInputs['acknowledged']): EngineInputs {
   });
   const workflow = [
     'on:',
-    '  pull_request:',
+    '  pull_request_target:',
     'jobs:',
     '  test:',
     '    steps:',

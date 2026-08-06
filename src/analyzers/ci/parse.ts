@@ -53,6 +53,33 @@ export function untrustedTriggers(triggers: string[]): string[] {
   return triggers.filter((t) => UNTRUSTED_EVENTS.has(t));
 }
 
+/**
+ * Untrusted events that run in the BASE-repo context WITH repo secrets and a
+ * potentially writable `GITHUB_TOKEN`, even when driven by an outside contributor —
+ * i.e. the events from which a fork/external actor can actually REACH a credential.
+ *
+ * Plain `pull_request` is deliberately excluded: GitHub runs fork PRs with a
+ * read-only `GITHUB_TOKEN` and withholds repo secrets ("secrets are not passed to
+ * the runner when a workflow is triggered from a forked repository"). So a write
+ * permission or a `secrets.X` reference in a `pull_request`-only job is a declared
+ * permission a fork can never obtain — not a reachable path. `pull_request_target`,
+ * `workflow_run`, and the issue/review-comment events all run privileged and ARE
+ * reachable. This distinction is what keeps a finding a *reachable path* (R14)
+ * rather than a pattern match on the permissions block.
+ */
+const CREDENTIAL_REACHABLE_EVENTS = new Set([
+  'pull_request_target',
+  'workflow_run',
+  'issue_comment',
+  'pull_request_review',
+  'pull_request_review_comment',
+]);
+
+/** Untrusted triggers through which a fork/external actor can actually reach a secret or writable token. */
+export function credentialReachableTriggers(triggers: string[]): string[] {
+  return triggers.filter((t) => CREDENTIAL_REACHABLE_EVENTS.has(t));
+}
+
 export function collectStrings(value: unknown, out: string[]): void {
   if (typeof value === 'string') {
     out.push(value);

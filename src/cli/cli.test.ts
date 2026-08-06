@@ -19,7 +19,7 @@ const BASE_LOCK = JSON.stringify({ packages: { '': { name: 'app' } } });
 /** AE1/AE5 workflow: fork-triggerable job that runs `npm ci` and holds the AWS secret. */
 const WORKFLOW = [
   'on:',
-  '  pull_request:',
+  '  pull_request_target:',
   'jobs:',
   '  test:',
   '    steps:',

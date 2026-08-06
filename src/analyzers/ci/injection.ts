@@ -27,6 +27,18 @@ export function untrustedTextTriggers(triggers: string[]): string[] {
   return triggers.filter((t) => UNTRUSTED_TEXT_EVENTS.has(t));
 }
 
+/**
+ * Untrusted-text events that ALSO run privileged (base-repo context), so an injection
+ * into them can actually reach the job's secrets / writable token. Plain `pull_request`
+ * is excluded: a fork PR runs with a READ-ONLY token and no secrets, so an injection
+ * there is a code-execution risk on the runner — not a credential exfiltration path (the
+ * sink Blastgate models). Mirrors parse.ts's `credentialReachableTriggers` for the
+ * fork-PR entry, so both entry kinds honor GitHub's fork-token rule identically.
+ */
+export function credentialReachableTextTriggers(triggers: string[]): string[] {
+  return untrustedTextTriggers(triggers).filter((t) => t !== 'pull_request');
+}
+
 // Attacker-authored fields of the event payload: `.body` / `.title` on issue,
 // comment, pull_request, review, discussion. Numbers/ids/logins are not free text.
 const UNTRUSTED_TEXT_REF = /github\.event\.[\w.]*(?:body|title)\b/g;

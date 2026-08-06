@@ -13,7 +13,7 @@ const HEAD_LOCK = JSON.stringify({
 const BASE_LOCK = JSON.stringify({ packages: { '': { name: 'app' } } });
 const WORKFLOW = [
   'on:',
-  '  pull_request:',
+  '  pull_request_target:',
   'jobs:',
   '  test:',
   '    steps:',

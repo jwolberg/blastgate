@@ -12,7 +12,7 @@ import { collectInputs, type RepoFs } from './collect';
 /** A fork-triggerable job holding a credential — a single fail finding. */
 const WORKFLOW = [
   'on:',
-  '  pull_request:',
+  '  pull_request_target:',
   'jobs:',
   '  test:',
   '    steps:',
