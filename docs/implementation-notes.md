@@ -2,6 +2,36 @@
 
 Running log of decisions, deviations, and tradeoffs for human review.
 
+## 2026-08-06 — 0040: yarn.lock + pnpm-lock.yaml dependency analysis
+
+- **Decision: a new `jsdeps` analyzer, mirroring RubyGems** — not an extension of the
+  npm `deps` analyzer. yarn/pnpm are the npm *ecosystem* but their lockfiles omit npm's
+  `hasInstallScript` flag, so they need RubyGems' "diff-gated, assume install-capable"
+  semantics, which differ from the npm path's "parse the whole lockfile with real flags."
+  A separate analyzer keeps the critical npm path untouched and matches the reviewed
+  RubyGems shape (`ecosystem: 'npm'`, `hasInstallScript: true`, `entry:new-dep:<pkg>` →
+  `dep:<pkg>@<ver>` → engine `runs-in` synthesis unchanged).
+- **Collection precedence (collect.ts): npm wins, else yarn, else pnpm.** A repo uses one
+  JS package manager; gating yarn/pnpm on `package-lock.json` being absent avoids double
+  analysis and ID collisions (both use the npm `dep:`/`entry:new-dep:` ids on purpose, so
+  findings/labels/`describe()` are identical to npm's — ASI04/MCP04).
+- **Parsers scoped to the common cases (per the ticket's design note).** `parseYarnLock`
+  handles v1 "classic" and common Berry v2+ with one unindented-header + indented-`version`
+  shape; exotic Berry protocols (`@patch:`/`@workspace:`/git) that don't yield a clean
+  version are skipped. `parsePnpmLock` reads the `packages:` map and `pkgFromKey`
+  normalizes v5 (`/name/ver`), v6 (`/name@ver(peer)`), and v9 (`name@ver`) key forms.
+- **Diff keyed by package name → version (RubyGems parity).** Same known limitation: a
+  package resolved at two versions simultaneously collapses to one entry. Acceptable —
+  the gate verdict (any added/bumped dep in a fork-installed secret job → fail) is
+  unaffected; worst case is a slightly imprecise change label.
+- **Fail-closed:** an unparseable lockfile → error diagnostic → UNKNOWN (0020), same as npm.
+- **Known gap (follow-up):** `.npmrc` change analysis is still gated on the npm path, so a
+  yarn/pnpm repo's `.npmrc` registry-redirect signal is not yet surfaced; `.yarnrc.yml`
+  likewise. Lockfile coverage was the ticket's scope; filed as a follow-up.
+- **Fixtures:** `yarn-install-secret` + `pnpm-install-secret` (positive = added dep +
+  fork-triggerable install job → fail; negative = same added dep but a `push`-only job →
+  pass), wired into the `engine.e2e` coverage check. Full suite green.
+
 ## 2026-08-06 — 0039: graph-cap UNKNOWN on large repos (algorithm, not threshold)
 
 - **Dimension that blew the cap.** The 0018 guard bounded `|entries| × |sinks|`, a

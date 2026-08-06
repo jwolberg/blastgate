@@ -1,4 +1,4 @@
-import { singleSource } from 'graphology-shortest-path/unweighted';
+import { singleSource } from 'graphology-shortest-path';
 import type { AttackGraph } from './graph';
 import type { AttackNode, EntryNode, SinkNode } from './types';
 
@@ -17,7 +17,7 @@ const byId = (a: { id: string }, b: { id: string }): number =>
 
 /**
  * Every sink reachable from `entry`, one shortest path each (0039). A single
- * unweighted BFS from the entry computes the shortest path to *all* reachable
+ * unweighted BFS from the entry (`singleSource`) computes the shortest path to *all* reachable
  * nodes at once — replacing the old per-(entry, sink) bidirectional search, whose
  * `|entries| × |sinks|` call count made large monorepos fail closed to UNKNOWN
  * even though the real paths are few and short. Sinks are returned in id order so
