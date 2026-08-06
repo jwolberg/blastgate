@@ -2,6 +2,40 @@
 
 Running log of decisions, deviations, and tradeoffs for human review.
 
+## 2026-08-06 — 0039: graph-cap UNKNOWN on large repos (algorithm, not threshold)
+
+- **Dimension that blew the cap.** The 0018 guard bounded `|entries| × |sinks|`, a
+  proxy for the number of per-pair `bidirectional()` searches `reachablePaths` ran.
+  On a big monorepo (40+ workflow files) hundreds of fork-triggerable jobs (entries)
+  multiply hundreds of distinct secret + per-job `GITHUB_TOKEN` sinks past the 200k
+  ceiling, so 4/12 in-scope repos in the 2026-08-05 run came back UNKNOWN with 0
+  findings — the worst outcome (no signal *and* blocks the gate).
+- **Decision: compute reachability incrementally so size scales** (the ticket's third
+  option), not raise the threshold or prune. `reachablePaths`/`shortestPathsToSinks`
+  now run **one single-source BFS per entry** (`singleSource` from
+  `graphology-shortest-path/unweighted`) instead of a `bidirectional` search per
+  (entry, sink). One BFS finds the shortest path to *all* reachable sinks at once, so
+  real cost drops from `O(entries × sinks × (V+E))` to `O(entries × (V+E))` — linear
+  in graph size. The genuine reachable paths on those repos were always few and short;
+  the old cost model just refused to look.
+- **Guard recalibrated to the real cost.** `reachabilityCost` is now
+  `|entries| × (|nodes| + |edges|)` (the BFS-per-entry work), ceiling raised to
+  `MAX_REACHABILITY_COST = 5e7` (`EngineOptions.maxPairs` → `maxCost`). Fail-closed
+  (0020) is preserved: a fabricated tens-of-thousands-of-entries graph still exceeds
+  the cap and returns UNKNOWN rather than hanging. The new algorithm also largely
+  defangs the original 0018 DoS (5000×5000 pairs was ~25M `bidirectional` calls;
+  it is now ~5000 BFS traversals).
+- **Reproduction (acceptance #3/#4).** `caps.test.ts` builds a synthetic 60-workflow ×
+  8-job monorepo (480 entries × 480 secrets = 230k entry×sink pairs, over the old cap)
+  and asserts it now evaluates to a real `fail` verdict with findings and no error
+  diagnostic — instead of a 0-finding UNKNOWN.
+- **Parity note.** Output ordering is preserved (entries in id order, each entry's
+  sinks in id order). Where a graph has multiple equal-length shortest paths for a
+  pair, BFS may pick a different (still-shortest) intermediate path than the old
+  bidirectional search; finding identity (`entry=>sink`), tier, and verdict are
+  unchanged — only a displayed intermediate node could differ, and only when
+  genuinely ambiguous. Real fixtures are linear chains, so no observed change.
+
 ## 2026-08-04 — Naming: Foothold → Blastgate
 
 - **Decision:** Rename the product from **Foothold** to **Blastgate**.
