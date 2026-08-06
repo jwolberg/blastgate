@@ -26,8 +26,9 @@ Ran the blastgate gate against **50** of the most-starred GitHub repos (two batc
 - **Scope note:** whole-repo mode evaluates *standing* posture (fork/injection jobs holding
   secrets, agent grants). The **dependency/supply-chain layer is diff-gated** — npm/yarn/pnpm/
   Ruby/Python findings only form against a `--base` (a simulated untrusted PR), so they do
-  **not** appear here. Deps coverage is validated separately (unit + e2e + real-repo CLI
-  smoke on 0040). This run exercises the CI, agent, and cross-provider layers.
+  **not** appear in the whole-repo tables. A dedicated `--base` deps pass over real
+  dependency-change commits is in [§5.1](#51-deps-layer---base-pass-on-real-dependency-change-commits);
+  this whole-repo run exercises the CI, agent, and cross-provider layers.
 
 ## [2] Results at a glance
 
@@ -153,6 +154,26 @@ So for the co-presence subclass the gate's "fail" today reads as **"review-worth
   0040. Under a `--base` PR context these now feed the same `runs-in → job → secret` synthesis
   as npm.
 
+### [5.1] Deps-layer `--base` pass on real dependency-change commits
+
+Whole-repo mode ([§1](#1-method)) can't exercise the diff-gated supply-chain layer, so a second
+pass scanned **17 JS repos** (pnpm 9, yarn 5, npm 3) each at its **most-recent lockfile-changing
+commit with `--base <parent>`** — a real dependency diff. Results:
+
+- **Robustness: 0 parse errors, 0 UNKNOWN across all 17.** 0040's yarn/pnpm parsers (and the npm
+  parser) handled real-world lockfiles — Berry, workspaces, hundreds of packages — cleanly,
+  including vite's **103-entry** and TypeScript's **68-entry** diffs (248 new-dependency entries
+  emitted in total). Real lockfiles are far messier than the fixtures; none tripped the parser.
+- **Precision: 0 deps-driven findings, 0 false positives.** Not one repo FAILed because of a
+  dependency change. Every FAIL was the *same* injection finding as whole-repo mode — the
+  verdict was **identical to whole-repo for all 17**. The reachability gate held (R14): an
+  added/bumped dep only fails if it reaches a **fork-triggerable install job holding a secret**,
+  which none of these well-run repos expose. A benign (or large) bump is correctly absorbed with
+  no new finding.
+- This confirms the flagship cross-layer path is silent on benign bumps and would fire only on
+  the genuine pwn-request-install shape (demonstrated by the 0040 fixtures + the real-repo CLI
+  smoke test, where an injected fork-install-secret job does produce the FAIL).
+
 ## [6] Caveats
 
 - **Purposive sample, not random** — weighted toward CI-heavy repos; the true top-100 has many
@@ -168,8 +189,9 @@ So for the co-presence subclass the gate's "fail" today reads as **"review-worth
   (`getCollaboratorPermissionLevel`, `check-user-permission`, label-gating) and distinguish
   `env:`-safe / boolean-`contains()` handling from direct shell/`${{ }}` interpolation — to cut
   the co-presence false positives in [§4](#4-precision).
-- Re-run with `--base` against a set of real merged PRs to exercise the deps/supply-chain layer
-  (including the new yarn/pnpm path) on live diffs.
+- ~~Re-run with `--base` against real dependency-change commits to exercise the deps/supply-chain
+  layer on live diffs.~~ **Done — see [§5.1](#51-deps-layer---base-pass-on-real-dependency-change-commits):**
+  17 repos, 0 parse errors, 0 deps-layer false positives.
 - Consider a distinct, higher-severity tier or label for the `workflow_run` artifact-injection
   class, which the review found to be high-confidence.
 
