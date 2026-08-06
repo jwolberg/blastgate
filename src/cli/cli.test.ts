@@ -23,6 +23,7 @@ const WORKFLOW = [
   'jobs:',
   '  test:',
   '    steps:',
+  '      - run: gh pr checkout 123',
   '      - run: npm ci',
   '        env:',
   '          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}',

@@ -55,6 +55,20 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
 
   if (path.entry.entryKind === 'untrusted-text-injection') {
     const where = job ? `${job.workflow}#${job.job}` : 'the workflow';
+    // 0042: a workflow_run job splicing downloaded-artifact contents into a shell is a
+    // distinct injection shape from event-text — give it its own reason/fix.
+    if (path.entry.label.includes('artifact')) {
+      return {
+        reason:
+          `${path.entry.label} — job ${where} runs on \`workflow_run\` and splices the contents of an ` +
+          `artifact built by the untrusted \`pull_request\` run into a shell (e.g. \`$(<file)\`), so ` +
+          `attacker-controlled artifact content is injected into a privileged command holding ` +
+          `${sink.sinkKind} ${sink.identity}.`,
+        remediation:
+          `Never splice downloaded-artifact contents into a shell; pass the artifact as a quoted argument ` +
+          `to a trusted committed script, validate it, and keep ${sink.identity} out of the workflow_run job.`,
+      };
+    }
     return {
       reason:
         `${path.entry.label} — attacker-authored text from an untrusted event is read by job ${where}, ` +

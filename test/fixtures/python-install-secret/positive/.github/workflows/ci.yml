@@ -4,6 +4,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      - run: gh pr checkout 123
       - run: pip install .
         env:
           AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

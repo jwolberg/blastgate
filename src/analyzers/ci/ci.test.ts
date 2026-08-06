@@ -13,6 +13,8 @@ const AE1 = [
   '  test:',
   '    steps:',
   '      - uses: actions/checkout@v4',
+  '        with:',
+  '          ref: ${{ github.event.pull_request.head.sha }}',
   '      - run: npm ci',
   '        env:',
   '          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}',
@@ -84,6 +86,7 @@ describe('analyzeCi', () => {
       'jobs:',
       '  j:',
       '    steps:',
+      '      - run: gh pr checkout 123',
       '      - run: echo ${{ secrets.AWS_SECRET_ACCESS_KEY }}',
     ].join('\n');
     const r = analyzeCi({ workflows: [{ path: 'w', content: forkPr }] });
@@ -122,6 +125,63 @@ describe('analyzeCi', () => {
     expect(
       isInjEntry(analyzeCi({ workflows: [{ path: 'w', content: injecting('issue_comment') }] })),
     ).toBe(true);
+  });
+
+  it('gates the fork-pr credential entry on an untrusted PR-head checkout (0041)', () => {
+    // A privileged label bot (github-script on event metadata, a writable token + secret, but
+    // NO untrusted checkout) is the safe, standard pattern — attacker code can never run, so it
+    // is not a finding. This is the 14/16 false-positive class the top-25 assessment surfaced.
+    const mk = (checkoutStep: string[]): string =>
+      [
+        'on:',
+        '  pull_request_target:',
+        'permissions:',
+        '  pull-requests: write',
+        'jobs:',
+        '  label:',
+        '    steps:',
+        ...checkoutStep,
+        '      - uses: actions/github-script@v7',
+        '        env:',
+        '          T: ${{ secrets.MY_SECRET }}',
+      ].join('\n');
+    const bot = analyzeCi({ workflows: [{ path: 'w', content: mk([]) }] });
+    const botJob = bot.nodes.find((n) => n.kind === 'ci-job');
+    expect(botJob && botJob.kind === 'ci-job' && botJob.forkTriggerable).toBe(false);
+    expect(bot.nodes.some((n) => n.kind === 'entry' && n.entryKind === 'fork-pr')).toBe(false);
+
+    // Add an untrusted PR-head checkout → attacker code can run → it IS a finding.
+    const dangerous = analyzeCi({
+      workflows: [{ path: 'w', content: mk(['      - run: gh pr checkout 123']) }],
+    });
+    expect(dangerous.nodes.some((n) => n.kind === 'entry' && n.entryKind === 'fork-pr')).toBe(true);
+  });
+
+  it('flags workflow_run artifact injection but not a safe artifact consumer (0042)', () => {
+    const mk = (runLine: string): string =>
+      [
+        'on:',
+        '  workflow_run:',
+        "    workflows: ['CI']",
+        '    types: [completed]',
+        'permissions:',
+        '  pull-requests: write',
+        'jobs:',
+        '  comment:',
+        '    steps:',
+        '      - uses: actions/download-artifact@v4',
+        `      - run: ${runLine}`,
+        '        env:',
+        '          T: ${{ secrets.GH_SESSION }}',
+      ].join('\n');
+    const hasInj = (content: string): boolean =>
+      analyzeCi({ workflows: [{ path: 'w', content }] }).nodes.some(
+        (n) => n.kind === 'entry' && n.entryKind === 'untrusted-text-injection',
+      );
+    // splicing the downloaded artifact's contents into a shell → injection
+    expect(hasInj(mk('gh pr comment $(<PRurl)'))).toBe(true);
+    // passing it as a quoted argument to a trusted committed script → safe
+    expect(hasInj(mk('python3 scripts/publish.py --dir "$RUNNER_TEMP/a"'))).toBe(false);
   });
 
   it('flags over-broad write-all permissions but not contents: read', () => {

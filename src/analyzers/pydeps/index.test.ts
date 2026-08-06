@@ -76,6 +76,7 @@ describe('engine: Python install-time execution reaches a CI secret (0028)', () 
     'jobs:',
     '  test:',
     '    steps:',
+    '      - run: gh pr checkout 123',
     '      - run: pip install .',
     '        env:',
     '          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}',

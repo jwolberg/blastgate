@@ -161,6 +161,36 @@ export function hasInstallStep(job: JobSpec): boolean {
   });
 }
 
+/** Ref expressions that resolve to the untrusted PR/workflow_run head (the attacker's code). */
+const UNTRUSTED_REF_RE =
+  /pull_request\.head|head_ref|workflow_run\.head_(sha|branch|ref)|refs\/pull\/|merge_commit_sha/;
+/** Shell forms that fetch/check out the untrusted PR ref inside a `run:` step. */
+const PR_CHECKOUT_CMD_RE = /gh\s+pr\s+checkout|git\s+fetch[^\n]*\bpull\/|checkout\s+FETCH_HEAD/;
+
+/**
+ * Whether a privileged job checks out the *untrusted* PR/workflow_run head — the
+ * precondition that lets an attacker's code actually run in the job (0041). A
+ * `pull_request_target` job with no checkout, or a default-ref checkout (which resolves
+ * to the trusted base), runs only committed code and cannot reach the job's secrets;
+ * the standard label/triage bots (`actions/github-script` / `actions/labeler` on event
+ * metadata) fall here and are NOT findings. Only an explicit untrusted-ref checkout, or
+ * a `gh pr checkout` / manual PR-ref fetch, counts as an execution surface.
+ */
+export function checksOutUntrustedRef(job: JobSpec): boolean {
+  for (const step of job.steps ?? []) {
+    if (typeof step.uses === 'string' && /actions\/checkout/.test(step.uses)) {
+      const ref = step.with?.ref;
+      if (typeof ref === 'string' && UNTRUSTED_REF_RE.test(ref)) {
+        return true;
+      }
+    }
+    if (typeof step.run === 'string' && PR_CHECKOUT_CMD_RE.test(step.run)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Pinned ⇔ `@<40-hex-sha>` (or a docker `@sha256:` digest); local `./` actions carry no external risk. */
 export function isPinnedAction(uses: string): boolean {
   if (uses.startsWith('./') || uses.startsWith('../')) {

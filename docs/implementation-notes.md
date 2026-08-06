@@ -536,3 +536,42 @@ Running log of decisions, deviations, and tradeoffs for human review.
   blast radius; gate it the same way. (2) The README's headline Shai-Hulud example implies
   a fork `pull_request` install job reaches AWS creds — reword to `pull_request_target`
   (or note GitHub's default protection) so the flagship example is technically accurate.
+
+## 2026-08-05 — CI exploitability gate + injection sinks (0041 / 0042)
+
+- **Finding (empirical).** The top-25 threat assessment showed the fork-token fix left a
+  *second, larger* false-positive class: 14 of 16 flagged items were the safe standard
+  pattern — a `pull_request_target` / `workflow_run` label/triage bot that holds a writable
+  token but **never runs untrusted code** (`actions/github-script` / `labeler` on event
+  metadata, no PR-head checkout). The tool flagged "privileged event + token" without
+  checking exploitability. Real false-positive rate ≈94%, not 0%.
+- **0041 — execution gate.** `forkTriggerable` now requires `checksOutUntrustedRef(job)`
+  (an `actions/checkout` with a PR/`workflow_run` head `ref:`, or `gh pr checkout` / a manual
+  PR-ref fetch) in addition to a secret-bearing event. A privileged job with no untrusted
+  checkout is no longer a finding. Because `build.ts` keys the cross-layer `runs-in` edge off
+  `forkTriggerable`, the install-script path inherits the same gate (a fork's dependency is
+  only "reachable" when the job checks out and installs the fork's code).
+- **0042 — injection sinks.** Added `workflowRunArtifactInjection`: a `workflow_run` job that
+  downloads an artifact (built by the untrusted `pull_request` run) and splices its contents
+  into a shell via command substitution (`$(<file)` / `$(cat file)`) → an
+  `untrusted-text-injection` finding with an artifact-specific reason. Passing the artifact as
+  a quoted argument to a trusted committed script is NOT flagged. This catches the one genuine
+  finding (`EbookFoundation/free-programming-books` `comment-pr.yml`) **on purpose** — before,
+  the tool flagged it only by coincidence (as a generic `workflow_run` + token job).
+- **Validation.** Re-scan of the 5 previously-flagged repos: freeCodeCamp / yt-dlp → PASS
+  (11 FPs gone); hermes-agent → the workflow_run FP gone (only a separate ci-divergent WARN
+  remains, correctly — it checks out `main`, not the PR, and passes the artifact to a trusted
+  script); langflow → the 2 label FPs gone, leaving the genuine event-text injection; free-
+  programming-books → FAIL via the new artifact-injection reason.
+- **Deviation — fixtures/scaffolds encoded the pre-gate assumption.** AE1, the six supply-
+  chain / fork-pr positive fixtures, and ~11 inline test scaffolds modeled a "dangerous fork
+  job" with no PR-head checkout (which under the corrected model is safe). All were given an
+  untrusted checkout (`gh pr checkout` / `ref: …head.sha`) so they represent the genuinely
+  exploitable case. New `ci-artifact-injection` fixture pair + two unit tests added; full suite
+  green (283).
+- **Scope / simplification.** `checksOutUntrustedRef` recognizes the common untrusted-ref
+  patterns; an unrecognized checkout keeps the current assume-reachable behavior (fail-closed),
+  so this only removes clear FPs. `workflowRunArtifactInjection` v1 keys on the
+  command-substitution file-read sink (`$(<`/`$(cat`); other artifact-exec shapes and a sharper
+  event-text→`run:` taint model are future work. The artifact-injection finding reuses the
+  `untrusted-text-injection` entry kind (ASI01/MCP10) to avoid taxonomy surgery.

@@ -29,6 +29,7 @@ function ae1Inputs(): EngineInputs {
     'jobs:',
     '  test:',
     '    steps:',
+    '      - run: gh pr checkout 123',
     '      - uses: actions/checkout@v4',
     '      - run: npm ci',
     '        env:',
@@ -48,6 +49,7 @@ function ae2Inputs(): EngineInputs {
     'jobs:',
     '  build:',
     '    steps:',
+    '      - run: gh pr checkout 123',
     '      - run: npm ci',
   ].join('\n');
   return {
@@ -78,6 +80,7 @@ function nonForkSecretInputs(): EngineInputs {
     'jobs:',
     '  deploy:',
     '    steps:',
+    '      - run: gh pr checkout 123',
     '      - run: npm ci',
     '        env:',
     '          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}',
