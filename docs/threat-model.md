@@ -84,8 +84,20 @@ entry point to a sensitive sink.*
 | Layer | Entry points (attacker-controllable) | Sinks (sensitive) |
 | --- | --- | --- |
 | Dependencies / install scripts | a newly added or changed dependency; a provenance regression | — |
-| CI (GitHub Actions) | a job reachable from an untrusted trigger (fork `pull_request`, `pull_request_target`, `workflow_run`, …) | a secret or credential the job holds; an over-broad `GITHUB_TOKEN` |
+| CI (GitHub Actions) | a job reachable from a _secret-bearing_ untrusted trigger (`pull_request_target`, `workflow_run`, `issue_comment`, …) | a secret or credential the job holds; an over-broad `GITHUB_TOKEN` |
 | Agent / MCP config | a prompt-injectable agent surface (an over-baseline grant the agent invokes); a committed `type: command` hook is instead a deterministic *standing* capability, not an injectable entry | a privileged filesystem / network / shell / tool capability |
+
+> **Fork-token precision (why `pull_request` is not on that list).** A plain fork
+> `pull_request` is deliberately *not* an entry to a credential sink. GitHub runs fork
+> PRs with a **read-only** `GITHUB_TOKEN` and **withholds repo secrets**, so a write
+> permission or a `secrets.X` reference in a `pull_request`-only job is a declared
+> permission a fork can never obtain — not a reachable path. Only events that run in the
+> base-repo context — `pull_request_target`, `workflow_run`, `issues` / `issue_comment`,
+> review comments — deliver secrets to an outside contributor. Both the fork-PR entry and
+> the untrusted-text-injection entry honor this rule identically; treating a
+> `pull_request` permission block as reachable was a real false positive (≈55% of fails on
+> a top-100 repo sample) and is exactly the pattern-match-masquerading-as-reachability
+> that [3.4] forbids.
 
 Beyond the canonical three, the shipped engine models four further attacker-controllable
 entries — all change-time, and each derived directly from the Mythos-5 tradecraft in [1]:
@@ -113,15 +125,17 @@ job) · `injects` (injection reaches an agent surface) · `runs-in` (an install 
 executes inside a job) · `holds` (a job holds a secret) · `reaches` (a grant reaches a
 capability). The one edge no single-layer analyzer can emit — an install-script
 dependency **`runs-in`** a CI job — is synthesized by the engine, and only when that
-job is attacker-triggerable. That edge is where the cross-layer path becomes real.
+job is attacker-triggerable *with secrets in scope* (the fork-token note above — a plain
+`pull_request` fork job holds no live secret to reach). That edge is where the cross-layer
+path becomes real.
 
 ### [3.3] The canonical cross-layer path (AE1)
 
 ```mermaid
 flowchart LR
   E1["entry: new dependency<br/>(fork PR adds evil-pkg)"] -->|controls| D["dependency evil-pkg<br/>hasInstallScript"]
-  D -->|runs-in| J["CI job: test<br/>trigger: pull_request (fork)"]
-  E2["entry: fork PR"] -->|triggers| J
+  D -->|runs-in| J["CI job: test<br/>trigger: pull_request_target"]
+  E2["entry: fork PR<br/>(via pull_request_target)"] -->|triggers| J
   J -->|holds| S["sink: AWS_SECRET_ACCESS_KEY"]
   classDef entry fill:#7f1d1d,stroke:#fca5a5,color:#fff;
   classDef sink fill:#78350f,stroke:#fcd34d,color:#fff;

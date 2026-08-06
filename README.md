@@ -49,8 +49,8 @@ one artifact on it:
 
 | Threat                                                                                                                               | The concrete path Blastgate catches                                                                                                                         | OWASP             |
 | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| **Install-script supply-chain worm** (e.g. Shai-Hulud: a `preinstall` stealer that sweeps npm/GitHub/AWS/Vault creds and propagates) | A newly added dependency's install script runs in a fork-triggerable job that holds `AWS_SECRET_ACCESS_KEY`                                                 | `ASI04` / `MCP04` |
-| **CI `pwn-request`**                                                                                                                 | A `pull_request_target` / fork `pull_request` job runs untrusted code while holding secrets or an over-broad `GITHUB_TOKEN`                                 | `ASI03`           |
+| **Install-script supply-chain worm** (e.g. Shai-Hulud: a `preinstall` stealer that sweeps npm/GitHub/AWS/Vault creds and propagates) | A newly added dependency's install script runs in a `pull_request_target` job that holds `AWS_SECRET_ACCESS_KEY`                                            | `ASI04` / `MCP04` |
+| **CI `pwn-request`**                                                                                                                 | A `pull_request_target` (or `workflow_run` / issue-comment) job runs untrusted code while holding secrets or an over-broad `GITHUB_TOKEN`                   | `ASI03`           |
 | **npm provenance regression** (the CVE-2025-54313 shape)                                                                             | A dependency that _had_ npm attestations and silently _lost_ them between versions — a strong compromise signal (opt-in, `--provenance`)                    | `ASI04` / `MCP04` |
 | **Over-privileged coding agent**                                                                                                     | A committed MCP server rooted at `/` or an unrestricted `Bash(*)` / wrapper-bypass grant — a prompt-injectable path to out-of-repo filesystem/network/shell | `ASI01` / `MCP02` |
 | **Slopsquatting & unsigned agent marketplaces**                                                                                      | A newly introduced dependency or agent grant from an unaudited source, evaluated for reachability rather than trusted by name                               | `ASI04` / `MCP02` |
@@ -64,8 +64,9 @@ which also maps every OWASP category Blastgate emits.
 ✗ FAIL  added dependency evil-pkg@1.0.0 → evil-pkg@1.0.0 → .github/workflows/ci.yml#test → AWS_SECRET_ACCESS_KEY
       sink: credential AWS_SECRET_ACCESS_KEY  [ASI04:2026, MCP04:2025]
       why:  New or changed dependency evil-pkg@1.0.0 declares an install script that executes in job
-            .github/workflows/ci.yml#test, which is triggered by untrusted input (fork PRs) and holds
-            credential AWS_SECRET_ACCESS_KEY, which the script can exfiltrate.
+            .github/workflows/ci.yml#test, which a fork PR triggers via pull_request_target (base-repo
+            context, so it carries repo secrets) and which holds credential AWS_SECRET_ACCESS_KEY,
+            which the script can exfiltrate.
       fix:  Gate lifecycle scripts in that job (e.g. run `npm ci --ignore-scripts`) or remove
             AWS_SECRET_ACCESS_KEY from .github/workflows/ci.yml#test.
 ```
@@ -82,7 +83,9 @@ workflows, and agent/MCP configuration.
   introduces that runs code at install is the shared shape across all three.
 - **CI layer** — which jobs execute install/build steps, which secrets and token
   permissions each job holds, and which jobs are triggerable by untrusted input —
-  across **GitHub Actions** (`pull_request_target`, fork PRs), **GitLab CI**
+  across **GitHub Actions** (`pull_request_target` and other secret-bearing events — a
+  plain fork `pull_request` gets a read-only token and no secrets, so it is not a
+  credential path), **GitLab CI**
   (merge-request pipelines, CI/CD variables), and **CircleCI** (advisory only: its
   forked-PR-secret exposure is a project setting outside the repo — Blastgate surfaces
   it rather than falsely passing; see the threat model).
