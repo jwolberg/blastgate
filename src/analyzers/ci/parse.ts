@@ -146,6 +146,42 @@ export function hasActorGuard(job: JobSpec): boolean {
   );
 }
 
+/**
+ * Whether a job is gated on a *label* — `if: github.event.label.name …` (0044).
+ * Applying a label requires triage/write permission, so a `labeled`-triggered job
+ * only runs after a trusted actor acts; an outside contributor cannot self-trigger
+ * it. A weaker guard than `author_association` (the attacker's text may still be
+ * present when a maintainer labels), but it does restrict *who* fires the job — so,
+ * like `hasActorGuard`, it neutralizes the injection finding (node's `flaky-test` /
+ * `review wanted` bots are this shape).
+ */
+export function isLabelGated(job: JobSpec): boolean {
+  const cond = typeof job.if === 'string' ? job.if : '';
+  return /github\.event\.label\.name/.test(cond);
+}
+
+// A collaborator/actor permission check inside an `actions/github-script` body.
+const SCRIPT_PERMISSION_RE = /getCollaboratorPermissionLevel|\.permissions?\.(?:triage|push|admin|write|maintain)\b/;
+
+/**
+ * Whether a job halts for unauthorized actors via an in-*step* permission check (0044):
+ * an `actions/github-script` step whose script both checks collaborator/actor permission
+ * AND `throw`s. A thrown error fails the step, stopping the job before any secret-bearing
+ * step runs — a job-wide guard the `if:`-only detector (0017) misses (vite's
+ * `ecosystem-ci-trigger` is this shape). Conservative: a check that merely sets an output
+ * (non-halting) is NOT a guard, so the finding stands (fail-closed) — this is what keeps
+ * ant-design's un-gated DingTalk step a real finding.
+ */
+export function hasScriptPermissionGuard(job: JobSpec): boolean {
+  return (job.steps ?? []).some((step) => {
+    if (typeof step.uses !== 'string' || !/actions\/github-script/.test(step.uses)) {
+      return false;
+    }
+    const script = typeof step.with?.script === 'string' ? step.with.script : '';
+    return SCRIPT_PERMISSION_RE.test(script) && /\bthrow\b/.test(script);
+  });
+}
+
 /** A shell command that installs dependencies (where a poisoned lifecycle script executes). */
 export function isInstallCommand(command: string): boolean {
   return INSTALL_RE.test(command);

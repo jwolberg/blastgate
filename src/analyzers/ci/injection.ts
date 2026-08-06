@@ -9,7 +9,13 @@
  * job also holds a secret/token, the injection is a reachable exfiltration path.
  */
 
-import { collectStrings, type JobSpec } from './parse';
+import {
+  collectStrings,
+  hasActorGuard,
+  hasScriptPermissionGuard,
+  isLabelGated,
+  type JobSpec,
+} from './parse';
 
 /** Events that carry attacker-authored free text (issue/PR/discussion bodies, comments). */
 export const UNTRUSTED_TEXT_EVENTS = new Set([
@@ -42,6 +48,11 @@ export function credentialReachableTextTriggers(triggers: string[]): string[] {
 // Attacker-authored fields of the event payload: `.body` / `.title` on issue,
 // comment, pull_request, review, discussion. Numbers/ids/logins are not free text.
 const UNTRUSTED_TEXT_REF = /github\.event\.[\w.]*(?:body|title)\b/g;
+// Non-global copy for boolean membership tests (avoids shared-lastIndex hazards).
+const UNTRUSTED_TEXT_REF_TEST = /github\.event\.[\w.]*(?:body|title)\b/;
+// Boolean expression functions that only *compare* their argument to a literal —
+// `contains(<text>, '…')` etc. — so untrusted text inside one is matched, not injected.
+const BOOLEAN_GUARD_CALL = /\b(?:contains|startsWith|endsWith)\s*\([^()]*\)/g;
 
 // Coding-agent actions that read the event context by design (so the body reaches
 // the agent even without an explicit `${{ … }}` interpolation).
@@ -71,13 +82,60 @@ export function agentActionsUsed(job: JobSpec): string[] {
 /**
  * A job is a prompt-injection surface when an untrusted-text event triggers it AND
  * it either interpolates attacker-authored event text or runs an agent that ingests
- * the event. (Actor-guard exemption is applied by the analyzer, mirroring U17/0017.)
+ * the event. (Guard/handling exemptions are applied by the analyzer via
+ * `injectionNeutralized`, mirroring U17/0017.)
  */
 export function isInjectableAgentJob(job: JobSpec, triggers: string[]): boolean {
   if (untrustedTextTriggers(triggers).length === 0) {
     return false;
   }
   return injectableTextRefs(job).length > 0 || agentActionsUsed(job).length > 0;
+}
+
+/**
+ * Whether the job's untrusted text is *only ever compared*, never injected (0044):
+ * every `github.event.*.body/title` reference appears solely inside a boolean guard
+ * (`contains`/`startsWith`/`endsWith`), and no coding-agent action is present (an agent
+ * ingests the event context regardless of how the text is passed). pytorch's
+ * `claude-code.yml` — where the comment body only feeds `contains(…, 'fable')`-style
+ * effort/model switches and is deliberately kept out of the agent args — is this shape.
+ * A single bare interpolation (`echo ${{ github.event.issue.body }}`) makes it false.
+ */
+export function textOnlyBooleanMatched(job: JobSpec): boolean {
+  if (agentActionsUsed(job).length > 0) {
+    return false;
+  }
+  const strings: string[] = [];
+  collectStrings(job, strings);
+  let sawRef = false;
+  for (const s of strings) {
+    if (!UNTRUSTED_TEXT_REF_TEST.test(s)) {
+      continue;
+    }
+    sawRef = true;
+    // Remove boolean-guard calls; any text ref left is a real (non-comparison) use.
+    if (UNTRUSTED_TEXT_REF_TEST.test(s.replace(BOOLEAN_GUARD_CALL, ''))) {
+      return false;
+    }
+  }
+  return sawRef;
+}
+
+/**
+ * Whether a text-injection finding is neutralized by a recognized guard or safe handling
+ * (0044). Any of: an `if:` actor guard (0017), a label gate, an in-step github-script
+ * permission-check-with-throw, or text that is only boolean-matched. Conservative — an
+ * unrecognized guard leaves the finding standing (fail-closed, like 0041). This applies to
+ * the TEXT path only; `workflow_run` artifact injection (0042) keys on a real shell-splice
+ * sink and is never softened here.
+ */
+export function injectionNeutralized(job: JobSpec): boolean {
+  return (
+    hasActorGuard(job) ||
+    isLabelGated(job) ||
+    hasScriptPermissionGuard(job) ||
+    textOnlyBooleanMatched(job)
+  );
 }
 
 /** A step that downloads a CI artifact (the artifact may originate from an untrusted run). */
