@@ -2,11 +2,12 @@ import type { AttackNode } from '../../graph/types';
 import { type AnalyzerResult, emptyResult } from '../types';
 import {
   agentActionsUsed,
+  credentialReachableTextTriggers,
   injectableTextRefs,
   isInjectableAgentJob,
-  untrustedTextTriggers,
 } from './injection';
 import {
+  credentialReachableTriggers,
   findSecretRefs,
   hasActorGuard,
   hasInstallStep,
@@ -14,7 +15,6 @@ import {
   parseWorkflow,
   resolvePermissions,
   unpinnedActions,
-  untrustedTriggers,
 } from './parse';
 
 export interface WorkflowInput {
@@ -55,8 +55,12 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
     }
 
     const triggers = normalizeTriggers(spec.on);
-    const untrusted = untrustedTriggers(triggers);
-    const forkTriggerable = untrusted.length > 0;
+    // A fork/external actor reaches a secret or writable GITHUB_TOKEN only through an
+    // event that runs privileged (base-repo context). Plain fork `pull_request` gets a
+    // read-only token and no secrets, so it is NOT credential-reachable — excluding it
+    // is the difference between a reachable path and a declared permission (R14).
+    const credentialReachable = credentialReachableTriggers(triggers);
+    const forkTriggerable = credentialReachable.length > 0;
     const jobs = spec.jobs ?? {};
 
     for (const [jobId, job] of Object.entries(jobs)) {
@@ -106,15 +110,23 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           kind: 'entry',
           entryKind: 'fork-pr',
           exposure: 3,
-          label: `${untrusted.join('/')} reaches job ${jobId}`,
+          label: `${credentialReachable.join('/')} reaches job ${jobId}`,
           guarded: hasActorGuard(job),
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'triggers' } });
       }
 
       // 0022: attacker-authored event text reaching an agent/step is a prompt-injection
-      // surface. An actor guard (U17/0017) restricts who triggers it, so exempt it.
-      if (isInjectableAgentJob(job, triggers) && !hasActorGuard(job)) {
+      // surface. It reaches a credential only through a privileged (secret-bearing) event —
+      // a plain fork `pull_request` gets a read-only token and no secrets, so an injection
+      // there is not a credential path (same fork-token model as the fork-pr entry). An
+      // actor guard (U17/0017) restricts who triggers it, so exempt it.
+      const injectableEvents = credentialReachableTextTriggers(triggers);
+      if (
+        injectableEvents.length > 0 &&
+        isInjectableAgentJob(job, triggers) &&
+        !hasActorGuard(job)
+      ) {
         const refs = injectableTextRefs(job);
         const via = refs.length > 0 ? refs.join(', ') : agentActionsUsed(job).join(', ');
         const entryId = `entry:injection:${wf.path}#${jobId}`;
@@ -123,7 +135,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           kind: 'entry',
           entryKind: 'untrusted-text-injection',
           exposure: 3,
-          label: `untrusted ${untrustedTextTriggers(triggers).join('/')} text reaches job ${jobId} (${via})`,
+          label: `untrusted ${injectableEvents.join('/')} text reaches job ${jobId} (${via})`,
           guarded: false,
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'injects' } });

@@ -138,7 +138,7 @@ describe('provenance feeds the engine (U7 merge)', () => {
     const baseLock = lock({ evil: '1.0.0' });
     const workflow = [
       'on:',
-      '  pull_request:',
+      '  pull_request_target:',
       'jobs:',
       '  test:',
       '    steps:',

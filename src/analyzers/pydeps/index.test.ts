@@ -72,7 +72,7 @@ describe('analyzePyDeps (0028)', () => {
 describe('engine: Python install-time execution reaches a CI secret (0028)', () => {
   const WORKFLOW = [
     'on:',
-    '  pull_request:',
+    '  pull_request_target:',
     'jobs:',
     '  test:',
     '    steps:',
@@ -94,7 +94,7 @@ describe('engine: Python install-time execution reaches a CI secret (0028)', () 
   });
 
   it('an unchanged setup.py with no fork-triggerable secret job does not fail', () => {
-    const PUSH = WORKFLOW.replace('  pull_request:', '  push:\n    branches: [main]');
+    const PUSH = WORKFLOW.replace('  pull_request_target:', '  push:\n    branches: [main]');
     const result = runEngine({
       pydeps: { manifests: [{ path: 'setup.py', head: 'same', base: 'same' }] },
       ci: { workflows: [{ path: 'ci.yml', content: PUSH }] },

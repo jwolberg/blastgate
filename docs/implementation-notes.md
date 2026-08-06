@@ -499,3 +499,40 @@ Running log of decisions, deviations, and tradeoffs for human review.
 - **0031 — `provider` field on CiJobNode** (absent = github) mirrors `DependencyNode.ecosystem`.
 - **0030 — policy.json** generalizes acknowledged.json; the three integrity invariants
   (committed & diffable / specific / self-approval-guarded) are enforced in code + tests.
+
+## 2026-08-05 — CI fork-PR token model: plain `pull_request` is not credential-reachable
+
+- **Finding (empirical).** Ran Blastgate against a random 15 of the top-100 most-starred
+  GitHub repos. It *did* fire on real repos — correctly surfacing the
+  `pull_request_target`-holds-a-secret pwn-request shape (ohmyzsh's App private key,
+  nodejs/node ×14, TypeScript's `manage-prs`) — but ~55% of FAIL findings were **false
+  positives**: plain `pull_request` jobs flagged as reaching a writable `GITHUB_TOKEN` /
+  secret. Smoking gun: TypeScript's `coverage` job, which references **no secret** and
+  only declares `id-token: write`, was reported as a fork→credential exfiltration path.
+- **Root cause.** `ci/index.ts` set `forkTriggerable = untrustedTriggers().length > 0`,
+  and `UNTRUSTED_EVENTS` included `pull_request`. GitHub runs fork PRs on `pull_request`
+  with a **read-only** `GITHUB_TOKEN` and **withholds repo secrets**, so a write
+  permission / `secrets.X` in a `pull_request`-only job is a declared permission a fork
+  can never obtain — not a reachable path. This let a *pattern match on the permissions
+  block* masquerade as reachability — exactly what the precision-over-recall rule (R14)
+  forbids, and the core claim of the tool.
+- **Fix.** New `credentialReachableTriggers()` — the privileged base-context events
+  (`pull_request_target`, `workflow_run`, `issue_comment`, `pull_request_review[_comment]`)
+  — now gates `forkTriggerable`. Plain `pull_request` no longer mints a fork-pr entry or a
+  credential path.
+- **Deviation — the bug was encoded in the tests/fixtures too.** The canonical AE1
+  example, the four supply-chain positive fixtures (install-script / python-install /
+  pypi-dep / rubygems), the provenance-regression fixture, and ~10 inline test scaffolds
+  all used plain `pull_request` to mean "attacker-triggerable secret job." All corrected
+  to `pull_request_target` (the realistic secret-reaching event). TDD: a RED regression
+  test (`does not treat a plain fork pull_request job as credential-reachable`) drove the
+  change; full suite green (278).
+- **Simplification (accepted).** `pull_request_target` is still treated as running the
+  fork's code even though GitHub checks out the *base* ref by default (the real danger
+  needs an explicit PR-head checkout). Conservative on purpose; inspecting the checkout
+  ref is a follow-up refinement.
+- **Follow-ups.** (1) `untrusted-text-injection` on a plain `pull_request` (read-only
+  token) is still reported reaching a credential sink — same class of over-claim, smaller
+  blast radius; gate it the same way. (2) The README's headline Shai-Hulud example implies
+  a fork `pull_request` install job reaches AWS creds — reword to `pull_request_target`
+  (or note GitHub's default protection) so the flagship example is technically accurate.

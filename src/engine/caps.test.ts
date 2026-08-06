@@ -23,7 +23,7 @@ function graphWith(entries: number, sinks: number): AttackGraph {
 /** A fork-triggerable job holding a secret — one entry × one sink, a fail finding. */
 const WORKFLOW = [
   'on:',
-  '  pull_request:',
+  '  pull_request_target:',
   'jobs:',
   '  test:',
   '    steps:',

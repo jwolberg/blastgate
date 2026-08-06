@@ -19,13 +19,13 @@ function baseLock(): string {
 
 /**
  * AE1 — cross-layer true positive: a newly added install-script dependency, a
- * fork-triggerable (`pull_request`) job that runs `npm ci` and references
+ * fork-triggerable (`pull_request_target`) job that runs `npm ci` and references
  * `AWS_SECRET_ACCESS_KEY`.
  */
 function ae1Inputs(): EngineInputs {
   const workflow = [
     'on:',
-    '  pull_request:',
+    '  pull_request_target:',
     'jobs:',
     '  test:',
     '    steps:',
