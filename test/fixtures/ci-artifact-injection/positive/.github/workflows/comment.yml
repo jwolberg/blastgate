@@ -1,0 +1,14 @@
+name: comment
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+permissions:
+  pull-requests: write
+jobs:
+  comment:
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: gh pr comment $(<PRurl) -b "linter output"
+        env:
+          GH_SESSION: ${{ secrets.GH_SESSION_TOKEN }}

@@ -5,8 +5,10 @@ import {
   credentialReachableTextTriggers,
   injectableTextRefs,
   isInjectableAgentJob,
+  workflowRunArtifactInjection,
 } from './injection';
 import {
+  checksOutUntrustedRef,
   credentialReachableTriggers,
   findSecretRefs,
   hasActorGuard,
@@ -60,13 +62,21 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
     // read-only token and no secrets, so it is NOT credential-reachable — excluding it
     // is the difference between a reachable path and a declared permission (R14).
     const credentialReachable = credentialReachableTriggers(triggers);
-    const forkTriggerable = credentialReachable.length > 0;
     const jobs = spec.jobs ?? {};
 
     for (const [jobId, job] of Object.entries(jobs)) {
       const { names: secretNames, usesAllSecrets } = findSecretRefs(job);
       const perms = resolvePermissions(spec, job);
       const jobNodeId = `job:${wf.path}#${jobId}`;
+
+      // 0041: attacker-triggerable is not enough — the job is credential-reachable only
+      // when the attacker's code can actually RUN in it (an untrusted PR-head checkout).
+      // A privileged job with no such checkout (the standard label/triage bot acting on
+      // event metadata) holds a token but exposes no way to use it → not a finding. This
+      // gate also flows to the cross-layer install-script path (build.ts keys `runs-in`
+      // off `forkTriggerable`), so a fork's dependency is only "reachable" when the job
+      // checks out and installs the fork's code.
+      const forkTriggerable = credentialReachable.length > 0 && checksOutUntrustedRef(job);
 
       const jobNode: AttackNode = {
         id: jobNodeId,
@@ -116,26 +126,29 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'triggers' } });
       }
 
-      // 0022: attacker-authored event text reaching an agent/step is a prompt-injection
-      // surface. It reaches a credential only through a privileged (secret-bearing) event —
-      // a plain fork `pull_request` gets a read-only token and no secrets, so an injection
-      // there is not a credential path (same fork-token model as the fork-pr entry). An
-      // actor guard (U17/0017) restricts who triggers it, so exempt it.
+      // 0022/0042: attacker-controlled input reaching a sink is a prompt/command-injection
+      // surface. Two shapes: (a) untrusted event *text* interpolated into a step or fed to a
+      // coding agent — only on a privileged event (a plain fork `pull_request` gets a
+      // read-only token / no secrets, so it is not a credential path); (b) a `workflow_run`
+      // job that splices a downloaded (untrusted) artifact's contents into a shell (0042).
+      // An actor guard (U17/0017) restricts who triggers it, so exempt it.
       const injectableEvents = credentialReachableTextTriggers(triggers);
-      if (
-        injectableEvents.length > 0 &&
-        isInjectableAgentJob(job, triggers) &&
-        !hasActorGuard(job)
-      ) {
+      const textInjection = injectableEvents.length > 0 && isInjectableAgentJob(job, triggers);
+      const artifactInjection = workflowRunArtifactInjection(job, triggers);
+      if ((textInjection || artifactInjection) && !hasActorGuard(job)) {
         const refs = injectableTextRefs(job);
         const via = refs.length > 0 ? refs.join(', ') : agentActionsUsed(job).join(', ');
+        const label =
+          artifactInjection && !textInjection
+            ? `untrusted workflow_run artifact reaches a shell in job ${jobId}`
+            : `untrusted ${injectableEvents.join('/')} text reaches job ${jobId} (${via})`;
         const entryId = `entry:injection:${wf.path}#${jobId}`;
         result.nodes.push({
           id: entryId,
           kind: 'entry',
           entryKind: 'untrusted-text-injection',
           exposure: 3,
-          label: `untrusted ${injectableEvents.join('/')} text reaches job ${jobId} (${via})`,
+          label,
           guarded: false,
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'injects' } });

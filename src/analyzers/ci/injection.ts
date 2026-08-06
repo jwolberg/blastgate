@@ -79,3 +79,38 @@ export function isInjectableAgentJob(job: JobSpec, triggers: string[]): boolean 
   }
   return injectableTextRefs(job).length > 0 || agentActionsUsed(job).length > 0;
 }
+
+/** A step that downloads a CI artifact (the artifact may originate from an untrusted run). */
+export function downloadsArtifact(job: JobSpec): boolean {
+  return (job.steps ?? []).some((s) => {
+    if (typeof s.uses === 'string' && /actions\/download-artifact/.test(s.uses)) {
+      return true;
+    }
+    const script = typeof s.with?.script === 'string' ? s.with.script : '';
+    return (
+      (typeof s.run === 'string' && /gh\s+run\s+download|downloadArtifact\s*\(/.test(s.run)) ||
+      /downloadArtifact\s*\(/.test(script)
+    );
+  });
+}
+
+/** Reading a file's contents into a shell command line (`$(<file)` / `$(cat file)`) — unsafe if the file is attacker-controlled. */
+const FILE_INTO_SHELL_RE = /\$\(\s*<|\$\(\s*cat\s/;
+
+/** A `run:` step that splices file contents into the command line via command substitution. */
+export function readsFileIntoShell(job: JobSpec): boolean {
+  return (job.steps ?? []).some((s) => typeof s.run === 'string' && FILE_INTO_SHELL_RE.test(s.run));
+}
+
+/**
+ * workflow_run artifact injection (0042): a privileged `workflow_run` job downloads an
+ * artifact built by the (untrusted) `pull_request` run and then splices its contents into
+ * a shell via command substitution (`gh pr comment $(<PRurl)`). The downloaded content is
+ * attacker-controlled, so this is command/argument injection in a privileged context —
+ * the one genuine finding the top-25 assessment surfaced (and the shape single-layer tools
+ * miss). Passing the artifact as a *quoted argument to a trusted committed script* is NOT
+ * this — only a shell-substitution sink counts.
+ */
+export function workflowRunArtifactInjection(job: JobSpec, triggers: string[]): boolean {
+  return triggers.includes('workflow_run') && downloadsArtifact(job) && readsFileIntoShell(job);
+}

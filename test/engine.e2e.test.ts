@@ -135,6 +135,17 @@ const CHECKS: CheckSpec[] = [
     },
   },
   {
+    // 0042: a workflow_run job splicing a downloaded (untrusted) artifact into a shell.
+    name: 'ci-artifact-injection',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.entry.kind === 'untrusted-text-injection');
+      expect(f, 'a workflow_run artifact-injection finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.entry.label).toContain('artifact');
+    },
+  },
+  {
     name: 'agent-config-injection',
     positiveVerdict: 'warn',
     assertPositive: (r) => {

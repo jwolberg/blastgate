@@ -1,0 +1,14 @@
+name: comment
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+permissions:
+  pull-requests: write
+jobs:
+  comment:
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: python3 scripts/publish.py --dir "$RUNNER_TEMP/art"
+        env:
+          GH_SESSION: ${{ secrets.GH_SESSION_TOKEN }}

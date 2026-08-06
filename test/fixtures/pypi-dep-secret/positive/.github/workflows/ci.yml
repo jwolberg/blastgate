@@ -3,6 +3,7 @@ on:
 jobs:
   test:
     steps:
+      - run: gh pr checkout 123
       - run: pip install -r requirements.txt
         env:
           AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
