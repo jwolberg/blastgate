@@ -1,149 +1,176 @@
 ---
-title: "Empirical scan — 25 of the top-100 GitHub repos"
+title: "Empirical scan — 50 of the top-100 GitHub repos (two batches of 25)"
 anchor: EVAL-2026-08-06
 date: 2026-08-06
 tool: blastgate 0.1.0 (branch feat/0039-0040-graphcap-yarn-pnpm)
 ---
 
-# Empirical scan — 25 of the top-100 GitHub repos (2026-08-06)
+# Empirical scan — 50 of the top-100 GitHub repos (2026-08-06)
 
-Ran the blastgate gate against a 25-repo sample of the most-starred GitHub repos to
-(a) see how real-world CI/supply-chain posture scores, (b) validate the 0039 cap
-fix and 0040 yarn/pnpm coverage on real inputs, and (c) measure finding precision.
+Ran the blastgate gate against **50** of the most-starred GitHub repos (two batches of
+25, no overlap) to (a) see how real CI/supply-chain posture scores, (b) validate the
+0039 cap fix and 0040 yarn/pnpm coverage on real inputs, and (c) measure finding precision.
 
 ## [1] Method
 
-- **Sample:** 25 top-100-by-stars repos, purposively weighted toward repos with real
-  CI (where the tool has signal); includes 5 non-JS/large repos (go, rust, kubernetes,
-  tensorflow, ansible) for breadth. This is a **biased sample**, not a random draw — see
-  [§6](#6-caveats--threats-to-validity).
+- **Sample:** 50 top-100-by-stars repos, purposively weighted toward repos with real CI
+  (where the tool has signal); includes non-JS/large repos (go, rust, k8s, tensorflow,
+  ansible, pytorch, spring-boot, laravel, godot, elasticsearch, terraform, rails, neovim)
+  for breadth, plus 2 educational repos. **Biased sample, not a random draw** — see [§6](#6-caveats).
 - **Fetch:** blobless sparse clone (`--filter=blob:none --sparse`) of only the paths the
   tool reads (`.github/`, root lockfiles, `.gitlab-ci.yml`, `.circleci/`, `.mcp.json`,
   `.claude/`, `.cursor/`, `package.json`, `Gemfile.lock`, `setup.py`, `requirements.txt`).
 - **Scan:** `blastgate <dir> --json`, **whole-repo mode (no `--base`)**. Verdict derived
-  from the exit code + finding tiers: exit 1 + a `fail` finding → FAIL; exit 1 + none →
-  UNKNOWN; exit 0 + a `warn` finding → WARN; else PASS.
-- **Important scope note:** whole-repo mode evaluates *standing* posture (fork/injection
-  jobs holding secrets, agent grants). The **dependency/supply-chain layer is diff-gated**
-  — npm/yarn/pnpm/Ruby/Python findings only form against a `--base` (a simulated untrusted
-  PR), so they do **not** appear here. Deps coverage is validated separately (unit + e2e +
-  real-repo CLI smoke on 0040). This run exercises the CI, agent, and cross-provider layers.
+  from exit code + finding tiers: exit 1 + a `fail` finding → FAIL; exit 1 + none → UNKNOWN;
+  exit 0 + a `warn` finding → WARN; else PASS.
+- **Scope note:** whole-repo mode evaluates *standing* posture (fork/injection jobs holding
+  secrets, agent grants). The **dependency/supply-chain layer is diff-gated** — npm/yarn/pnpm/
+  Ruby/Python findings only form against a `--base` (a simulated untrusted PR), so they do
+  **not** appear here. Deps coverage is validated separately (unit + e2e + real-repo CLI
+  smoke on 0040). This run exercises the CI, agent, and cross-provider layers.
 
 ## [2] Results at a glance
 
-**8 FAIL · 1 WARN · 16 PASS** across 25 repos; **22 findings** total (20 `fail`-tier,
-2 `warn`-tier). **0 UNKNOWN.**
+**Combined (50 repos): 18 FAIL · 2 WARN · 30 PASS · 0 UNKNOWN.**
+50 findings total (46 `fail`-tier, 4 `warn`-tier).
+Per batch: batch 1 = 8 FAIL / 1 WARN / 16 PASS; batch 2 = 10 FAIL / 1 WARN / 14 PASS.
 
-| Verdict | Repo | Workflows | Lockfile | Findings | Class |
+**Finding subclasses (of the 46 fail-tier):**
+
+| Subclass | Count | Confidence |
+|---|--:|---|
+| `workflow_run` artifact-injection (0042 — real shell-splice sink) | 4 | **High** (see [§4](#4-precision)) |
+| untrusted event text co-located with a secret (co-presence) | 42 | Review-worthy; material FP rate |
+
+The 2 `warn`s + a further 3 `warn`-tier findings are `privileged-hook` (committed
+`.claude/settings.json` shell hooks) and 1 `injectable-agent-surface` (an MCP grant over
+baseline) — advisory, not attacker-controllable.
+
+### [2.1] Batch 1
+
+| Verdict | Repo | Wf | Lockfile | Findings |
+|---|---|--:|---|--:|
+| 🔴 FAIL | electron/electron | 50 | yarn | 4 |
+| 🔴 FAIL | facebook/react | 22 | yarn | 3 (+1 warn) |
+| 🔴 FAIL | sveltejs/svelte | 4 | pnpm | 3 |
+| 🔴 FAIL | angular/angular | 13 | pnpm | 2 |
+| 🔴 FAIL | facebook/react-native | 29 | yarn | 2 |
+| 🔴 FAIL | nodejs/node | 42 | — | 2 |
+| 🔴 FAIL | vitejs/vite | 12 | pnpm | 2 |
+| 🔴 FAIL | vuejs/core | 9 | pnpm | 2 |
+| 🟡 WARN | storybookjs/storybook | 17 | yarn | 1 (mcp grant) |
+| 🟢 PASS | next.js(37) · freeCodeCamp(21) · tensorflow(17) · vscode(16) · babel(13) · deno(11) · webpack(10) · axios(8) · three.js(6) · prettier(16) · rust(4) · tailwind(4) · express(4) · go(0) · k8s(0) · ansible(0) | | | 0 |
+
+### [2.2] Batch 2
+
+| Verdict | Repo | Wf | Lockfile | Findings | Notable |
 |---|---|--:|---|--:|---|
-| 🔴 FAIL | electron/electron | 50 | yarn | 4 | untrusted-text → secret |
-| 🔴 FAIL | facebook/react | 22 | yarn | 3 (+1 warn) | untrusted-text → secret; committed hook |
-| 🔴 FAIL | sveltejs/svelte | 4 | pnpm | 3 | untrusted-text → secret |
-| 🔴 FAIL | angular/angular | 13 | pnpm | 2 | untrusted-text → secret |
-| 🔴 FAIL | facebook/react-native | 29 | yarn | 2 | untrusted-text → secret |
-| 🔴 FAIL | nodejs/node | 42 | — | 2 | untrusted-text → secret |
-| 🔴 FAIL | vitejs/vite | 12 | pnpm | 2 | untrusted-text → secret |
-| 🔴 FAIL | vuejs/core | 9 | pnpm | 2 | untrusted-text → secret |
-| 🟡 WARN | storybookjs/storybook | 17 | yarn | 1 | agent grant over baseline |
-| 🟢 PASS | vercel/next.js | 37 | pnpm | 0 | — |
-| 🟢 PASS | freeCodeCamp/freeCodeCamp | 21 | pnpm | 0 | — |
-| 🟢 PASS | microsoft/vscode | 16 | npm | 0 | — |
-| 🟢 PASS | tensorflow/tensorflow | 17 | — | 0 | — |
-| 🟢 PASS | babel/babel | 13 | yarn | 0 | — |
-| 🟢 PASS | denoland/deno | 11 | — | 0 | — |
-| 🟢 PASS | webpack/webpack | 10 | yarn | 0 | — |
-| 🟢 PASS | axios/axios | 8 | npm | 0 | — |
-| 🟢 PASS | mrdoob/three.js | 6 | npm | 0 | — |
-| 🟢 PASS | prettier/prettier | 16 | yarn | 0 | — |
-| 🟢 PASS | rust-lang/rust | 4 | yarn | 0 | — |
-| 🟢 PASS | tailwindlabs/tailwindcss | 4 | pnpm | 0 | — |
-| 🟢 PASS | expressjs/express | 4 | — | 0 | — |
-| 🟢 PASS | golang/go | 0 | — | 0 | — |
-| 🟢 PASS | kubernetes/kubernetes | 0 | — | 0 | — |
-| 🟢 PASS | ansible/ansible | 0 | — | 0 | — |
+| 🔴 FAIL | ant-design/ant-design | 33 | — | 7 | DingTalk bot tokens via issue/PR/discussion text |
+| 🔴 FAIL | n8n-io/n8n | 93 | pnpm | 5 (+1 warn) | CLA-check job holds an App private key |
+| 🔴 FAIL | huggingface/transformers | 57 | circleci | 4 | comment-triggered bot tokens |
+| 🔴 FAIL | pytorch/pytorch | 146 | — | 3 | **2× workflow_run artifact-injection** + Claude Code agent job |
+| 🔴 FAIL | elastic/elasticsearch | 7 | — | 2 | issue title → BuildKite API token |
+| 🔴 FAIL | EbookFoundation/free-programming-books | 7 | — | 1 | **workflow_run artifact-injection** |
+| 🔴 FAIL | django/django | 17 | — | 1 | PR title/body → GITHUB_TOKEN pr:write |
+| 🔴 FAIL | grafana/grafana | 92 | yarn | 1 | **workflow_run artifact-injection** |
+| 🔴 FAIL | home-assistant/core | 13 | — | 1 | issue body → GitHub Models (AI) job |
+| 🔴 FAIL | neovim/neovim | 23 | — | 1 | PR title → labeler GITHUB_TOKEN |
+| 🟡 WARN | supabase/supabase | 47 | pnpm,mcp | 1 | committed `.claude` shell hook |
+| 🟢 PASS | TypeScript(17) · fastapi(21) · fastify(20) · langchain(27) · mui(17) · nest(1) · rails(10) · laravel(5) · spring-boot(10) · terraform(11) · godot(9) · excalidraw(11) · vue-v2(2) · awesome(1) | | | 0 | |
 
-## [3] The FAIL class: untrusted event text → a secret-bearing job
+## [3] The dominant class: untrusted event text → a secret-bearing job
 
-All 8 FAILs are the **same shape** (`entryKind: untrusted-text-injection`, labels
-`ASI01:2026` / `MCP10:2025`): a workflow triggered by an untrusted event
-(`issue_comment`, `issues`, `pull_request_target`) reads attacker-authored text
-(`comment.body`, `issue.body/title`, `pull_request.title/body`) inside a job that also
-holds a secret or credential. This is the CI "pwn-request / injection" class.
+44 of 46 fail-tier findings are `untrusted-text-injection` (labels `ASI01:2026` /
+`MCP10:2025`): a workflow triggered by an untrusted event (`issue_comment`, `issues`,
+`discussion`, `pull_request_target`) reads attacker-authored text inside a job that also
+holds a secret/credential. Recurring shapes across the 50:
 
-A striking cluster: **vue, vite, and svelte all ship the same `ecosystem-ci-trigger.yml`
-job** — an `issue_comment`-triggered dispatcher holding an `ECOSYSTEM_CI_GITHUB_APP_*`
-credential. The pattern propagated across the ecosystem. Others: electron's issue-triage
-App creds, react's Discord webhooks, react-native's autorebase bot token, node's
-`GITHUB_TOKEN`/Slack webhook.
+- **CI-dispatch bots** — vue/vite/svelte's shared `ecosystem-ci-trigger.yml`, n8n's CLA
+  check — hold an App private key and read the triggering comment.
+- **Notification bots** — ant-design → DingTalk, react → Discord, node → Slack — interpolate
+  the issue/PR title into a third-party notify action.
+- **AI-agent jobs** (a fast-growing shape) — pytorch's `claude-code.yml`, home-assistant's
+  `detect-non-english-issues` (GitHub Models) — feed untrusted issue/comment text to an LLM
+  in a credentialed job. This is the literal ASI01 prompt-injection threat the tool targets.
 
-The **WARN** is orthogonal: `storybookjs/storybook`'s committed `.cursor/mcp.json` grants
-a filesystem capability (`~/.wallaby/mcp/`) that exceeds the least-privilege baseline
-(`MCP02:2025`) — an agent-config advisory, not a CI path.
+The other 2 fail findings (+ pytorch's 2, grafana, Ebook = 4 total) are the
+**`workflow_run` artifact-injection** class (0042): a `workflow_run` job downloads an
+artifact built by the untrusted `pull_request` run and splices its contents into a shell
+(`$(<file)`), injecting attacker-controlled data into a privileged command.
 
 ## [4] Precision review — what these findings actually mean
 
-Flagging is cheap; **being right is the product.** I hand-reviewed 5 of the flagged jobs
-against the source. The finding *class* is correct, but current detection **over-flags**:
+Flagging is cheap; **being right is the product.** I hand-reviewed **8** flagged jobs
+against source. The finding *class* is correct, but confidence varies sharply by subclass:
 
-| Job | Verdict by tool | On review | Why |
-|---|---|---|---|
-| vite `ecosystem-ci-trigger#trigger` | FAIL | **False positive** | Guarded by an in-*script* `getCollaboratorPermissionLevel` check (throws for non-triage users) + a "PR pushed after comment" anti-TOCTOU check; the comment body is read via `env:` and string-split, never shell-interpolated. |
-| node `label-flaky-test#label` | FAIL | **FP / low** | `if: github.event.label.name == 'flaky-test'` — a maintainer must apply the label (effectively actor-gated); body read via `env: BODY` (the GitHub-recommended safe pattern). |
-| node `notify-on-review-wanted` | FAIL | **Low, partly real** | Label-gated (`review wanted`), but the untrusted title is written unquoted to `$GITHUB_OUTPUT` (`title=$TITLE_PR`) — a minor output-injection vector; payoff limited to a Slack notification. |
-| electron `issue-opened#{add-to-issue-triage,set-labels}` | FAIL | **Worth review** | Triggered by *any* opened issue whose body contains `# Expected Behavior` — **not** actor-gated — and holds `ISSUE_TRIAGE_GH_APP_CREDS`. Body is handled via `env:` + markdown-AST parse (relatively safe), but the reachability from a fully untrusted trigger to an App credential is real and merits maintainer review. |
+**High-confidence (the `workflow_run` artifact-injection class, 4 findings).** These key on
+a real sink — untrusted artifact content spliced into a shell — not mere co-presence.
+`EbookFoundation/free-programming-books#comment-pr.yml` is the exact case documented as a
+true positive when 0042 shipped; pytorch's two `claude-*-triage` jobs and grafana's
+`external-pr-notify-handler` are the same shape. **Treat these as actionable.**
 
-**Takeaway.** The tool reliably surfaces the right *class* (untrusted-text co-located with
-a secret) but does not yet model two things that separate a true exploit from safe
-automation:
-1. **In-step / in-script actor guards** — `getCollaboratorPermissionLevel`-style checks and
-   label-gating (`github.event.label.name`) that the `if:`-only guard detector (0017) misses.
-2. **Safe handling vs. injection** — untrusted text passed via `env:` and parsed is very
-   different from text interpolated directly into a `run:` block or `${{ }}` shell context.
+**Review-worthy but over-flagged (the co-presence class, 42 findings).** Detection fires on
+(untrusted text) + (secret in job) without modeling *guards* or *handling*:
 
-At current precision this class is **"review-worthy," not "confirmed-exploitable."** That
-gap is the actionable output of this run → filed as a precision ticket (see [§7](#7-follow-ups)).
+| Job | Tool | On review |
+|---|---|---|
+| vite `ecosystem-ci-trigger` | FAIL | **FP** — guarded by an in-*script* `getCollaboratorPermissionLevel` check; body read via `env:`, string-split, never shell-interpolated |
+| node `label-flaky-test` | FAIL | **FP/low** — `if:` gated on a maintainer-applied label; body via `env: BODY` (safe pattern) |
+| pytorch `claude-code` | FAIL | **FP** — deliberately hardened: untrusted text only feeds boolean `contains()` guards ("Keep the comment text out of claude_args"), never reaches the agent as free text |
+| node `notify-on-review-wanted` | FAIL | **Low** — label-gated, but title written unquoted to `$GITHUB_OUTPUT` (minor output-injection) |
+| ant-design `issue-open-check` | FAIL | **Plausible TP** — the DingTalk step has no per-step actor guard and interpolates `issue.title` directly into a third-party notify action |
+| electron `issue-opened` | FAIL | **Worth review** — any issue body triggers a job holding `ISSUE_TRIAGE_GH_APP_CREDS`; not actor-gated |
+
+**Takeaway.** The tool reliably surfaces the right *class*, and the artifact-injection
+subclass is high-confidence. But the co-presence subclass (the bulk of the 46 fails) has a
+**material false-positive rate** driven by two unmodeled facts:
+1. **In-step / in-script actor guards** — `getCollaboratorPermissionLevel`, `check-user-permission`
+   actions, and label-gating (`github.event.label.name`) that the `if:`-only detector (0017) misses.
+2. **Safe handling vs. injection** — untrusted text via `env:` + parse (or boolean `contains()`)
+   is very different from direct `${{ }}`/shell interpolation.
+
+So for the co-presence subclass the gate's "fail" today reads as **"review-worthy," not
+"confirmed-exploitable."** Closing that gap is the actionable output of this run →
+[ticket 0044](#7-follow-ups).
 
 ## [5] 0039 & 0040 validation on real inputs
 
-**0039 (cap → verdict on large repos): confirmed, with honest attribution.**
-- **0 UNKNOWN across all 25**, including the largest: node (42 workflows), electron (50),
-  next.js (37), tensorflow (17), vscode (16). Every big repo got a real verdict.
-- **But 0039 is not what rescued these repos.** Direct measurement of the reachability cost
-  today: electron `entries×sinks = 4×39 = 156`, node `2×22 = 44`, next.js `0×34 = 0`,
-  freeCodeCamp `0×29 = 0` — all **far below** the old 200k pair cap. The entry-narrowing
-  from 0041/0042 (already on `main`: fork-triggerable now requires an untrusted checkout;
-  injection requires a specific shape) had already cut entry counts, so on current `main`
-  these repos would evaluate *even under the old quadratic metric*.
-- 0039's value is **structural / defense-in-depth**: it swaps the `O(entries×sinks)` per-pair
-  search for an `O(entries×(nodes+edges))` per-entry BFS and recalibrates the guard to that
-  real cost, so legitimate breadth can't trip the cap. Its user-visible proof is the
-  **synthetic 230k-pair repro test** (which the old metric fails and the new one passes),
-  not this sample. Net: the cap is not suppressing real top-100 repos today.
+**0039 (cap → verdict on large repos): confirmed at scale, with honest attribution.**
+- **0 UNKNOWN across all 50**, including the largest: **pytorch (146 workflows)**, n8n (93),
+  grafana (92), transformers (57), electron (50), node (42), supabase (47), next.js (37) —
+  every one produced a real verdict.
+- **0039 is not what rescued the batch-1 motivating repos.** Measured cost today: electron
+  `entries×sinks = 156`, node `44`, next.js `0` — all far below the old 200k cap (the
+  entry-narrowing from 0041/0042, already on `main`, had cut entry counts). 0039's value is
+  **structural**: `O(entries×sinks)` per-pair search → `O(entries×(nodes+edges))` per-entry
+  BFS, with the guard recalibrated to real cost so legitimate breadth (e.g. pytorch's 146
+  workflows) can't trip it. Its user-visible proof is the **synthetic 230k-pair repro test**,
+  not this sample. Net: the cap is not suppressing real top-100 repos.
 
 **0040 (yarn/pnpm coverage): high real-world relevance.**
-- Lockfile distribution of the sample: **pnpm 7, yarn 8, npm 3, none/non-JS 7.**
-- **15 of 25 (60%) use yarn or pnpm** — repos that got *zero* dependency-layer analysis
-  before 0040 (svelte, angular, vite, vue, freeCodeCamp, tailwindcss, next.js; electron,
-  react, react-native, storybook, babel, prettier, rust, webpack). Under a `--base` PR
-  context these now feed the same `runs-in → job → secret` synthesis as npm.
+- Lockfile distribution of the 50: **pnpm 11, yarn 11, npm 5, none/non-JS 23.**
+- **22 of 50 (44%) use yarn or pnpm** — repos that got *zero* dependency-layer analysis before
+  0040. Under a `--base` PR context these now feed the same `runs-in → job → secret` synthesis
+  as npm.
 
-## [6] Caveats / threats to validity
+## [6] Caveats
 
-- **Purposive sample, not random** — weighted toward CI-heavy JS repos; the true top-100 has
-  many docs/educational repos that would trivially PASS (no workflows). The 8/25 FAIL rate is
-  **not** a top-100 base rate.
-- **Whole-repo mode only** — the supply-chain/deps findings (the flagship cross-layer path)
-  are diff-gated and absent here; this run is CI/agent posture, not a full picture.
-- **Precision** — the FAIL findings are review-worthy candidates, not confirmed exploits (see
-  [§4](#4-precision-review--what-these-findings-actually-mean)).
-- **Point-in-time** — HEAD of each default branch on 2026-08-06; repos change.
+- **Purposive sample, not random** — weighted toward CI-heavy repos; the true top-100 has many
+  docs/educational repos that trivially PASS. The 18/50 FAIL rate is **not** a top-100 base rate.
+- **Whole-repo mode only** — the supply-chain/deps findings (the flagship cross-layer path) are
+  diff-gated and absent here; this is CI/agent posture, not a full picture.
+- **Precision** — co-presence FAILs are review-worthy candidates, not confirmed exploits ([§4](#4-precision)).
+- **Point-in-time** — HEAD of each default branch on 2026-08-06.
 
 ## [7] Follow-ups
 
-- **New ticket (precision):** teach the injection detector about in-step/in-script actor
-  guards (`getCollaboratorPermissionLevel`, label-gating) and distinguish `env:`-safe
-  handling from direct shell/`${{ }}` interpolation — to cut the false positives in [§4].
-- Re-run with `--base` against a set of real merged PRs to exercise the deps/supply-chain
-  layer (including the new yarn/pnpm path) on live diffs.
+- **Ticket 0044 (precision):** teach the injection detector about in-step/in-script actor guards
+  (`getCollaboratorPermissionLevel`, `check-user-permission`, label-gating) and distinguish
+  `env:`-safe / boolean-`contains()` handling from direct shell/`${{ }}` interpolation — to cut
+  the co-presence false positives in [§4](#4-precision).
+- Re-run with `--base` against a set of real merged PRs to exercise the deps/supply-chain layer
+  (including the new yarn/pnpm path) on live diffs.
+- Consider a distinct, higher-severity tier or label for the `workflow_run` artifact-injection
+  class, which the review found to be high-confidence.
 
-Raw per-repo JSON: `scratchpad/eval/out/*.json` (ephemeral); harness: `scratchpad/eval/run.sh`.
+Raw per-repo JSON: `scratchpad/eval/out{,2}/*.json` (ephemeral); harnesses: `scratchpad/eval/run.sh`, `run2.sh`.
