@@ -161,7 +161,8 @@ export function isLabelGated(job: JobSpec): boolean {
 }
 
 // A collaborator/actor permission check inside an `actions/github-script` body.
-const SCRIPT_PERMISSION_RE = /getCollaboratorPermissionLevel|\.permissions?\.(?:triage|push|admin|write|maintain)\b/;
+const SCRIPT_PERMISSION_RE =
+  /getCollaboratorPermissionLevel|\.permissions?\.(?:triage|push|admin|write|maintain)\b/;
 
 /**
  * Whether a job halts for unauthorized actors via an in-*step* permission check (0044):
