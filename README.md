@@ -77,10 +77,13 @@ Blastgate builds a single graph from the repository's manifests, lockfile, CI
 workflows, and agent/MCP configuration.
 
 - **Dependency / install layer** — install-time execution and newly added or changed
-  dependencies across **npm** (lifecycle scripts, lockfile diff, `.npmrc`, provenance
-  regressions), **Python** (`setup.py`, `requirements.txt` diff), and **RubyGems**
-  (`Gemfile.lock` diff, native-extension gems). A dependency an untrusted change
-  introduces that runs code at install is the shared shape across all three.
+  dependencies across **npm** (lifecycle scripts, `package-lock.json` / `yarn.lock` /
+  `pnpm-lock.yaml` diff, `.npmrc`, provenance regressions), **Python** (`setup.py`,
+  `requirements.txt` diff), and **RubyGems** (`Gemfile.lock` diff, native-extension
+  gems). A dependency an untrusted change introduces that runs code at install is the
+  shared shape across all three. (`yarn.lock` / `pnpm-lock.yaml` omit npm's
+  `hasInstallScript` flag, so an added dep is treated install-capable — precision comes
+  from reachability, as with gems.)
 - **CI layer** — which jobs execute install/build steps, which secrets and token
   permissions each job holds, and which jobs are triggerable by untrusted input —
   across **GitHub Actions** (`pull_request_target` and other secret-bearing events — a
@@ -195,8 +198,9 @@ jobs:
 
 **Supported today.** One engine, one finding shape across all surfaces:
 
-- **Ecosystems** — npm (lifecycle scripts, lockfile diff, `.npmrc`, provenance), Python
-  (`setup.py`, `requirements.txt` diff), RubyGems (`Gemfile.lock` diff).
+- **Ecosystems** — npm (lifecycle scripts, `package-lock.json` / `yarn.lock` /
+  `pnpm-lock.yaml` diff, `.npmrc`, provenance), Python (`setup.py`, `requirements.txt`
+  diff), RubyGems (`Gemfile.lock` diff).
 - **CI providers** — GitHub Actions and GitLab CI (full gate), CircleCI (advisory only —
   the fork-secret toggle is out-of-repo).
 - **Agent / MCP** — committed grants checked against a least-privilege baseline.

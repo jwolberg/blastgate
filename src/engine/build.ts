@@ -17,6 +17,7 @@ import { analyzeGitlabCi, type GitlabCiInputs } from '../analyzers/gitlabci/inde
 import { analyzeCircleCi, type CircleCiInputs } from '../analyzers/circleci/index';
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
 import { analyzeExec, type ExecInputs } from '../analyzers/exec/index';
+import { analyzeJsDeps, type JsDepsInputs } from '../analyzers/jsdeps/index';
 import {
   analyzeSelfIntegrity,
   type SelfIntegrityInputs,
@@ -38,6 +39,8 @@ export interface EngineInputs {
   pydeps?: PyDepsInputs;
   /** RubyGems lockfile (Gemfile.lock), diffed vs base for added/bumped gems (0032). */
   rubygems?: RubyGemsInputs;
+  /** yarn.lock / pnpm-lock.yaml, diffed vs base for added/bumped deps (0040). */
+  jsdeps?: JsDepsInputs;
   /** GitLab CI config (.gitlab-ci.yml) — MR-triggerable jobs holding CI/CD secrets (0034). */
   gitlabci?: GitlabCiInputs;
   /** CircleCI config (.circleci/config.yml) — advisory only; fork-secret exposure is out-of-repo (0035). */
@@ -115,6 +118,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
 
   const results = [
     inputs.deps ? analyzeDependencies(inputs.deps) : undefined,
+    inputs.jsdeps ? analyzeJsDeps(inputs.jsdeps) : undefined,
     inputs.pydeps ? analyzePyDeps(inputs.pydeps) : undefined,
     inputs.rubygems ? analyzeRubyGems(inputs.rubygems) : undefined,
     inputs.ci ? analyzeCi(inputs.ci) : undefined,

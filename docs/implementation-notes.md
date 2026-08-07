@@ -36,6 +36,70 @@ Running log of decisions, deviations, and tradeoffs for human review.
   whose result gates a *later step's* `if:` (not a job-wide halt) is not recognized as a guard —
   fail-closed, so ant-design correctly still fails. Per-step dataflow gating is future work.
 
+## 2026-08-06 — 0040: yarn.lock + pnpm-lock.yaml dependency analysis
+
+- **Decision: a new `jsdeps` analyzer, mirroring RubyGems** — not an extension of the
+  npm `deps` analyzer. yarn/pnpm are the npm *ecosystem* but their lockfiles omit npm's
+  `hasInstallScript` flag, so they need RubyGems' "diff-gated, assume install-capable"
+  semantics, which differ from the npm path's "parse the whole lockfile with real flags."
+  A separate analyzer keeps the critical npm path untouched and matches the reviewed
+  RubyGems shape (`ecosystem: 'npm'`, `hasInstallScript: true`, `entry:new-dep:<pkg>` →
+  `dep:<pkg>@<ver>` → engine `runs-in` synthesis unchanged).
+- **Collection precedence (collect.ts): npm wins, else yarn, else pnpm.** A repo uses one
+  JS package manager; gating yarn/pnpm on `package-lock.json` being absent avoids double
+  analysis and ID collisions (both use the npm `dep:`/`entry:new-dep:` ids on purpose, so
+  findings/labels/`describe()` are identical to npm's — ASI04/MCP04).
+- **Parsers scoped to the common cases (per the ticket's design note).** `parseYarnLock`
+  handles v1 "classic" and common Berry v2+ with one unindented-header + indented-`version`
+  shape; exotic Berry protocols (`@patch:`/`@workspace:`/git) that don't yield a clean
+  version are skipped. `parsePnpmLock` reads the `packages:` map and `pkgFromKey`
+  normalizes v5 (`/name/ver`), v6 (`/name@ver(peer)`), and v9 (`name@ver`) key forms.
+- **Diff keyed by package name → version (RubyGems parity).** Same known limitation: a
+  package resolved at two versions simultaneously collapses to one entry. Acceptable —
+  the gate verdict (any added/bumped dep in a fork-installed secret job → fail) is
+  unaffected; worst case is a slightly imprecise change label.
+- **Fail-closed:** an unparseable lockfile → error diagnostic → UNKNOWN (0020), same as npm.
+- **Known gap (follow-up):** `.npmrc` change analysis is still gated on the npm path, so a
+  yarn/pnpm repo's `.npmrc` registry-redirect signal is not yet surfaced; `.yarnrc.yml`
+  likewise. Lockfile coverage was the ticket's scope; filed as a follow-up.
+- **Fixtures:** `yarn-install-secret` + `pnpm-install-secret` (positive = added dep +
+  fork-triggerable install job → fail; negative = same added dep but a `push`-only job →
+  pass), wired into the `engine.e2e` coverage check. Full suite green.
+
+## 2026-08-06 — 0039: graph-cap UNKNOWN on large repos (algorithm, not threshold)
+
+- **Dimension that blew the cap.** The 0018 guard bounded `|entries| × |sinks|`, a
+  proxy for the number of per-pair `bidirectional()` searches `reachablePaths` ran.
+  On a big monorepo (40+ workflow files) hundreds of fork-triggerable jobs (entries)
+  multiply hundreds of distinct secret + per-job `GITHUB_TOKEN` sinks past the 200k
+  ceiling, so 4/12 in-scope repos in the 2026-08-05 run came back UNKNOWN with 0
+  findings — the worst outcome (no signal *and* blocks the gate).
+- **Decision: compute reachability incrementally so size scales** (the ticket's third
+  option), not raise the threshold or prune. `reachablePaths`/`shortestPathsToSinks`
+  now run **one single-source BFS per entry** (`singleSource` from
+  `graphology-shortest-path/unweighted`) instead of a `bidirectional` search per
+  (entry, sink). One BFS finds the shortest path to *all* reachable sinks at once, so
+  real cost drops from `O(entries × sinks × (V+E))` to `O(entries × (V+E))` — linear
+  in graph size. The genuine reachable paths on those repos were always few and short;
+  the old cost model just refused to look.
+- **Guard recalibrated to the real cost.** `reachabilityCost` is now
+  `|entries| × (|nodes| + |edges|)` (the BFS-per-entry work), ceiling raised to
+  `MAX_REACHABILITY_COST = 5e7` (`EngineOptions.maxPairs` → `maxCost`). Fail-closed
+  (0020) is preserved: a fabricated tens-of-thousands-of-entries graph still exceeds
+  the cap and returns UNKNOWN rather than hanging. The new algorithm also largely
+  defangs the original 0018 DoS (5000×5000 pairs was ~25M `bidirectional` calls;
+  it is now ~5000 BFS traversals).
+- **Reproduction (acceptance #3/#4).** `caps.test.ts` builds a synthetic 60-workflow ×
+  8-job monorepo (480 entries × 480 secrets = 230k entry×sink pairs, over the old cap)
+  and asserts it now evaluates to a real `fail` verdict with findings and no error
+  diagnostic — instead of a 0-finding UNKNOWN.
+- **Parity note.** Output ordering is preserved (entries in id order, each entry's
+  sinks in id order). Where a graph has multiple equal-length shortest paths for a
+  pair, BFS may pick a different (still-shortest) intermediate path than the old
+  bidirectional search; finding identity (`entry=>sink`), tier, and verdict are
+  unchanged — only a displayed intermediate node could differ, and only when
+  genuinely ambiguous. Real fixtures are linear chains, so no observed change.
+
 ## 2026-08-04 — Naming: Foothold → Blastgate
 
 - **Decision:** Rename the product from **Foothold** to **Blastgate**.

@@ -1,0 +1,19 @@
+lockfileVersion: '6.0'
+
+dependencies:
+  left-pad:
+    specifier: ^1.3.0
+    version: 1.3.0
+  evil-pkg:
+    specifier: ^2.0.0
+    version: 2.0.0
+
+packages:
+
+  /left-pad@1.3.0:
+    resolution: {integrity: sha512-AAAA}
+    dev: false
+
+  /evil-pkg@2.0.0:
+    resolution: {integrity: sha512-BBBB}
+    dev: false

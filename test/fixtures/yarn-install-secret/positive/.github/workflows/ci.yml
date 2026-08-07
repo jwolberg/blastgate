@@ -1,0 +1,9 @@
+on:
+  pull_request_target:
+jobs:
+  test:
+    steps:
+      - run: gh pr checkout 123
+      - run: yarn install
+        env:
+          AWS: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

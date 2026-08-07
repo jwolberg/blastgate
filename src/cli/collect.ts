@@ -9,6 +9,7 @@
 
 import { AGENT_INSTRUCTION_PATHS, type AgentDiffInputs } from '../analyzers/agent/config-diff';
 import type { DependencyInputs } from '../analyzers/deps/index';
+import type { JsDepsInputs } from '../analyzers/jsdeps/index';
 import { GATE_CONFIG_PATHS } from '../analyzers/integrity/self-integrity';
 import { PYTHON_INSTALL_MANIFESTS } from '../analyzers/pydeps/index';
 import type { RubyGemsInputs } from '../analyzers/rubygems/index';
@@ -104,6 +105,25 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
       deps.baseNpmrc = fs.gitShow(opts.base, '.npmrc');
     }
     inputs.deps = deps;
+  } else {
+    // 0040: yarn / pnpm repos carry no package-lock.json. Their lockfiles omit npm's
+    // hasInstallScript flag, so an added/bumped dep is treated install-capable (like
+    // RubyGems). npm wins if present; otherwise yarn wins over pnpm (a repo uses one).
+    const yarnLock = fs.read('yarn.lock');
+    const pnpmLock = fs.read('pnpm-lock.yaml');
+    const alt: { format: JsDepsInputs['format']; path: string; head: string } | null = yarnLock
+      ? { format: 'yarn', path: 'yarn.lock', head: yarnLock }
+      : pnpmLock
+        ? { format: 'pnpm', path: 'pnpm-lock.yaml', head: pnpmLock }
+        : null;
+    if (alt) {
+      const jsdeps: JsDepsInputs = { format: alt.format, headLockfile: alt.head };
+      if (opts.base && fs.gitShow) {
+        // null base ⇒ new at head; the diff treats every dep as added.
+        jsdeps.baseLockfile = fs.gitShow(opts.base, alt.path);
+      }
+      inputs.jsdeps = jsdeps;
+    }
   }
 
   // 0028: Python install-time execution (setup.py). Head+base per manifest when a base

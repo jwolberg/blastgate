@@ -221,6 +221,34 @@ const CHECKS: CheckSpec[] = [
       expect(f!.labels).toContain('ASI03:2026');
     },
   },
+  {
+    // 0040: a yarn.lock repo — an added dep installed by a fork-triggerable job → secret.
+    name: 'yarn-install-secret',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find(
+        (x) => x.entry.kind === 'new-dependency' && x.pathNodeIds.includes('dep:evil-pkg@2.0.0'),
+      );
+      expect(f, 'a yarn added-dep → secret finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.sink.identity).toBe('AWS_SECRET_ACCESS_KEY');
+      expect(f!.labels).toContain('ASI04:2026');
+    },
+  },
+  {
+    // 0040: the same shape for a pnpm-lock.yaml repo.
+    name: 'pnpm-install-secret',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find(
+        (x) => x.entry.kind === 'new-dependency' && x.pathNodeIds.includes('dep:evil-pkg@2.0.0'),
+      );
+      expect(f, 'a pnpm added-dep → secret finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.sink.identity).toBe('AWS_SECRET_ACCESS_KEY');
+      expect(f!.labels).toContain('ASI04:2026');
+    },
+  },
 ];
 
 describe('engine e2e over fixture repos (R13)', () => {
