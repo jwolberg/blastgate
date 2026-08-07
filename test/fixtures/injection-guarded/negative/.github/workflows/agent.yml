@@ -1,0 +1,24 @@
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      # In-step actor guard (0044): halts the job for non-triage users before any
+      # secret-bearing step runs — the vite `ecosystem-ci-trigger` shape the if:-only
+      # detector misses. So the untrusted comment body below is NOT a reachable path.
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.sender.login,
+            });
+            if (!data.user.permissions.triage) {
+              throw new Error('User does not have the necessary permissions.');
+            }
+      - run: echo "handling ${{ github.event.comment.body }}"
+        env:
+          APP_KEY: ${{ secrets.ECOSYSTEM_CI_APP_KEY }}

@@ -4,6 +4,7 @@ import {
   agentActionsUsed,
   credentialReachableTextTriggers,
   injectableTextRefs,
+  injectionNeutralized,
   isInjectableAgentJob,
   workflowRunArtifactInjection,
 } from './injection';
@@ -133,9 +134,17 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       // job that splices a downloaded (untrusted) artifact's contents into a shell (0042).
       // An actor guard (U17/0017) restricts who triggers it, so exempt it.
       const injectableEvents = credentialReachableTextTriggers(triggers);
-      const textInjection = injectableEvents.length > 0 && isInjectableAgentJob(job, triggers);
-      const artifactInjection = workflowRunArtifactInjection(job, triggers);
-      if ((textInjection || artifactInjection) && !hasActorGuard(job)) {
+      // 0044: the text-injection path is neutralized by a recognized guard (actor/label
+      // gate, in-step github-script permission-check-with-throw) or by safe handling
+      // (untrusted text only boolean-matched) — cutting the co-presence false positives the
+      // top-50 scan surfaced. Artifact injection (0042) keys on a real shell-splice sink and
+      // keeps only the original narrow actor-guard exemption.
+      const textInjection =
+        injectableEvents.length > 0 &&
+        isInjectableAgentJob(job, triggers) &&
+        !injectionNeutralized(job);
+      const artifactInjection = workflowRunArtifactInjection(job, triggers) && !hasActorGuard(job);
+      if (textInjection || artifactInjection) {
         const refs = injectableTextRefs(job);
         const via = refs.length > 0 ? refs.join(', ') : agentActionsUsed(job).join(', ');
         const label =

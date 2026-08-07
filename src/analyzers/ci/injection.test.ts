@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { agentActionsUsed, injectableTextRefs, isInjectableAgentJob } from './injection';
+import {
+  agentActionsUsed,
+  injectableTextRefs,
+  isInjectableAgentJob,
+  textOnlyBooleanMatched,
+} from './injection';
 import type { JobSpec } from './parse';
 
 /**
@@ -57,5 +62,33 @@ describe('isInjectableAgentJob — untrusted-text trigger + an injectable surfac
   it('false: untrusted trigger but no injectable surface', () => {
     const job: JobSpec = { steps: [{ run: 'npm test' }] };
     expect(isInjectableAgentJob(job, ['issue_comment'])).toBe(false);
+  });
+});
+
+describe('textOnlyBooleanMatched — untrusted text is only compared, never injected (0044)', () => {
+  it('true: the only body/title refs are arguments to contains()', () => {
+    const job: JobSpec = {
+      if: "contains(github.event.comment.body, 'fable') || contains(github.event.issue.body, 'x')",
+      steps: [{ run: 'echo hi' }],
+    };
+    expect(textOnlyBooleanMatched(job)).toBe(true);
+  });
+  it('false: a bare body interpolation in a run step (a real injection sink)', () => {
+    const job: JobSpec = {
+      if: "contains(github.event.issue.body, 'x')",
+      steps: [{ run: 'echo ${{ github.event.issue.body }}' }],
+    };
+    expect(textOnlyBooleanMatched(job)).toBe(false);
+  });
+  it('false: a coding-agent action is present (ingests the event by design)', () => {
+    const job: JobSpec = {
+      if: "contains(github.event.comment.body, '@claude')",
+      steps: [{ uses: 'anthropics/claude-code-action@v1' }],
+    };
+    expect(textOnlyBooleanMatched(job)).toBe(false);
+  });
+  it('false: no untrusted-text ref at all — nothing to neutralize', () => {
+    const job: JobSpec = { steps: [{ run: 'npm test' }] };
+    expect(textOnlyBooleanMatched(job)).toBe(false);
   });
 });

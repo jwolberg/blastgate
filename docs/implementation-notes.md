@@ -2,6 +2,40 @@
 
 Running log of decisions, deviations, and tradeoffs for human review.
 
+## 2026-08-06 — 0044: injection precision (in-step guards + safe handling)
+
+- **Problem.** The top-50 scan showed the `untrusted-text-injection → secret` finding fires on
+  *co-presence* of (untrusted event text) + (a secret in the job), missing two things that
+  separate a real exploit from safe automation: in-step/in-script actor guards the `if:`-only
+  detector (0017) can't see, and whether the text is actually *injected* vs merely *compared*.
+- **Three new, conservative detectors** (fail-closed: an unrecognized guard leaves the finding
+  standing, like 0041):
+  - `isLabelGated` (parse.ts): `if: github.event.label.name …` — applying a label needs
+    triage/write, so an outside contributor can't self-trigger (node's flaky-test / review-wanted).
+  - `hasScriptPermissionGuard` (parse.ts): an `actions/github-script` step that checks
+    collaborator/actor permission AND `throw`s — halting the job before any secret step (vite /
+    svelte `ecosystem-ci-trigger`). A check that only sets an output is deliberately NOT a guard,
+    so ant-design's un-gated DingTalk step stays a finding.
+  - `textOnlyBooleanMatched` (injection.ts): every `body/title` ref appears only inside a boolean
+    guard (`contains`/`startsWith`/`endsWith`) and no coding-agent action is present — the text is
+    compared, never injected (pytorch's `claude-code.yml`, react-native's `/rebase`).
+- **Scope: text path only.** `injectionNeutralized` gates only the TEXT-injection finding.
+  `workflow_run` artifact injection (0042) keeps its original narrow `!hasActorGuard` and is never
+  softened — it keys on a real shell-splice sink and was high-confidence in the review.
+- **Deviation from the ticket's "downgrade to warn" wording → chose SUPPRESSION.** The injection
+  finding was already suppressed-on-guard (unlike fork-pr, which warns via the `guarded` field), so
+  extending *which* guards suppress keeps one consistent rule and a minimal, low-risk change; the
+  regression bar is "NOT fail," which suppression satisfies. A future refinement could downgrade a
+  solidly-guarded injection job to warn for fork-pr parity.
+- **Empirical result (re-scan of the 18 prior-FAIL repos).** 18 FAIL → 13 FAIL / 5 PASS; fail-tier
+  findings 46 → 27 (19 FPs removed). All 5 cleared repos hand-verified as genuine FPs (vite/svelte
+  github-script guard; node label-gated; react-native `/rebase` boolean-matched; elasticsearch
+  label-gated + `jq`-safe). All 4 artifact-injection findings and the un-gated credentialed jobs
+  (ant-design, electron, transformers, …) preserved — no false negatives observed.
+- **Known limitation (documented, not fixed).** A bare `actions-cool/check-user-permission` action
+  whose result gates a *later step's* `if:` (not a job-wide halt) is not recognized as a guard —
+  fail-closed, so ant-design correctly still fails. Per-step dataflow gating is future work.
+
 ## 2026-08-06 — 0040: yarn.lock + pnpm-lock.yaml dependency analysis
 
 - **Decision: a new `jsdeps` analyzer, mirroring RubyGems** — not an extension of the

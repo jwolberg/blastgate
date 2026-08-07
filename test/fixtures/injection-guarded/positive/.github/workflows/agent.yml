@@ -1,0 +1,10 @@
+on:
+  issues:
+    types: [opened]
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "triaging ${{ github.event.issue.body }}"
+        env:
+          APP_KEY: ${{ secrets.ECOSYSTEM_CI_APP_KEY }}

@@ -135,6 +135,18 @@ const CHECKS: CheckSpec[] = [
     },
   },
   {
+    // 0044: an unguarded body-injection job fails; the negative (an in-step github-script
+    // permission-check-with-throw guarding the same job) must NOT — the guard neutralizes it.
+    name: 'injection-guarded',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.entry.kind === 'untrusted-text-injection');
+      expect(f, 'an unguarded text-injection finding').toBeDefined();
+      expect(f!.tier).toBe('fail');
+      expect(f!.labels).toContain('ASI01:2026');
+    },
+  },
+  {
     // 0042: a workflow_run job splicing a downloaded (untrusted) artifact into a shell.
     name: 'ci-artifact-injection',
     positiveVerdict: 'fail',

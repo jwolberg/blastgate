@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { runEngine } from '../../engine/gate';
 import { analyzeCi } from './index';
-import { hasActorGuard } from './parse';
+import { hasActorGuard, hasScriptPermissionGuard, isLabelGated, type JobSpec } from './parse';
 
 /** A comment-triggered job whose `if:` gates only on an @claude mention (volscan shape). */
 const MENTION_ONLY = [
@@ -95,5 +95,109 @@ describe('the engine downgrades a guarded untrusted-trigger finding', () => {
     const f = result.findings[0]!;
     expect(f.tier).toBe('warn');
     expect(f.reason.toLowerCase()).toContain('actor-gated');
+  });
+});
+
+// ---- 0044: injection precision — in-step actor guards + safe handling ----
+
+describe('isLabelGated (0044)', () => {
+  it('true when if: keys on github.event.label.name (applying a label needs triage/write)', () => {
+    expect(isLabelGated({ if: "github.event.label.name == 'flaky-test'" })).toBe(true);
+    expect(isLabelGated({ if: "contains(github.event.label.name, 'triage')" })).toBe(true);
+  });
+  it('false for a content filter, an actor guard, or no if:', () => {
+    expect(isLabelGated({ if: "contains(github.event.issue.body, 'x')" })).toBe(false);
+    expect(isLabelGated({ if: "github.actor == 'bot'" })).toBe(false);
+    expect(isLabelGated({})).toBe(false);
+  });
+});
+
+describe('hasScriptPermissionGuard (0044)', () => {
+  const script = (body: string): JobSpec => ({
+    steps: [{ uses: 'actions/github-script@v7', with: { script: body } }],
+  });
+  it('true: a github-script step that checks collaborator permission AND throws (halts the job)', () => {
+    expect(
+      hasScriptPermissionGuard(
+        script(
+          'const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });\n' +
+            'if (!data.user.permissions.triage) { throw new Error("User lacks permission"); }',
+        ),
+      ),
+    ).toBe(true);
+  });
+  it('false: checks permission but only sets an output (non-halting → fail-closed)', () => {
+    expect(
+      hasScriptPermissionGuard(
+        script(
+          'const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });\n' +
+            'core.setOutput("allowed", data.user.permissions.triage);',
+        ),
+      ),
+    ).toBe(false);
+  });
+  it('false: a github-script step with no permission check, even if it throws', () => {
+    expect(hasScriptPermissionGuard(script('if (x) throw new Error("boom")'))).toBe(false);
+  });
+});
+
+describe('analyzeCi neutralizes a guarded / safely-handled injection job (0044)', () => {
+  const job = (extra: string[]): string =>
+    [
+      'on:',
+      '  issues:',
+      '    types: [labeled]',
+      'jobs:',
+      '  j:',
+      ...extra,
+      '    steps:',
+      '      - run: echo "${{ github.event.issue.body }}"',
+      '        env:',
+      '          K: ${{ secrets.APP_KEY }}',
+    ].join('\n');
+  const hasInj = (content: string): boolean =>
+    analyzeCi({ workflows: [{ path: 'w', content }] }).nodes.some(
+      (n) => n.kind === 'entry' && n.entryKind === 'untrusted-text-injection',
+    );
+
+  it('unguarded body-injection job → an injection entry (still a finding)', () => {
+    expect(hasInj(job([]))).toBe(true);
+  });
+  it('label-gated job → no injection entry', () => {
+    expect(hasInj(job(["    if: github.event.label.name == 'needs-triage'"]))).toBe(false);
+  });
+  it('github-script permission-check-with-throw job → no injection entry', () => {
+    const content = [
+      'on:',
+      '  issue_comment:',
+      '    types: [created]',
+      'jobs:',
+      '  j:',
+      '    steps:',
+      '      - uses: actions/github-script@v7',
+      '        with:',
+      '          script: |',
+      '            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });',
+      '            if (!data.user.permissions.triage) throw new Error("no perm");',
+      '      - run: echo "${{ github.event.comment.body }}"',
+      '        env:',
+      '          K: ${{ secrets.APP_KEY }}',
+    ].join('\n');
+    expect(hasInj(content)).toBe(false);
+  });
+  it('boolean-matched only (body ref lives solely inside contains()) → no injection entry', () => {
+    const content = [
+      'on:',
+      '  issue_comment:',
+      '    types: [created]',
+      'jobs:',
+      '  j:',
+      "    if: contains(github.event.comment.body, '/deploy')",
+      '    steps:',
+      '      - run: echo running',
+      '        env:',
+      '          K: ${{ secrets.APP_KEY }}',
+    ].join('\n');
+    expect(hasInj(content)).toBe(false);
   });
 });
