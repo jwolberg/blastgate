@@ -5,6 +5,8 @@ export interface StepSpec {
   run?: string;
   with?: Record<string, unknown>;
   env?: Record<string, unknown>;
+  if?: unknown;
+  name?: unknown;
 }
 
 export interface JobSpec {

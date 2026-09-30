@@ -333,3 +333,97 @@ describe('code-write GITHUB_TOKEN scoping (0047)', () => {
     expect(sink && sink.kind === 'sink' && sink.sinkKind).toBe('privileged-capability');
   });
 });
+
+/** 0046: the untrusted-text entry carries its sink class and file:line evidence. */
+describe('untrusted-text entry classification (0046)', () => {
+  const entryOf = (content: string) =>
+    analyzeCi({ workflows: [{ path: '.github/workflows/t.yml', content }] }).nodes.find(
+      (n) => n.kind === 'entry' && n.entryKind === 'untrusted-text-injection',
+    );
+  const issueJob = (steps: string[]): string =>
+    [
+      'on:', // 1
+      '  issues:', // 2
+      'jobs:', // 3
+      '  triage:', // 4
+      '    steps:', // 5
+      ...steps,
+    ].join('\n');
+
+  it('a run: interpolation is an execution sink with evidence at that line', () => {
+    const entry = entryOf(
+      issueJob([
+        '      - uses: actions/checkout@v4', // 6
+        '      - run: echo "${{ github.event.issue.title }}"', // 7
+        '      - run: ./deploy.sh', // 8
+        '        env:', // 9
+        '          K: ${{ secrets.DEPLOY_KEY }}', // 10
+      ]),
+    );
+    expect(entry && entry.kind === 'entry' && entry.sinkClass).toBe('execution');
+    expect(entry && entry.kind === 'entry' && entry.evidence).toEqual({
+      file: '.github/workflows/t.yml',
+      line: 7,
+    });
+  });
+
+  it('text passed only via env: produces no untrusted-text entry', () => {
+    const entry = entryOf(
+      issueJob([
+        '      - run: echo "$TITLE"',
+        '        env:',
+        '          TITLE: ${{ github.event.issue.title }}',
+        '          K: ${{ secrets.DEPLOY_KEY }}',
+      ]),
+    );
+    expect(entry).toBeUndefined();
+  });
+
+  it('a coding-agent step is an agent-ingested entry', () => {
+    const entry = entryOf(
+      issueJob([
+        '      - uses: anthropics/claude-code-action@v1', // 6
+        '        env:',
+        '          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}',
+      ]),
+    );
+    expect(entry && entry.kind === 'entry' && entry.sinkClass).toBe('agent-ingested');
+    expect(entry && entry.kind === 'entry' && entry.evidence?.line).toBe(6);
+  });
+
+  it('an actor-guarded job produces no entry (R6)', () => {
+    const entry = entryOf(
+      [
+        'on:',
+        '  issues:',
+        'jobs:',
+        '  triage:',
+        "    if: github.event.issue.author_association == 'OWNER'",
+        '    steps:',
+        '      - run: echo "${{ github.event.issue.title }}"',
+        '        env:',
+        '          K: ${{ secrets.DEPLOY_KEY }}',
+      ].join('\n'),
+    );
+    expect(entry).toBeUndefined();
+  });
+
+  it('a workflow_run artifact splice is an execution sink with evidence at the splice', () => {
+    const entry = entryOf(
+      [
+        'on:', // 1
+        '  workflow_run:', // 2
+        "    workflows: ['CI']", // 3
+        'jobs:', // 4
+        '  comment:', // 5
+        '    steps:', // 6
+        '      - uses: actions/download-artifact@v4', // 7
+        '      - run: gh pr comment $(<PRurl)', // 8
+        '        env:', // 9
+        '          T: ${{ secrets.GH_SESSION }}', // 10
+      ].join('\n'),
+    );
+    expect(entry && entry.kind === 'entry' && entry.sinkClass).toBe('execution');
+    expect(entry && entry.kind === 'entry' && entry.evidence?.line).toBe(8);
+  });
+});

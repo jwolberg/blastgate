@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   agentActionsUsed,
+  classifyUntrustedText,
   injectableTextRefs,
   isInjectableAgentJob,
   textOnlyBooleanMatched,
 } from './injection';
-import type { JobSpec } from './parse';
+import type { JobSpec, StepSpec } from './parse';
 
 /**
  * The AISI Mythos-5 injection was planted in a GitHub issue and read by an AI
@@ -90,5 +91,106 @@ describe('textOnlyBooleanMatched — untrusted text is only compared, never inje
   it('false: no untrusted-text ref at all — nothing to neutralize', () => {
     const job: JobSpec = { steps: [{ run: 'npm test' }] };
     expect(textOnlyBooleanMatched(job)).toBe(false);
+  });
+});
+
+/**
+ * 0046 / plan R4, KTD1–KTD2: classify WHERE untrusted event text lands, instead of
+ * flagging its mere co-presence with a secret. Only an execution sink can later fail.
+ */
+describe('classifyUntrustedText — sink classes (0046)', () => {
+  const TITLE = '${{ github.event.issue.title }}';
+  const BODY = '${{ github.event.comment.body }}';
+
+  it('run: interpolation → execution at that step', () => {
+    const job: JobSpec = { steps: [{ uses: 'actions/checkout@v4' }, { run: `echo "${TITLE}"` }] };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'execution',
+      path: ['steps', 1, 'run'],
+    });
+  });
+
+  it('github-script script: interpolation → execution', () => {
+    const job: JobSpec = {
+      steps: [{ uses: 'actions/github-script@v7', with: { script: `core.info(\`${BODY}\`)` } }],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'execution',
+      path: ['steps', 0, 'with', 'script'],
+    });
+  });
+
+  it('text passed via env: and read as "$VAR" → no sink', () => {
+    const job: JobSpec = { steps: [{ run: 'echo "$TITLE"', env: { TITLE } }] };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
+  it('job-level env: → no sink', () => {
+    const job: JobSpec = { env: { TITLE }, steps: [{ run: 'echo "$TITLE"' }] };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
+  it('text only compared in if: → no sink', () => {
+    const job: JobSpec = {
+      if: "contains(github.event.comment.body, '/deploy')",
+      steps: [{ if: "github.event.issue.title == 'x'", run: 'npm test' }],
+    };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
+  it('boolean contains() inside a run: expression → no sink', () => {
+    const job: JobSpec = {
+      steps: [{ run: "echo ${{ contains(github.event.comment.body, 'fable') }}" }],
+    };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
+  it('a coding-agent action → agent-ingested, even without an explicit interpolation', () => {
+    const job: JobSpec = {
+      steps: [{ uses: 'anthropics/claude-code-action@v1', with: { prompt: 'triage this' } }],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'agent-ingested',
+      path: ['steps', 0, 'uses'],
+    });
+  });
+
+  it('title in a third-party action with: input → action-input', () => {
+    const job: JobSpec = { steps: [{ uses: 'x/notify@v1', with: { text: TITLE } }] };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'action-input',
+      path: ['steps', 0, 'with', 'text'],
+    });
+  });
+
+  it('the strongest sink wins: agent step + run: interpolation → execution', () => {
+    const job: JobSpec = {
+      steps: [
+        { uses: 'anthropics/claude-code-action@v1', with: { prompt: BODY } },
+        { uses: 'x/notify@v1', with: { text: TITLE } },
+        { run: `echo "${TITLE}"` },
+      ],
+    };
+    expect(classifyUntrustedText(job)?.sinkClass).toBe('execution');
+    expect(classifyUntrustedText(job)?.path).toEqual(['steps', 2, 'run']);
+  });
+
+  it('text in an unclassified step field → unrecognized', () => {
+    const job: JobSpec = {
+      steps: [{ run: 'make', 'working-directory': TITLE } as StepSpec],
+    };
+    expect(classifyUntrustedText(job)?.sinkClass).toBe('unrecognized');
+  });
+
+  it('job-level reusable-workflow with: input → unrecognized (fail-closed, never dropped)', () => {
+    const job = { uses: './.github/workflows/notify.yml', with: { title: TITLE } } as JobSpec;
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'unrecognized',
+      path: ['with', 'title'],
+    });
+  });
+
+  it('a job with no untrusted text → undefined', () => {
+    expect(classifyUntrustedText({ steps: [{ run: 'npm test' }] })).toBeUndefined();
   });
 });
