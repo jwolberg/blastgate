@@ -74,6 +74,21 @@ interface CheckSpec {
 
 const CHECKS: CheckSpec[] = [
   {
+    // 0050 / plan AE1–AE2: attacker text shell-interpolated in an issue job holding a secret
+    // is the canonical proven exploit; the same text passed via env: is the safe pattern.
+    name: 'untrusted-text-shell',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find(
+        (x) => x.entry.kind === 'untrusted-text-injection' && x.tier === 'fail',
+      );
+      expect(f, 'a shell-sink untrusted-text fail').toBeDefined();
+      expect(f!.sink.identity).toBe('DEPLOY_KEY');
+      expect(f!.evidence).toMatchObject({ file: '.github/workflows/triage.yml', line: 12 });
+      expect(f!.labels).toContain('ASI01:2026');
+    },
+  },
+  {
     name: 'install-script-secret',
     positiveVerdict: 'fail',
     assertPositive: (r) => {
@@ -274,6 +289,13 @@ describe('engine e2e over fixture repos (R13)', () => {
       const result = await runFixture(join(FIXTURES, check.name, 'positive'));
       expect(result.verdict).toBe(check.positiveVerdict);
       check.assertPositive?.(result);
+      // 0050 / plan R7: every fail carries complete proof.
+      for (const f of result.findings.filter((x) => x.tier === 'fail')) {
+        expect(f.evidence?.file, `${f.id} evidence.file`).toBeTruthy();
+        expect(f.evidence?.line, `${f.id} evidence.line`).toBeGreaterThan(0);
+        expect(f.evidence?.capability, `${f.id} evidence.capability`).toBeTruthy();
+        expect(f.evidence?.payload, `${f.id} evidence.payload`).toBeTruthy();
+      }
     });
 
     it(`${check.name}: negative fixture → pass (true negative, R14)`, async () => {
