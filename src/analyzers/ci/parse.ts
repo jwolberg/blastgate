@@ -252,25 +252,43 @@ export interface TokenPermissions {
   raw: string;
   overBroad: boolean;
   known: boolean;
+  /** The token can change repo code: `contents: write` or `write-all` (0047). */
+  codeWrite: boolean;
+  /** The token can mint cloud credentials via OIDC: `id-token: write` or `write-all` (0047). */
+  mintsCredentials: boolean;
 }
 
 /** Resolve effective GITHUB_TOKEN permissions: job-level overrides workflow-level; absent = inherited/unknown. */
 export function resolvePermissions(workflow: WorkflowSpec, job: JobSpec): TokenPermissions {
   const p = job.permissions ?? workflow.permissions;
+  const none = { codeWrite: false, mintsCredentials: false };
   if (p === undefined) {
-    return { raw: 'inherited (repo default)', overBroad: false, known: false };
+    return { raw: 'inherited (repo default)', overBroad: false, known: false, ...none };
   }
   if (p === 'write-all') {
-    return { raw: 'write-all', overBroad: true, known: true };
+    return {
+      raw: 'write-all',
+      overBroad: true,
+      known: true,
+      codeWrite: true,
+      mintsCredentials: true,
+    };
   }
   if (p === 'read-all') {
-    return { raw: 'read-all', overBroad: false, known: true };
+    return { raw: 'read-all', overBroad: false, known: true, ...none };
   }
   if (p && typeof p === 'object') {
-    const entries = Object.entries(p as Record<string, unknown>);
+    const scopes = p as Record<string, unknown>;
+    const entries = Object.entries(scopes);
     const overBroad = entries.some(([, v]) => v === 'write');
     const raw = entries.map(([k, v]) => `${k}:${String(v)}`).join(', ') || '{}';
-    return { raw, overBroad, known: true };
+    return {
+      raw,
+      overBroad,
+      known: true,
+      codeWrite: scopes.contents === 'write',
+      mintsCredentials: scopes['id-token'] === 'write',
+    };
   }
-  return { raw: String(p), overBroad: false, known: true };
+  return { raw: String(p), overBroad: false, known: true, ...none };
 }

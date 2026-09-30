@@ -105,10 +105,13 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
 
       if (perms.overBroad) {
         const tokenSink = `sink:credential:GITHUB_TOKEN@${wf.path}#${jobId}`;
+        // 0047: only a token that can change repo code or mint cloud credentials is a
+        // credential sink; PR/issue/comment/label write is a privileged capability (warn).
         result.nodes.push({
           id: tokenSink,
           kind: 'sink',
-          sinkKind: 'credential',
+          sinkKind:
+            perms.codeWrite || perms.mintsCredentials ? 'credential' : 'privileged-capability',
           identity: `GITHUB_TOKEN (${perms.raw})`,
         });
         result.edges.push({ from: jobNodeId, to: tokenSink, edge: { kind: 'holds' } });

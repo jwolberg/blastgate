@@ -2,6 +2,14 @@
 
 Running log of decisions, deviations, and tradeoffs for human review.
 
+## 2026-09-29 — Precision Core (0045–0053)
+
+Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
+
+- **0045 — invalid YAML yields no positions.** `locateSource` returns `undefined` for every lookup when the document has parse errors, rather than best-effort positions from a partial tree. The analyzer already reports the parse error, and evidence that might point at the wrong line is worse than none (R8 demotes it).
+- **0047 — deviation: `id-token: write` stays a credential sink.** The plan's KTD4 said only code-write (`contents: write` / `write-all`) is a credential sink. `id-token: write` lets the job mint cloud credentials via OIDC (e.g. assume an AWS role), which is secret-equivalent under R1, and it already failed before this change. Demoting it would have turned a real exploit path into a warn. Added `mintsCredentials` alongside `codeWrite`.
+- **0047 — follow-up to revisit: `packages: write`.** It can publish a poisoned package/image, a supply-chain compromise outside the repo. Under R3's literal "changing code in a repo" it is a warn. Worth a product decision.
+
 ## 2026-08-06 — 0044: injection precision (in-step guards + safe handling)
 
 - **Problem.** The top-50 scan showed the `untrusted-text-injection → secret` finding fires on
