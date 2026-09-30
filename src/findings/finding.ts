@@ -98,3 +98,16 @@ export interface Advisory {
 export function tierForSink(kind: SinkKind): Tier {
   return kind === 'privileged-capability' ? 'warn' : 'fail';
 }
+
+/**
+ * The finding with its illustrative payload removed (0049 / plan R10). Every surface that
+ * can be published or persisted — JSON by default, the markdown report, the Action, the MCP
+ * tool, run records — uses this; only local text output keeps the payload.
+ */
+export function withoutPayload(f: Finding): Finding {
+  if (!f.evidence?.payload) {
+    return f;
+  }
+  const { file, line, capability } = f.evidence;
+  return { ...f, evidence: { file, line, capability } };
+}

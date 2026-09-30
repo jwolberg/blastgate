@@ -9,7 +9,7 @@
 
 import { collectInputs, type RepoFs } from '../cli/collect';
 import { type GateResult, runEngine } from '../engine/gate';
-import type { Finding, Verdict } from '../findings/finding';
+import { type Finding, type Verdict, withoutPayload } from '../findings/finding';
 
 const CHANGE_KINDS = ['dependency', 'install-script', 'workflow', 'mcp-config', 'other'] as const;
 
@@ -93,6 +93,7 @@ export function checkChange(fs: RepoFs, args: unknown, defaultBase = 'HEAD'): Ch
   const result = runEngine(collectInputs(fs, { base }));
   return {
     text: summarize(result),
-    structured: { verdict: result.verdict, findings: result.findings },
+    // No payloads over MCP (0049 / R10): the calling agent's context is not a local terminal.
+    structured: { verdict: result.verdict, findings: result.findings.map(withoutPayload) },
   };
 }

@@ -74,7 +74,7 @@ function outputFormat(argv: string[]): OutputFormat {
 function renderResult(result: GateResult, argv: string[]): string {
   switch (outputFormat(argv)) {
     case 'json':
-      return renderJson(result);
+      return renderJson(result, { includePayloads: argv.includes('--include-payloads') });
     case 'markdown':
       return renderMarkdown(result);
     default:
@@ -99,6 +99,7 @@ function usage(): string {
     '  --provenance       opt-in npm provenance-regression check (network; needs --base)',
     '  --advisories       opt-in CVE/advisory enrichment of reachable deps (network; OSV; never gates)',
     '  --record <dir>     append this run to a directory of records for `blastgate report`',
+    "  --include-payloads  with --json, include each fail's illustrative exploit payload (local use only)",
     '  --version          print version',
     '',
   ].join('\n');

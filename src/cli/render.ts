@@ -6,7 +6,7 @@
  * data, so every surface stays in parity (R7).
  */
 
-import type { Finding } from '../findings/finding';
+import { type Finding, withoutPayload } from '../findings/finding';
 import { gateBlocks, type GateResult } from '../engine/gate';
 
 /**
@@ -57,6 +57,13 @@ export function renderText(result: GateResult): string {
     lines.push('');
     lines.push(`${tag}  ${f.path.join(' → ')}`);
     lines.push(`      sink: ${f.sink.kind} ${f.sink.identity}${labels}`);
+    if (f.evidence) {
+      lines.push(`      at:   ${f.evidence.file}:${f.evidence.line} → ${f.evidence.capability}`);
+      if (f.evidence.payload) {
+        // Local terminal only (R10) — never rendered into markdown, JSON, or the Action.
+        lines.push(`      e.g.: ${f.evidence.payload}`);
+      }
+    }
     if (f.acknowledged) {
       lines.push(`      accepted: ${f.acknowledged}`);
     }
@@ -77,9 +84,14 @@ function workflowFooterText(): string {
   return `Runs at: ${WORKFLOW_GUIDANCE.stages}  ·  docs: ${WORKFLOW_GUIDANCE.runbook}`;
 }
 
-/** Machine output: the full findings array as valid JSON (R7 parity source). */
-export function renderJson(result: GateResult): string {
-  return `${JSON.stringify(result.findings, null, 2)}\n`;
+/**
+ * Machine output: the findings array as valid JSON (R7 parity source). Payloads are stripped
+ * unless explicitly requested (0049 / R10), since JSON is routinely piped into PR bots,
+ * artifacts, and logs.
+ */
+export function renderJson(result: GateResult, opts: { includePayloads?: boolean } = {}): string {
+  const findings = opts.includePayloads ? result.findings : result.findings.map(withoutPayload);
+  return `${JSON.stringify(findings, null, 2)}\n`;
 }
 
 /**
@@ -155,6 +167,10 @@ function markdownFinding(f: Finding): string[] {
   out.push(`- **why:** ${inlineText(f.reason)}`);
   out.push(`- **fix:** ${inlineText(f.remediation)}`);
   out.push(`- **sink:** ${f.sink.kind} \`${f.sink.identity}\``);
+  if (f.evidence) {
+    // Location + capability only — this report is posted publicly (R10: no payload).
+    out.push(`- **at:** \`${f.evidence.file}:${f.evidence.line}\` → \`${f.evidence.capability}\``);
+  }
   if (f.advisories && f.advisories.length > 0) {
     out.push(`- **advisories:** ${f.advisories.map((a) => `\`${a.id}\``).join(', ')}`);
   }
