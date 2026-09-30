@@ -167,7 +167,8 @@ const ASSIGNMENT_BEFORE =
  * assignment (`X=$(cat f)`, incl. `export`/`local`) neither executes nor word-splits the
  * value, and a substitution inside quotes cannot add arguments — neither is a sink.
  * Quote tracking spans the whole script, so multi-line quoted strings are handled; shell
- * comments and heredoc bodies are skipped, and quotes left open at the end fail closed to a
+ * comments and heredoc bodies are skipped (here-strings and `$(( … ))` shifts are not
+ * heredocs), and quotes left open at the end fail closed to a
  * plain match (PR #36 review).
  * Accepted false negative: a quoted `"$(<f)"` used as a whole argument can still inject a
  * leading `--flag`.
@@ -193,6 +194,23 @@ export function splicesFileIntoCommand(run: string): boolean {
         break;
       }
       i = nl - 1;
+      continue;
+    }
+    if (!inDouble && run.startsWith('$((', i)) {
+      // Arithmetic expansion: `<<` in here is a shift, never a heredoc.
+      let depth = 0;
+      let j = i + 1;
+      for (; j < run.length; j++) {
+        depth += run[j] === '(' ? 1 : run[j] === ')' ? -1 : 0;
+        if (depth === 0) {
+          break;
+        }
+      }
+      i = j;
+      continue;
+    }
+    if (!inDouble && run.startsWith('<<<', i)) {
+      i += 2; // a here-string, not a heredoc
       continue;
     }
     if (!inDouble && c === '<' && run[i + 1] === '<') {

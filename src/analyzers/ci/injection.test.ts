@@ -234,6 +234,10 @@ describe('splicesFileIntoCommand — quote- and assignment-aware (0054)', () => 
     ["cat <<-'END'\n\tdon't\n\tEND\ngh pr edit $(<PRurl)"],
     // Unbalanced quotes at end of script: fail closed to the plain match.
     ['echo "oops\ngh pr comment $(cat f)'],
+    // PR #36 re-review: here-strings and arithmetic shifts are not heredocs.
+    ['cat <<< "x"\ngh c $(cat f)'],
+    ['read v <<< foo\ngh c $(cat f)'],
+    ['x=$((1<<n))\ngh c $(cat f)'],
   ])('is not blinded by comments, heredocs, or unbalanced quotes: %s', (run) => {
     expect(splicesFileIntoCommand(run)).toBe(true);
   });
