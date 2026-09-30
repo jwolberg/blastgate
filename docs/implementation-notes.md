@@ -114,8 +114,8 @@ Running log of decisions, deviations, and tradeoffs for human review.
 - **Availability (verified):** `blastgate` npm ✅ free, GitHub org ✅ free. Domains:
   `.dev` and `.com` taken; **`.io` and `.sh` available** — lean `blastgate.io` or
   `blastgate.sh` (the `.sh` matches the CLI framing and peer tools).
-- **Follow-up:** Repo directory is still `foothold/`; rename to `blastgate/` is a
-  separate step (git remote + dir), deferred.
+- **Follow-up:** ~~Repo directory is still `foothold/`~~ — done 2026-09-29: GitHub
+  repo is `jwolberg/blastgate` and the local directory was renamed to `blastgate/`.
 
 ## 2026-08-04 — License: recommend Apache-2.0 (pending confirmation)
 
@@ -446,7 +446,7 @@ Running log of decisions, deviations, and tradeoffs for human review.
   `type: command` hook fires **deterministically** on an event — it is never selected by a
   prompt-injected model — so tagging it an "injectable agent surface" / ASI01 Agent Goal
   Hijack is a category error. It is a real *privileged capability* worth reviewing, but not
-  an attacker-injectable entry. Foothold's own settings.json (block-main-merge / stop-notify /
+  an attacker-injectable entry. Blastgate's own settings.json (block-main-merge / stop-notify /
   remote-check hooks) trips the same rule, so the noise was self-inflicted.
 - **Decision (chosen by user): reframe, keep firing.** Still WARN on a tracked command hook,
   but drop the injection framing. New `EntryKind: 'privileged-hook'` (types.ts); the hook grant
