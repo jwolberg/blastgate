@@ -16,9 +16,9 @@ execution: code
 - **Objective:** Make every Blastgate `fail` a proven exploit. For untrusted-text findings, that means classifying where attacker text lands and failing only on a real sink, with the proof attached to the finding.
 - **Product authority:** `STRATEGY.md` (Precision core track; metric "Fail-tier precision") → this plan's Product Contract → Planning Contract. Agent-in-CI modeling (Track 2) and Public evidence (Track 3) are separate tracks and not active scope here.
 - **Execution profile:** TDD per repo `CLAUDE.md` §2 — the failing test for each unit is written and reviewed before the code. One commit per unit on a feature branch; merge to `main` is human-only.
-- **Stop conditions:** Stop and ask if a change would alter a Product Contract rule, if the 50-repo re-scan (U7) shows a lost high-confidence finding, or before creating any GitHub repository (U8).
+- **Stop conditions:** Stop and ask if a change would alter a Product Contract rule, if the 50-repo re-scan (U7) shows a lost high-confidence finding, or before creating any GitHub repository.
 - **Open blockers:** None.
-- **Product Contract preservation:** changed R10 — JSON output carries payloads only behind an explicit flag (user-approved at plan scoping), and run records are listed as a payload-free surface; R12 no longer assumes the four artifact-injection findings stay fail (the 2026-09-29 re-scan showed all four were false positives; user-approved, see U10); R2 clarified to include inline scripts (KTD2), no scope change; otherwise unchanged.
+- **Product Contract preservation:** changed R10 — JSON output carries payloads only behind an explicit flag (user-approved at plan scoping), and run records are listed as a payload-free surface; R12 no longer assumes the four artifact-injection findings stay fail (the 2026-09-29 re-scan showed all four were false positives; user-approved, see U10); R2 clarified to include inline scripts (KTD2), no scope change; R11 changed to fixture proof instead of live sandbox reproductions (user-directed, KTD7); otherwise unchanged.
 
 ---
 
@@ -28,7 +28,7 @@ execution: code
 
 A `fail` gets a strict contract: attacker-controlled input can run unintended code in a privileged context that reaches a secret or code-write capability, and the finding shows the line, the capability, and an example payload.
 Each untrusted-text use is classified by sink type, and the tier follows from the sink and the capability; anything short of the contract becomes a warn.
-Each sink class that can fail gets a sandbox reproduction.
+Each sink class that can fail is proven by a committed fixture pair.
 
 ### Problem Frame
 
@@ -71,7 +71,7 @@ The detector does not distinguish text interpolated into a shell from text passe
 
 **Proof of precision**
 
-- R11. Each sink class that can produce `fail` has a sandbox reproduction: a throwaway repository owned by the author where the payload demonstrably executes or reaches the capability.
+- R11. Each sink class that can produce `fail` is demonstrated by a committed positive/negative fixture pair whose scan shows the fail with complete evidence; no live exploitation is performed.
 - R12. The 50-repo scan is re-run after the change, and every remaining `fail` is hand-verified against source as meeting R1; each of the four 2026-08-06 `workflow_run` artifact-injection findings is re-adjudicated by hand and its outcome recorded.
 
 ### Acceptance Examples
@@ -100,13 +100,13 @@ The detector does not distinguish text interpolated into a shell from text passe
 ### Dependencies / Assumptions
 
 - The 27 / 4 / 23 finding counts come from the 0044 re-scan recorded in `docs/implementation-notes.md`; the co-presence subclass has not been hand-verified since.
-- Sandbox reproductions (R11) require throwaway GitHub repositories owned by the author; no third-party repository is exercised.
+- The 50-repo re-scan (R12) only reads public repositories; nothing outside this repo is written.
 - Blastgate is unpublished (0.1.0, not on npm), so demoting fails to warns breaks no external CI.
 
 ### Outstanding Questions
 
 - Interpolation shapes that count as an execution sink: resolved in KTD2.
-- Where sandbox reproductions live: resolved in KTD7.
+- How fail classes are proven: resolved in KTD7 (committed fixtures).
 - Whether a guarded path that otherwise meets R1 should `warn` rather than be suppressed (fork-PR parity, raised in 0044): deferred; guards keep suppressing, per R6.
 
 ### Sources / Research
@@ -131,7 +131,7 @@ The detector does not distinguish text interpolated into a shell from text passe
 - KTD4. **Only a code-write GITHUB_TOKEN is a credential sink.** `resolvePermissions` adds `codeWrite` (`contents: write` or `write-all`). An over-broad token without code-write is emitted as a `privileged-capability` sink, which `tierForSink` already maps to warn. This reuses the existing tier rule instead of adding a flag to sinks. Governs R3.
 - KTD5. **The tier moves from sink kind alone to a path-level contract check in `src/engine/checks.ts`.** A path is fail only when `tierForSink` says fail, the entry is fail-eligible, and the evidence is complete. Fail-eligible means: an untrusted-text entry with an execution sink class, a fork-PR entry whose job runs a step after the untrusted checkout, or a new dependency running in a fork-triggerable job. A checkout that nothing executes is not proven execution. Incomplete evidence demotes to warn. Acknowledgement and guard downgrades still apply after this check. Governs R1, R5, R8.
 - KTD6. **Evidence is a new optional `evidence` field on `Finding`: file, line, capability, and payload.** The payload is a fixed illustrative string per sink class, never derived from repo content, so it cannot echo secrets. Renderers choose whether to print it. Governs R7, R10.
-- KTD7. **Sandbox reproductions are a committed runbook with vulnerable workflow templates, run by hand against throwaway repositories.** They live under `docs/runbooks/`. No automation creates GitHub repositories. Governs R11.
+- KTD7. **Fail classes are proven by committed fixtures, not live exploitation.** The e2e suite already requires complete evidence on every positive fixture's fail (U6). (session-settled: user-directed — chosen over live sandbox reproductions on throwaway repos: the fixtures prove the contract locally without producing exploit material.) Governs R11.
 - KTD9. **An artifact splice is a sink only when an unquoted command substitution reads a file in command-word or argument position.** An assignment (`X=$(cat f)`, including `export`/`local`) neither executes nor word-splits the value, and a substitution inside double quotes cannot add arguments. A quote-aware scan of the whole `run:` script replaces the line regex. Accepted false negative: a quoted `"$(<f)"` used as a whole argument can still inject a leading `--flag`. Governs R2. (session-settled: user-approved — chosen over "demote the class to warn" and "document as-is": keeps fail possible for a genuine splice while removing the assignment false positives.)
 - KTD8. **The 50-repo scan becomes a committed script plus a repo list.** It reuses the blobless sparse-clone method from the 2026-08-06 evaluation, so the R12 re-scan and Track 3 run the same way. Governs R12.
 
@@ -398,25 +398,19 @@ U1 and U3 are independent foundations. U2 needs U1. U4 needs U2 and U3. U5 and U
 - The four `workflow_run` artifact-injection findings (pytorch ×2, grafana, free-programming-books) are still fail.
 - Any finding that moved from fail to warn is listed with its sink class.
 
-### U8. Sandbox reproduction runbook
+### U8. Fixture proof per fail class
 
-**Goal:** Give each fail-producing sink class a reproducible demonstration on a throwaway repository.
+**Goal:** Show each fail-producing sink class with a committed fixture pair.
 
 **Requirements:** R11 (via KTD7)
 
 **Dependencies:** U6
 
-**Files:**
-- `docs/runbooks/sandbox-repro.md` (new)
-- `docs/runbooks/sandbox/untrusted-text-shell.yml` (new)
-- `docs/runbooks/sandbox/workflow-run-artifact.yml` (new)
-- `docs/runbooks/sandbox/fork-pr-install.yml` (new)
+**Files:** none beyond U6. The classes map to existing fixtures: `untrusted-text-shell`, `ci-artifact-injection`, `fork-pr-secret`, `install-script-secret`, `gitlab-fork-secret`.
 
-**Approach:** One vulnerable workflow per class, using a dummy secret whose value is a canary string. The runbook states the steps: create a throwaway repo, add the workflow and canary secret, trigger it from a second account or fork, and observe the canary in the run log or a PR change. It also records the Blastgate finding for the same workflow and the teardown steps.
+**Test expectation:** none — covered by U6's evidence assertion over every positive fixture.
 
-**Test expectation:** none — documentation and templates. Each template must produce a fail when scanned; that check belongs in the runbook's own steps.
-
-**Verification:** Each template scanned with `blastgate` yields fail with evidence. The user runs the runbook; this plan never creates repositories automatically.
+**Verification:** `npm test` passes with the e2e evidence assertion in `test/engine.e2e.test.ts`.
 
 ### U10. Artifact-splice precision
 
@@ -479,7 +473,6 @@ U1 and U3 are independent foundations. U2 needs U1. U4 needs U2 and U3. U5 and U
 | Build | `npm run build` | U4, U5 (dist is what the Action and plugin run) |
 | Tests | `npm test` | U1–U6 |
 | Re-scan | `scripts/eval-scan.sh` plus hand review | U7 |
-| Template scan | `blastgate` over each sandbox template | U8 |
 
 These mirror `.github/workflows/ci.yml`.
 
@@ -490,7 +483,7 @@ These mirror `.github/workflows/ci.yml`.
 - Every AE1–AE6 has a passing test that cites it.
 - In every test and in the U7 re-scan, no `fail` finding lacks complete evidence.
 - The U7 evaluation doc records a hand verdict for every fail, all exploitable, with the four artifact-injection findings retained.
-- The sandbox runbook and templates exist, and each template scans as fail.
+- Each fail class has a committed fixture pair whose positive fails with complete evidence (U6/U8).
 - README and threat model describe the R1 contract.
 - All gates in the Verification Contract pass.
 - No abandoned-approach code remains in the diff.
