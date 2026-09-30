@@ -87,6 +87,10 @@ export interface CiJobNode {
   forkTriggerable: boolean;
   /** The job runs a dependency install step (where a poisoned lifecycle script executes). */
   runsInstall: boolean;
+  /** Where attacker-controlled code first executes in the job (after an untrusted checkout, 0048). */
+  execEvidence?: SourceEvidence;
+  /** The dependency-install step (where a new dependency's install script runs, 0048). */
+  installEvidence?: SourceEvidence;
 }
 
 export interface AgentGrantNode {

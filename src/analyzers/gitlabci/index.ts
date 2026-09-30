@@ -21,6 +21,7 @@
 
 import { parse } from 'yaml';
 import type { AttackNode } from '../../graph/types';
+import { locateSource } from '../ci/locate';
 import { isInstallCommand } from '../ci/parse';
 import { type AnalyzerResult, emptyResult } from '../types';
 
@@ -135,6 +136,11 @@ export function analyzeGitlabCi(inputs: GitlabCiInputs): AnalyzerResult {
     return result;
   }
 
+  const locator = locateSource(inputs.content);
+  const jobEvidence = (name: string) => {
+    const line = locator.line([name]);
+    return line === undefined ? undefined : { file: '.gitlab-ci.yml', line };
+  };
   for (const [name, val] of Object.entries(doc)) {
     if (RESERVED.has(name) || name.startsWith('.') || !val || typeof val !== 'object') {
       continue; // config key, hidden/template job, or non-map
@@ -158,6 +164,9 @@ export function analyzeGitlabCi(inputs: GitlabCiInputs): AnalyzerResult {
       secrets: secretVars,
       forkTriggerable: mrTriggerable,
       runsInstall: runsInstall(job),
+      // 0048: an MR pipeline runs the MR's own script, so the job definition is the evidence.
+      execEvidence: jobEvidence(name),
+      installEvidence: jobEvidence(name),
     } as AttackNode);
 
     for (const secret of secretVars) {

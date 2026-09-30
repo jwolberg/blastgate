@@ -216,18 +216,57 @@ const PR_CHECKOUT_CMD_RE = /gh\s+pr\s+checkout|git\s+fetch[^\n]*\bpull\/|checkou
  * a `gh pr checkout` / manual PR-ref fetch, counts as an execution surface.
  */
 export function checksOutUntrustedRef(job: JobSpec): boolean {
-  for (const step of job.steps ?? []) {
+  return untrustedCheckoutStep(job) !== undefined;
+}
+
+/** Index of the first step that checks out the untrusted PR/workflow_run head (0041/0048). */
+export function untrustedCheckoutStep(job: JobSpec): number | undefined {
+  const i = (job.steps ?? []).findIndex((step) => {
     if (typeof step.uses === 'string' && /actions\/checkout/.test(step.uses)) {
       const ref = step.with?.ref;
       if (typeof ref === 'string' && UNTRUSTED_REF_RE.test(ref)) {
         return true;
       }
     }
-    if (typeof step.run === 'string' && PR_CHECKOUT_CMD_RE.test(step.run)) {
-      return true;
+    return typeof step.run === 'string' && PR_CHECKOUT_CMD_RE.test(step.run);
+  });
+  return i >= 0 ? i : undefined;
+}
+
+/**
+ * Index of the first step after an untrusted checkout that executes workspace code: a
+ * `run:` step or a local `./` action (0048). Approximation: any `run:` after the checkout
+ * is treated as able to run attacker-controlled repo code (scripts, Makefiles, configs).
+ */
+export function untrustedExecutionStep(job: JobSpec): number | undefined {
+  const checkout = untrustedCheckoutStep(job);
+  if (checkout === undefined) {
+    return undefined;
+  }
+  const steps = job.steps ?? [];
+  for (let i = checkout + 1; i < steps.length; i++) {
+    const step = steps[i]!;
+    if (
+      typeof step.run === 'string' ||
+      (typeof step.uses === 'string' && step.uses.startsWith('./'))
+    ) {
+      return i;
     }
   }
-  return false;
+  return undefined;
+}
+
+/** Index of the dependency-install step (prefers an explicit install command over setup-node). */
+export function installStep(job: JobSpec): number | undefined {
+  const steps = job.steps ?? [];
+  const run = steps.findIndex((s) => typeof s.run === 'string' && isInstallCommand(s.run));
+  if (run >= 0) {
+    return run;
+  }
+  const setup = steps.findIndex(
+    (s) => typeof s.uses === 'string' && /^actions\/setup-node@/.test(s.uses),
+  );
+  return setup >= 0 ? setup : undefined;
 }
 
 /** Pinned ⇔ `@<40-hex-sha>` (or a docker `@sha256:` digest); local `./` actions carry no external risk. */

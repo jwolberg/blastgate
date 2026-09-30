@@ -16,10 +16,12 @@ import {
   findSecretRefs,
   hasActorGuard,
   hasInstallStep,
+  installStep,
   normalizeTriggers,
   parseWorkflow,
   resolvePermissions,
   unpinnedActions,
+  untrustedExecutionStep,
 } from './parse';
 
 export interface WorkflowInput {
@@ -72,6 +74,10 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       const { names: secretNames, usesAllSecrets } = findSecretRefs(job);
       const perms = resolvePermissions(spec, job);
       const jobNodeId = `job:${wf.path}#${jobId}`;
+      const stepEvidence = (i: number | undefined) => {
+        const line = i === undefined ? undefined : locator.line(['jobs', jobId, 'steps', i]);
+        return line === undefined ? undefined : { file: wf.path, line };
+      };
 
       // 0041: attacker-triggerable is not enough — the job is credential-reachable only
       // when the attacker's code can actually RUN in it (an untrusted PR-head checkout).
@@ -92,6 +98,8 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         secrets: secretNames,
         forkTriggerable,
         runsInstall: hasInstallStep(job),
+        execEvidence: stepEvidence(untrustedExecutionStep(job)),
+        installEvidence: stepEvidence(installStep(job)),
       };
       result.nodes.push(jobNode);
 

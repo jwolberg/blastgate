@@ -125,12 +125,15 @@ const CHECKS: CheckSpec[] = [
     },
   },
   {
+    // 0048: a coding agent ingesting a comment is agent-ingested, not a proven exploit —
+    // it warns until Track 2 can show the agent reaches the secret + an exfil channel.
     name: 'untrusted-text-injection',
-    positiveVerdict: 'fail',
+    positiveVerdict: 'warn',
     assertPositive: (r) => {
       const f = r.findings.find((x) => x.entry.kind === 'untrusted-text-injection');
       expect(f, 'an untrusted-text-injection finding').toBeDefined();
-      expect(f!.tier).toBe('fail');
+      expect(f!.tier).toBe('warn');
+      expect(f!.evidence?.payload).toBeUndefined();
       expect(f!.labels).toContain('ASI01:2026');
     },
   },
