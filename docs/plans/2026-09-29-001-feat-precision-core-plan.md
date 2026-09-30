@@ -18,7 +18,7 @@ execution: code
 - **Execution profile:** TDD per repo `CLAUDE.md` §2 — the failing test for each unit is written and reviewed before the code. One commit per unit on a feature branch; merge to `main` is human-only.
 - **Stop conditions:** Stop and ask if a change would alter a Product Contract rule, if the 50-repo re-scan (U7) shows a lost high-confidence finding, or before creating any GitHub repository (U8).
 - **Open blockers:** None.
-- **Product Contract preservation:** changed R10 — JSON output carries payloads only behind an explicit flag (user-approved at plan scoping), and run records are listed as a payload-free surface; R2 clarified to include inline scripts (KTD2), no scope change; otherwise unchanged.
+- **Product Contract preservation:** changed R10 — JSON output carries payloads only behind an explicit flag (user-approved at plan scoping), and run records are listed as a payload-free surface; R12 no longer assumes the four artifact-injection findings stay fail (the 2026-09-29 re-scan showed all four were false positives; user-approved, see U10); R2 clarified to include inline scripts (KTD2), no scope change; otherwise unchanged.
 
 ---
 
@@ -72,7 +72,7 @@ The detector does not distinguish text interpolated into a shell from text passe
 **Proof of precision**
 
 - R11. Each sink class that can produce `fail` has a sandbox reproduction: a throwaway repository owned by the author where the payload demonstrably executes or reaches the capability.
-- R12. The 50-repo scan is re-run after the change, and every remaining `fail` is hand-verified against source as meeting R1; the four `workflow_run` artifact-injection findings remain `fail`.
+- R12. The 50-repo scan is re-run after the change, and every remaining `fail` is hand-verified against source as meeting R1; each of the four 2026-08-06 `workflow_run` artifact-injection findings is re-adjudicated by hand and its outcome recorded.
 
 ### Acceptance Examples
 
@@ -132,6 +132,7 @@ The detector does not distinguish text interpolated into a shell from text passe
 - KTD5. **The tier moves from sink kind alone to a path-level contract check in `src/engine/checks.ts`.** A path is fail only when `tierForSink` says fail, the entry is fail-eligible, and the evidence is complete. Fail-eligible means: an untrusted-text entry with an execution sink class, a fork-PR entry whose job runs a step after the untrusted checkout, or a new dependency running in a fork-triggerable job. A checkout that nothing executes is not proven execution. Incomplete evidence demotes to warn. Acknowledgement and guard downgrades still apply after this check. Governs R1, R5, R8.
 - KTD6. **Evidence is a new optional `evidence` field on `Finding`: file, line, capability, and payload.** The payload is a fixed illustrative string per sink class, never derived from repo content, so it cannot echo secrets. Renderers choose whether to print it. Governs R7, R10.
 - KTD7. **Sandbox reproductions are a committed runbook with vulnerable workflow templates, run by hand against throwaway repositories.** They live under `docs/runbooks/`. No automation creates GitHub repositories. Governs R11.
+- KTD9. **An artifact splice is a sink only when an unquoted command substitution reads a file in command-word or argument position.** An assignment (`X=$(cat f)`, including `export`/`local`) neither executes nor word-splits the value, and a substitution inside double quotes cannot add arguments. A quote-aware scan of the whole `run:` script replaces the line regex. Accepted false negative: a quoted `"$(<f)"` used as a whole argument can still inject a leading `--flag`. Governs R2. (session-settled: user-approved — chosen over "demote the class to warn" and "document as-is": keeps fail possible for a genuine splice while removing the assignment false positives.)
 - KTD8. **The 50-repo scan becomes a committed script plus a repo list.** It reuses the blobless sparse-clone method from the 2026-08-06 evaluation, so the R12 re-scan and Track 3 run the same way. Governs R12.
 
 ### High-Level Technical Design
@@ -165,7 +166,7 @@ Untrusted-text sink classes and their outcomes (R4, R5):
 
 ### Sequencing
 
-U1 and U3 are independent foundations. U2 needs U1. U4 needs U2 and U3. U5 and U6 need U4. U7 and U8 need U6. U9 closes out.
+U1 and U3 are independent foundations. U2 needs U1. U4 needs U2 and U3. U5 and U6 need U4. U10 needs U4 and was added after the first re-scan. U7 needs U6 and U10. U8 needs U6. U9 closes out.
 
 ---
 
@@ -416,6 +417,36 @@ U1 and U3 are independent foundations. U2 needs U1. U4 needs U2 and U3. U5 and U
 **Test expectation:** none — documentation and templates. Each template must produce a fail when scanned; that check belongs in the runbook's own steps.
 
 **Verification:** Each template scanned with `blastgate` yields fail with evidence. The user runs the runbook; this plan never creates repositories automatically.
+
+### U10. Artifact-splice precision
+
+**Goal:** Stop flagging validated variable assignments as artifact-injection sinks.
+
+**Requirements:** R2, R12 (via KTD9)
+
+**Dependencies:** U4
+
+**Files:**
+- `src/analyzers/ci/injection.ts`
+- `src/analyzers/ci/injection.test.ts`
+- `src/analyzers/ci/ci.test.ts`
+
+**Approach:** Replace `FILE_INTO_SHELL_RE`'s line match in `readsFileIntoShell` and `artifactSpliceStep` with a scan that tracks double quotes, single quotes, and backslash escapes across the whole script. It counts a `$(<f)` / `$(cat f)` only when it is unquoted and not the right-hand side of an assignment.
+
+**Execution note:** Test-first. The four re-scan false positives (pytorch ×3, grafana) are the RED cases.
+
+**Patterns to follow:** `workflowRunArtifactInjection` and its 0042 tests in `src/analyzers/ci/ci.test.ts`.
+
+**Test scenarios:**
+- `gh pr comment $(<PRurl)` → sink (free-programming-books shape).
+- `then gh pr edit $(cat f)` and `a && gh x $(<f)` → sink.
+- `PR_NUMBER=$(cat /tmp/pr-number/pr-number.txt)` → not a sink (grafana).
+- `export X=$(<f)` and `local X=$(cat f)` → not a sink.
+- `echo "body $(cat f)"`, including a multi-line double-quoted string → not a sink.
+- `HASH=$(cat a \` with a line continuation → not a sink (pytorch hardened-pr-review).
+- The `ci-artifact-injection` positive fixture still fails.
+
+**Verification:** Re-scan: pytorch and grafana have no fails; free-programming-books remains a warn.
 
 ### U9. Contract documentation
 

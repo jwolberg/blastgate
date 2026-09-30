@@ -4,6 +4,7 @@ import {
   classifyUntrustedText,
   injectableTextRefs,
   isInjectableAgentJob,
+  splicesFileIntoCommand,
   textOnlyBooleanMatched,
 } from './injection';
 import type { JobSpec, StepSpec } from './parse';
@@ -192,5 +193,41 @@ describe('classifyUntrustedText — sink classes (0046)', () => {
 
   it('a job with no untrusted text → undefined', () => {
     expect(classifyUntrustedText({ steps: [{ run: 'npm test' }] })).toBeUndefined();
+  });
+});
+
+/**
+ * 0054 / plan KTD9: an artifact splice is a sink only when an unquoted command
+ * substitution reads a file in command-word/argument position. The 2026-09-29 re-scan's
+ * four false fails (pytorch ×3, grafana) were all assignments of validated numbers.
+ */
+describe('splicesFileIntoCommand — quote- and assignment-aware (0054)', () => {
+  it.each([
+    ['gh pr comment $(<PRurl) -b "linter output"'],
+    ['if [ -s error.log ]\nthen\n  gh pr edit $(<PRurl) --add-label x\nfi'],
+    ['make && gh api $(cat target.txt)'],
+    ['do_thing; curl $(cat url.txt)'],
+  ])('flags an unquoted splice in argument position: %s', (run) => {
+    expect(splicesFileIntoCommand(run)).toBe(true);
+  });
+
+  it.each([
+    [
+      'PR_NUMBER=$(cat /tmp/pr-number/pr-number.txt)\nif ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then exit 1; fi',
+    ],
+    ['ISSUE_NUM=$(cat issue_number.txt)'],
+    ['export X=$(<file)'],
+    ['local X=$(cat file)'],
+    ['echo "body $(cat error.log)"'],
+    ['gh pr comment 1 -b "Linter failed:\n```\n$(cat error.log)\n```"'],
+    ['HASH=$(cat .github/workflows/a.yml \\\n  .github/workflows/b.yml | sha256sum)'],
+    ["echo '$(cat f)'"],
+  ])('does not flag an assignment or quoted substitution: %s', (run) => {
+    expect(splicesFileIntoCommand(run)).toBe(false);
+  });
+
+  it('still flags the splice when a quoted substitution precedes it on another line', () => {
+    const run = 'echo "note $(cat a)"\ngh pr comment $(<PRurl)';
+    expect(splicesFileIntoCommand(run)).toBe(true);
   });
 });

@@ -154,12 +154,52 @@ export function downloadsArtifact(job: JobSpec): boolean {
   });
 }
 
-/** Reading a file's contents into a shell command line (`$(<file)` / `$(cat file)`) — unsafe if the file is attacker-controlled. */
-const FILE_INTO_SHELL_RE = /\$\(\s*<|\$\(\s*cat\s/;
+/** A command substitution that reads a file: `$(<file)` or `$(cat file)`. */
+const FILE_SUBSTITUTION_AT = /^\$\(\s*(?:<|cat\s)/;
+/** Text immediately before `$(` that makes it an assignment's right-hand side. */
+const ASSIGNMENT_BEFORE =
+  /(?:^|[\s;&|])(?:(?:export|local|readonly|declare)\s+(?:-\w+\s+)*)?[A-Za-z_]\w*=$/;
 
-/** A `run:` step that splices file contents into the command line via command substitution. */
+/**
+ * Whether a `run:` script splices a file's contents into a command (0054 / plan KTD9): an
+ * unquoted `$(<file)` / `$(cat file)` in command-word or argument position, where the
+ * contents are word-split into the command line (argument injection at minimum). An
+ * assignment (`X=$(cat f)`, incl. `export`/`local`) neither executes nor word-splits the
+ * value, and a substitution inside quotes cannot add arguments — neither is a sink.
+ * Quote tracking spans the whole script, so multi-line quoted strings are handled.
+ * Accepted false negative: a quoted `"$(<f)"` used as a whole argument can still inject a
+ * leading `--flag`.
+ */
+export function splicesFileIntoCommand(run: string): boolean {
+  let inDouble = false;
+  let inSingle = false;
+  for (let i = 0; i < run.length; i++) {
+    const c = run[i];
+    if (inSingle) {
+      inSingle = c !== "'";
+      continue;
+    }
+    if (c === '\\') {
+      i++; // skip the escaped character (incl. a line continuation)
+      continue;
+    }
+    if (c === "'" && !inDouble) {
+      inSingle = true;
+    } else if (c === '"') {
+      inDouble = !inDouble;
+    } else if (!inDouble && c === '$' && FILE_SUBSTITUTION_AT.test(run.slice(i))) {
+      const before = run.slice(run.lastIndexOf('\n', i - 1) + 1, i);
+      if (!ASSIGNMENT_BEFORE.test(before)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** A `run:` step that splices a file's contents into a command (0042, sharpened by 0054). */
 export function readsFileIntoShell(job: JobSpec): boolean {
-  return (job.steps ?? []).some((s) => typeof s.run === 'string' && FILE_INTO_SHELL_RE.test(s.run));
+  return (job.steps ?? []).some((s) => typeof s.run === 'string' && splicesFileIntoCommand(s.run));
 }
 
 /**
@@ -261,7 +301,7 @@ export function classifyUntrustedText(job: JobSpec): UntrustedTextSink | undefin
 /** Index of the `run:` step that splices a downloaded artifact into a shell (0042 evidence). */
 export function artifactSpliceStep(job: JobSpec): number | undefined {
   const i = (job.steps ?? []).findIndex(
-    (s) => typeof s.run === 'string' && FILE_INTO_SHELL_RE.test(s.run),
+    (s) => typeof s.run === 'string' && splicesFileIntoCommand(s.run),
   );
   return i >= 0 ? i : undefined;
 }
