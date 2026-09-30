@@ -226,6 +226,32 @@ describe('splicesFileIntoCommand — quote- and assignment-aware (0054)', () => 
     expect(splicesFileIntoCommand(run)).toBe(false);
   });
 
+  // PR #36 review: a stray quote in a comment or heredoc must not hide a later splice.
+  it.each([
+    ["# don't\ngh pr comment $(cat pr.txt)"],
+    ["cat <<EOF\nit's\nEOF\ngh pr comment $(cat f)"],
+    ['# say "hi\ngh pr comment $(cat pr.txt)'],
+    ["cat <<-'END'\n\tdon't\n\tEND\ngh pr edit $(<PRurl)"],
+    // Unbalanced quotes at end of script: fail closed to the plain match.
+    ['echo "oops\ngh pr comment $(cat f)'],
+    // PR #36 re-review: here-strings and arithmetic shifts are not heredocs.
+    ['cat <<< "x"\ngh c $(cat f)'],
+    ['read v <<< foo\ngh c $(cat f)'],
+    ['x=$((1<<n))\ngh c $(cat f)'],
+    // A file read inside arithmetic is evaluated as an expression; an unclosed `$((` must not swallow the script.
+    ['echo $(( $(cat f) + 1 ))'],
+    ['echo $((1+\ngh c $(cat f)'],
+  ])('is not blinded by comments, heredocs, or unbalanced quotes: %s', (run) => {
+    expect(splicesFileIntoCommand(run)).toBe(true);
+  });
+
+  it.each([['# gh pr comment $(cat f)'], ['cat <<EOF > body.md\n$(cat error.log)\nEOF']])(
+    'does not flag a substitution inside a comment or heredoc body: %s',
+    (run) => {
+      expect(splicesFileIntoCommand(run)).toBe(false);
+    },
+  );
+
   it('still flags the splice when a quoted substitution precedes it on another line', () => {
     const run = 'echo "note $(cat a)"\ngh pr comment $(<PRurl)';
     expect(splicesFileIntoCommand(run)).toBe(true);
