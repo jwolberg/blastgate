@@ -238,6 +238,9 @@ describe('splicesFileIntoCommand — quote- and assignment-aware (0054)', () => 
     ['cat <<< "x"\ngh c $(cat f)'],
     ['read v <<< foo\ngh c $(cat f)'],
     ['x=$((1<<n))\ngh c $(cat f)'],
+    // A file read inside arithmetic is evaluated as an expression; an unclosed `$((` must not swallow the script.
+    ['echo $(( $(cat f) + 1 ))'],
+    ['echo $((1+\ngh c $(cat f)'],
   ])('is not blinded by comments, heredocs, or unbalanced quotes: %s', (run) => {
     expect(splicesFileIntoCommand(run)).toBe(true);
   });

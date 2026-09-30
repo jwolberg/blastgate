@@ -206,6 +206,12 @@ export function splicesFileIntoCommand(run: string): boolean {
           break;
         }
       }
+      if (j >= run.length) {
+        continue; // unclosed `$((`: don't skip, keep scanning normally
+      }
+      if (/\$\(\s*(?:<|cat\s)/.test(run.slice(i + 3, j))) {
+        return true; // a file read inside arithmetic is evaluated as an expression
+      }
       i = j;
       continue;
     }
