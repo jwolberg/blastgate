@@ -161,3 +161,46 @@ describe('runEngine — cross-layer gate', () => {
     expect(['secret', 'credential']).toContain(result.findings[0]!.sink.kind);
   });
 });
+
+/**
+ * 0047 / plan R3: a fork-PR job that runs attacker code but whose token can only write
+ * PRs/issues reaches no secret and cannot change repo code — a warn, not a fail. The same
+ * job with `contents: write` can push attacker code, so it fails.
+ */
+describe('runEngine — code-write token scoping (0047)', () => {
+  const forkJob = (scope: string): EngineInputs => ({
+    ci: {
+      workflows: [
+        {
+          path: '.github/workflows/pr.yml',
+          content: [
+            'on:',
+            '  pull_request_target:',
+            'permissions:',
+            `  ${scope}: write`,
+            'jobs:',
+            '  test:',
+            '    steps:',
+            '      - run: gh pr checkout ${{ github.event.pull_request.number }}',
+            '      - run: npm test',
+          ].join('\n'),
+        },
+      ],
+    },
+  });
+
+  it('warns when the only write scope is pull-requests', () => {
+    const result = runEngine(forkJob('pull-requests'));
+    expect(result.verdict).toBe('warn');
+    expect(result.findings.every((f) => f.tier === 'warn')).toBe(true);
+    expect(result.findings.some((f) => f.sink.identity.startsWith('GITHUB_TOKEN'))).toBe(true);
+  });
+
+  it('fails when the token can write repo contents', () => {
+    const result = runEngine(forkJob('contents'));
+    expect(result.verdict).toBe('fail');
+    expect(
+      result.findings.some((f) => f.tier === 'fail' && f.sink.identity.startsWith('GITHUB_TOKEN')),
+    ).toBe(true);
+  });
+});

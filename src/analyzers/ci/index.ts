@@ -2,22 +2,26 @@ import type { AttackNode } from '../../graph/types';
 import { type AnalyzerResult, emptyResult } from '../types';
 import {
   agentActionsUsed,
+  artifactSpliceStep,
+  classifyUntrustedText,
   credentialReachableTextTriggers,
   injectableTextRefs,
   injectionNeutralized,
-  isInjectableAgentJob,
   workflowRunArtifactInjection,
 } from './injection';
+import { locateSource } from './locate';
 import {
   checksOutUntrustedRef,
   credentialReachableTriggers,
   findSecretRefs,
   hasActorGuard,
   hasInstallStep,
+  installStep,
   normalizeTriggers,
   parseWorkflow,
   resolvePermissions,
   unpinnedActions,
+  untrustedExecutionStep,
 } from './parse';
 
 export interface WorkflowInput {
@@ -58,6 +62,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
     }
 
     const triggers = normalizeTriggers(spec.on);
+    const locator = locateSource(wf.content);
     // A fork/external actor reaches a secret or writable GITHUB_TOKEN only through an
     // event that runs privileged (base-repo context). Plain fork `pull_request` gets a
     // read-only token and no secrets, so it is NOT credential-reachable — excluding it
@@ -69,6 +74,10 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       const { names: secretNames, usesAllSecrets } = findSecretRefs(job);
       const perms = resolvePermissions(spec, job);
       const jobNodeId = `job:${wf.path}#${jobId}`;
+      const stepEvidence = (i: number | undefined) => {
+        const line = i === undefined ? undefined : locator.line(['jobs', jobId, 'steps', i]);
+        return line === undefined ? undefined : { file: wf.path, line };
+      };
 
       // 0041: attacker-triggerable is not enough — the job is credential-reachable only
       // when the attacker's code can actually RUN in it (an untrusted PR-head checkout).
@@ -89,6 +98,8 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         secrets: secretNames,
         forkTriggerable,
         runsInstall: hasInstallStep(job),
+        execEvidence: stepEvidence(untrustedExecutionStep(job)),
+        installEvidence: stepEvidence(installStep(job)),
       };
       result.nodes.push(jobNode);
 
@@ -105,10 +116,13 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
 
       if (perms.overBroad) {
         const tokenSink = `sink:credential:GITHUB_TOKEN@${wf.path}#${jobId}`;
+        // 0047: only a token that can change repo code or mint cloud credentials is a
+        // credential sink; PR/issue/comment/label write is a privileged capability (warn).
         result.nodes.push({
           id: tokenSink,
           kind: 'sink',
-          sinkKind: 'credential',
+          sinkKind:
+            perms.codeWrite || perms.mintsCredentials ? 'credential' : 'privileged-capability',
           identity: `GITHUB_TOKEN (${perms.raw})`,
         });
         result.edges.push({ from: jobNodeId, to: tokenSink, edge: { kind: 'holds' } });
@@ -139,18 +153,27 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       // (untrusted text only boolean-matched) — cutting the co-presence false positives the
       // top-50 scan surfaced. Artifact injection (0042) keys on a real shell-splice sink and
       // keeps only the original narrow actor-guard exemption.
-      const textInjection =
-        injectableEvents.length > 0 &&
-        isInjectableAgentJob(job, triggers) &&
-        !injectionNeutralized(job);
-      const artifactInjection = workflowRunArtifactInjection(job, triggers) && !hasActorGuard(job);
-      if (textInjection || artifactInjection) {
+      // 0046: classify WHERE the text lands; only a sink that could inject becomes an entry
+      // (env-passed / boolean-compared text never does). Tiering by class is the engine's.
+      const textSink =
+        injectableEvents.length > 0 && !injectionNeutralized(job)
+          ? classifyUntrustedText(job)
+          : undefined;
+      const spliceStep =
+        workflowRunArtifactInjection(job, triggers) && !hasActorGuard(job)
+          ? artifactSpliceStep(job)
+          : undefined;
+      // The artifact splice is an execution sink; it wins over a weaker text sink.
+      const artifactWins =
+        spliceStep !== undefined && (!textSink || textSink.sinkClass !== 'execution');
+      const sinkPath = artifactWins ? ['steps', spliceStep, 'run'] : textSink?.path;
+      if (sinkPath) {
         const refs = injectableTextRefs(job);
         const via = refs.length > 0 ? refs.join(', ') : agentActionsUsed(job).join(', ');
-        const label =
-          artifactInjection && !textInjection
-            ? `untrusted workflow_run artifact reaches a shell in job ${jobId}`
-            : `untrusted ${injectableEvents.join('/')} text reaches job ${jobId} (${via})`;
+        const label = artifactWins
+          ? `untrusted workflow_run artifact reaches a shell in job ${jobId}`
+          : `untrusted ${injectableEvents.join('/')} text reaches job ${jobId} (${via})`;
+        const line = locator.line(['jobs', jobId, ...sinkPath]);
         const entryId = `entry:injection:${wf.path}#${jobId}`;
         result.nodes.push({
           id: entryId,
@@ -159,6 +182,8 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           exposure: 3,
           label,
           guarded: false,
+          sinkClass: artifactWins ? 'execution' : textSink?.sinkClass,
+          evidence: line === undefined ? undefined : { file: wf.path, line },
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'injects' } });
       }

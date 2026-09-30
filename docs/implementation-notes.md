@@ -2,6 +2,21 @@
 
 Running log of decisions, deviations, and tradeoffs for human review.
 
+## 2026-09-29 — Precision Core (0045–0053)
+
+Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
+
+- **0045 — invalid YAML yields no positions.** `locateSource` returns `undefined` for every lookup when the document has parse errors, rather than best-effort positions from a partial tree. The analyzer already reports the parse error, and evidence that might point at the wrong line is worse than none (R8 demotes it).
+- **0047 — deviation: `id-token: write` stays a credential sink.** The plan's KTD4 said only code-write (`contents: write` / `write-all`) is a credential sink. `id-token: write` lets the job mint cloud credentials via OIDC (e.g. assume an AWS role), which is secret-equivalent under R1, and it already failed before this change. Demoting it would have turned a real exploit path into a warn. Added `mintsCredentials` alongside `codeWrite`.
+- **0047 — follow-up to revisit: `packages: write`.** It can publish a poisoned package/image, a supply-chain compromise outside the repo. Under R3's literal "changing code in a repo" it is a warn. Worth a product decision.
+- **0048 — approximation: "code runs after the untrusted checkout".** A fork-PR path is fail-eligible only when a `run:` step or a local `./` action comes after the untrusted checkout. Any such `run:` is treated as able to run attacker-controlled repo code (scripts, Makefiles, configs), even `echo`. Fail-leaning on purpose: it only removes the clear no-execution case (checkout as the last step).
+- **0048 — sequencing deviation: e2e flip landed here, not in 0050.** The existing `untrusted-text-injection` fixture (claude-code-action reading a comment) becomes `warn` under the contract. Its expectation flips in this commit so every commit stays green. 0050 still adds the new shell-injection fixture pair.
+- **0048 — evidence on warns.** Agent-ingested, action-input, and unrecognized findings still carry `file:line` + capability (useful for triage) but never a payload. Payload presence is what separates a fail's proof from a warn's pointer.
+- **0054 — added mid-session after the first re-scan.** All 4 remaining fails (pytorch ×3, grafana) were false positives: validated `X=$(cat f)` assignments that the 0042 regex treated as shell splices. The detector is now quote- and assignment-aware. Accepted false negative: a quoted `"$(<f)"` used as a whole argument can still inject a leading `--flag`. The plan's R12 premise that the four August artifact findings stay fail was wrong and was amended (user-approved).
+- **0051 — result and caveats.** Re-scan: 0 fails, 15 warns, 0 UNKNOWN (`docs/evaluations/2026-09-29-precision-core-rescan.md`). A zero-fail sample makes fail precision untestable, so fail recall needs Track 3's labeled benchmark. Two repo owners (`fastapi`, `laravel`) were reconstructed from short names.
+- **0051 — gap found for Track 2.** Issue text passed via `env:` into an LLM call (home-assistant's GitHub Models triage) is prompt injection, but it produces no finding. `env:` protects the shell, not a model. Agent detection keys on known coding-agent actions only.
+- **0052 — descoped (user-directed).** Live sandbox reproductions on throwaway repos were dropped in favor of the committed fixture pairs, whose fails the e2e suite already requires to carry complete evidence (plan KTD7).
+
 ## 2026-08-06 — 0044: injection precision (in-step guards + safe handling)
 
 - **Problem.** The top-50 scan showed the `untrusted-text-injection → secret` finding fires on

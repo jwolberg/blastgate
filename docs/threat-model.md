@@ -106,10 +106,11 @@ entries — all change-time, and each derived directly from the Mythos-5 tradecr
   branches on `process.env.CI` / a container / a TTY to behave differently *under
   observation*. The dropper's evasion, modeled as an entry reaching an install/build
   capability sink (warn). → `ASI04`.
-- **Untrusted text → agent** (`untrusted-text-injection`) — a job on an untrusted-text
-  event (`issues`, `issue_comment`, `pull_request_target`, …) that pipes attacker-authored
-  body/title text into a step, or runs a coding-agent action that ingests the event.
-  Reaching the job's secret is a fail. → `ASI01` / `MCP10`.
+- **Untrusted text → sink** (`untrusted-text-injection`) — a job on an untrusted-text
+  event (`issues`, `issue_comment`, `pull_request_target`, …) where attacker-authored
+  body/title text lands in a classified sink (see §3.4): an execution sink can fail; a
+  coding agent, a third-party action input, or an unclassified field warns. Text passed
+  only through `env:` or only compared in `if:` produces nothing. → `ASI01` / `MCP10`.
 - **Agent config in an untrusted diff** (`agent-config-change`) — a PR that adds/edits an
   agent instruction file (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`), a prompt injection
   against a maintainer who reviews with an agent (warn; base-diff only, so a repo's own
@@ -150,7 +151,34 @@ different remediation.
 
 ### [3.4] The gate (precision over recall — R14)
 
-A check fails **only** on a genuinely reachable path to a secret or credential sink.
+A check fails **only** on a proven exploit (plan
+`docs/plans/2026-09-29-001-feat-precision-core-plan.md`, R1). All three must hold:
+
+1. **A secret or code-write sink.** A named secret, or a `GITHUB_TOKEN` with
+   `contents: write` / `id-token: write` / `write-all`. A token that can only write PRs,
+   issues, comments, or labels is a privileged capability and warns.
+2. **A fail-eligible entry.** Untrusted text reaching an *execution* sink; a fork PR whose
+   job runs a step after checking out the PR head; a new dependency whose install script
+   runs in such a job; or a GitLab MR pipeline job.
+3. **Complete evidence.** The `file:line` where the input lands and the capability reached.
+   A path whose evidence cannot be located warns instead.
+
+Untrusted-text sink classes:
+
+| Sink class | Example | Secret or code-write in job | Otherwise |
+|---|---|---|---|
+| execution | `${{ github.event.issue.title }}` inside `run:` or a github-script `script:`; an unquoted `$(<artifact-file)` in a command | fail | warn |
+| agent-ingested | a coding-agent action on the event | warn | warn |
+| action-input | event text in a third-party action's `with:` | warn | warn |
+| unrecognized | event text in any other field | warn | warn |
+| env-passed / compared | `env: { T: ${{ … }} }` read as `"$T"`; `contains(…)` in `if:` | none | none |
+
+An execution sink in any step counts against every capability its job holds, because code
+running in one step can read the others' secrets. Local text output also prints an
+illustrative payload for each fail; JSON includes it only with `--include-payloads`, and
+the markdown report, the GitHub Action, the MCP tool, and `--record` run records never do,
+so a public PR surface never publishes a working attack.
+
 Syntactic presence never fails a check: a `postinstall` script in a job that holds no
 secret and is not attacker-triggerable produces nothing. Lower-sensitivity capability
 paths (an over-privileged agent grant) are reported as **warnings**, not failures. A

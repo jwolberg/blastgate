@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeCi } from './index';
-import { isPinnedAction, normalizeTriggers, untrustedTriggers } from './parse';
+import {
+  isPinnedAction,
+  normalizeTriggers,
+  resolvePermissions,
+  untrustedTriggers,
+  type JobSpec,
+  type WorkflowSpec,
+} from './parse';
 
 // The canonical cross-layer path: the dangerous fork-triggerable event is
 // `pull_request_target` (base-repo context, so secrets + a writable token are present).
@@ -252,5 +259,171 @@ describe('analyzeCi', () => {
     });
     expect(r.diagnostics.some((d) => d.level === 'error')).toBe(true);
     expect(r.nodes.some((n) => n.kind === 'ci-job' && n.job === 'build')).toBe(true);
+  });
+});
+
+/**
+ * 0047 / plan R3, KTD4: only a token that can change repo code (or mint cloud
+ * credentials) is a credential sink. PR/issue/comment/label write scopes are real but
+ * are not repo-code compromise, so they become a privileged-capability sink (warn).
+ */
+describe('code-write GITHUB_TOKEN scoping (0047)', () => {
+  const perms = (p: unknown, jobP?: unknown) =>
+    resolvePermissions({ permissions: p } as WorkflowSpec, { permissions: jobP } as JobSpec);
+
+  it('treats contents: write and write-all as code-write', () => {
+    expect(perms({ contents: 'write' }).codeWrite).toBe(true);
+    expect(perms('write-all').codeWrite).toBe(true);
+  });
+
+  it('does not treat PR/issue write scopes as code-write', () => {
+    const p = perms({ 'pull-requests': 'write', issues: 'write' });
+    expect(p.overBroad).toBe(true);
+    expect(p.codeWrite).toBe(false);
+    expect(p.mintsCredentials).toBe(false);
+  });
+
+  it('treats id-token: write as credential-minting (OIDC → cloud credentials)', () => {
+    const p = perms({ 'id-token': 'write', contents: 'read' });
+    expect(p.codeWrite).toBe(false);
+    expect(p.mintsCredentials).toBe(true);
+  });
+
+  it('lets job-level permissions override workflow-level for codeWrite', () => {
+    expect(perms({ contents: 'write' }, { contents: 'read' }).codeWrite).toBe(false);
+    expect(perms({ contents: 'read' }, { contents: 'write' }).codeWrite).toBe(true);
+  });
+
+  it('keeps read-all and absent permissions free of code-write', () => {
+    expect(perms('read-all').codeWrite).toBe(false);
+    expect(perms(undefined).codeWrite).toBe(false);
+  });
+
+  const tokenSink = (permissionLines: string[]) =>
+    analyzeCi({
+      workflows: [
+        {
+          path: 'w',
+          content: [
+            'on:',
+            '  pull_request_target:',
+            'permissions:',
+            ...permissionLines,
+            'jobs:',
+            '  j:',
+            '    steps:',
+            '      - run: echo hi',
+          ].join('\n'),
+        },
+      ],
+    }).nodes.find((n) => n.kind === 'sink' && n.identity.startsWith('GITHUB_TOKEN'));
+
+  it('emits a code-write token as a credential sink', () => {
+    const sink = tokenSink(['  contents: write']);
+    expect(sink && sink.kind === 'sink' && sink.sinkKind).toBe('credential');
+  });
+
+  it('emits an id-token: write token as a credential sink', () => {
+    const sink = tokenSink(['  id-token: write']);
+    expect(sink && sink.kind === 'sink' && sink.sinkKind).toBe('credential');
+  });
+
+  it('emits a PR-only write token as a privileged-capability sink', () => {
+    const sink = tokenSink(['  pull-requests: write']);
+    expect(sink && sink.kind === 'sink' && sink.sinkKind).toBe('privileged-capability');
+  });
+});
+
+/** 0046: the untrusted-text entry carries its sink class and file:line evidence. */
+describe('untrusted-text entry classification (0046)', () => {
+  const entryOf = (content: string) =>
+    analyzeCi({ workflows: [{ path: '.github/workflows/t.yml', content }] }).nodes.find(
+      (n) => n.kind === 'entry' && n.entryKind === 'untrusted-text-injection',
+    );
+  const issueJob = (steps: string[]): string =>
+    [
+      'on:', // 1
+      '  issues:', // 2
+      'jobs:', // 3
+      '  triage:', // 4
+      '    steps:', // 5
+      ...steps,
+    ].join('\n');
+
+  it('a run: interpolation is an execution sink with evidence at that line', () => {
+    const entry = entryOf(
+      issueJob([
+        '      - uses: actions/checkout@v4', // 6
+        '      - run: echo "${{ github.event.issue.title }}"', // 7
+        '      - run: ./deploy.sh', // 8
+        '        env:', // 9
+        '          K: ${{ secrets.DEPLOY_KEY }}', // 10
+      ]),
+    );
+    expect(entry && entry.kind === 'entry' && entry.sinkClass).toBe('execution');
+    expect(entry && entry.kind === 'entry' && entry.evidence).toEqual({
+      file: '.github/workflows/t.yml',
+      line: 7,
+    });
+  });
+
+  it('text passed only via env: produces no untrusted-text entry', () => {
+    const entry = entryOf(
+      issueJob([
+        '      - run: echo "$TITLE"',
+        '        env:',
+        '          TITLE: ${{ github.event.issue.title }}',
+        '          K: ${{ secrets.DEPLOY_KEY }}',
+      ]),
+    );
+    expect(entry).toBeUndefined();
+  });
+
+  it('a coding-agent step is an agent-ingested entry', () => {
+    const entry = entryOf(
+      issueJob([
+        '      - uses: anthropics/claude-code-action@v1', // 6
+        '        env:',
+        '          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}',
+      ]),
+    );
+    expect(entry && entry.kind === 'entry' && entry.sinkClass).toBe('agent-ingested');
+    expect(entry && entry.kind === 'entry' && entry.evidence?.line).toBe(6);
+  });
+
+  it('an actor-guarded job produces no entry (R6)', () => {
+    const entry = entryOf(
+      [
+        'on:',
+        '  issues:',
+        'jobs:',
+        '  triage:',
+        "    if: github.event.issue.author_association == 'OWNER'",
+        '    steps:',
+        '      - run: echo "${{ github.event.issue.title }}"',
+        '        env:',
+        '          K: ${{ secrets.DEPLOY_KEY }}',
+      ].join('\n'),
+    );
+    expect(entry).toBeUndefined();
+  });
+
+  it('a workflow_run artifact splice is an execution sink with evidence at the splice', () => {
+    const entry = entryOf(
+      [
+        'on:', // 1
+        '  workflow_run:', // 2
+        "    workflows: ['CI']", // 3
+        'jobs:', // 4
+        '  comment:', // 5
+        '    steps:', // 6
+        '      - uses: actions/download-artifact@v4', // 7
+        '      - run: gh pr comment $(<PRurl)', // 8
+        '        env:', // 9
+        '          T: ${{ secrets.GH_SESSION }}', // 10
+      ].join('\n'),
+    );
+    expect(entry && entry.kind === 'entry' && entry.sinkClass).toBe('execution');
+    expect(entry && entry.kind === 'entry' && entry.evidence?.line).toBe(8);
   });
 });

@@ -32,7 +32,9 @@ export interface ActionEnv {
 
 function annotationMessage(f: Finding): string {
   const labels = f.labels.length > 0 ? ` [${f.labels.join(', ')}]` : '';
-  return `${f.path.join(' → ')} — ${f.reason} Fix: ${f.remediation}${labels}`;
+  // Location + capability only — PR annotations are public (0049 / R10: no payload).
+  const at = f.evidence ? ` At ${f.evidence.file}:${f.evidence.line}.` : '';
+  return `${f.path.join(' → ')} — ${f.reason}${at} Fix: ${f.remediation}${labels}`;
 }
 
 /** Run the engine, surface findings on the PR, and return the process exit code. */

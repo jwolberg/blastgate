@@ -27,6 +27,21 @@ export interface FindingSink {
   identity: string;
 }
 
+/**
+ * The proof attached to a finding (0048 / plan R7, KTD6): where attacker input lands, the
+ * capability it reaches, and — only on a `fail` — a fixed illustrative payload for that sink
+ * class. Payloads are never derived from repo content; renderers decide where to show them
+ * (R10: never on public surfaces).
+ */
+export interface FindingEvidence {
+  file: string;
+  /** 1-based source line. */
+  line: number;
+  /** The secret or code-write credential reached. */
+  capability: string;
+  payload?: string;
+}
+
 export interface Finding {
   /** Stable id (`<entry.id>=><sink.id>`) — deterministic ordering and dedup. */
   id: string;
@@ -62,6 +77,8 @@ export interface Finding {
    * decorates a path that is already reachable.
    */
   advisories?: Advisory[];
+  /** Proof of the path (0048). Present on every `fail`; absent when it cannot be located. */
+  evidence?: FindingEvidence;
 }
 
 /** A known-vulnerability advisory (OSV / GHSA / CVE) against a package on a reachable path. */
@@ -80,4 +97,17 @@ export interface Advisory {
  */
 export function tierForSink(kind: SinkKind): Tier {
   return kind === 'privileged-capability' ? 'warn' : 'fail';
+}
+
+/**
+ * The finding with its illustrative payload removed (0049 / plan R10). Every surface that
+ * can be published or persisted — JSON by default, the markdown report, the Action, the MCP
+ * tool, run records — uses this; only local text output keeps the payload.
+ */
+export function withoutPayload(f: Finding): Finding {
+  if (!f.evidence?.payload) {
+    return f;
+  }
+  const { file, line, capability } = f.evidence;
+  return { ...f, evidence: { file, line, capability } };
 }

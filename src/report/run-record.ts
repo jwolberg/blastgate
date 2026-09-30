@@ -10,7 +10,7 @@
  * high-value target, so it is a separate product decision, not part of this tool.
  */
 
-import type { Finding, Verdict } from '../findings/finding';
+import { type Finding, type Verdict, withoutPayload } from '../findings/finding';
 import type { GateResult } from '../engine/gate';
 
 export const RUN_RECORD_SCHEMA_VERSION = 1 as const;
@@ -49,7 +49,8 @@ export function toRunRecord(result: GateResult, meta: RunMeta): RunRecord {
     findingCount: result.findings.length,
     failCount: result.findings.filter((f) => f.tier === 'fail').length,
     warnCount: result.findings.filter((f) => f.tier === 'warn').length,
-    findings: result.findings,
+    // Records are written to disk and may be uploaded or committed (0049 / R10): no payloads.
+    findings: result.findings.map(withoutPayload),
   };
 }
 

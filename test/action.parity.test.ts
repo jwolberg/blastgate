@@ -58,7 +58,8 @@ function captureEnv(fs: RepoFs, base?: string): { env: ActionEnv; sink: Sink } {
 
 async function cliFindings(fs: RepoFs): Promise<unknown> {
   let out = '';
-  await runCli(['.', '--base', 'HEAD', '--json'], {
+  // --include-payloads: compare the full engine Finding shape (0049 strips payloads by default).
+  await runCli(['.', '--base', 'HEAD', '--json', '--include-payloads'], {
     fs,
     stdin: () => Promise.resolve(''),
     stdout: (s) => {

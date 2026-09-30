@@ -38,8 +38,9 @@ one engine, so every surface produces identical findings.
   install-time execution and newly introduced dependencies, evaluated offline from the
   lockfile (plus opt-in npm provenance regressions).
 - **Security engineers** who want a gate with a low false-positive rate: it fails only
-  on a reachable secret/credential path, and warns (does not fail) on lower-severity
-  capability paths.
+  on a proven exploit — attacker input reaching code execution in a job that holds a
+  secret or code-write access, shown with its `file:line` — and warns on everything else
+  it can reach.
 
 ## Why it's needed — the threats it catches
 
@@ -63,6 +64,7 @@ which also maps every OWASP category Blastgate emits.
 ```text
 ✗ FAIL  added dependency evil-pkg@1.0.0 → evil-pkg@1.0.0 → .github/workflows/ci.yml#test → AWS_SECRET_ACCESS_KEY
       sink: credential AWS_SECRET_ACCESS_KEY  [ASI04:2026, MCP04:2025]
+      at:   .github/workflows/ci.yml:9 → AWS_SECRET_ACCESS_KEY
       why:  New or changed dependency evil-pkg@1.0.0 declares an install script that executes in job
             .github/workflows/ci.yml#test, which a fork PR triggers via pull_request_target (base-repo
             context, so it carries repo secrets) and which holds credential AWS_SECRET_ACCESS_KEY,
@@ -104,8 +106,17 @@ OWASP Agentic Top 10 (2026) and MCP Top 10 (draft) category.
 
 ## Why reachability
 
-Precision is the primary design constraint. A check fails only on a genuinely reachable
-path; the presence of a pattern alone does not produce a finding. A `postinstall` script
+Precision is the primary design constraint. A check fails only on a proven exploit:
+attacker-controlled input reaches an execution sink (a shell or inline script, or a spliced
+artifact) in a privileged job that holds a secret, a code-write token, or an OIDC
+`id-token: write` grant. Every fail cites the `file:line` where the input lands and the
+capability it reaches. Paths Blastgate can reach but not prove — a coding agent reading
+issue text, text handed to a third-party action, a token that can only write PRs or
+issues — are warnings. The full contract is in
+[`docs/threat-model.md` §3.4](docs/threat-model.md#34-the-gate-precision-over-recall--r14);
+its effect on 50 popular repos is in
+[`docs/evaluations/2026-09-29-precision-core-rescan.md`](docs/evaluations/2026-09-29-precision-core-rescan.md).
+The presence of a pattern alone does not produce a finding. A `postinstall` script
 in a job that holds no secrets and is not triggerable by untrusted input is not
 reported. This keeps findings actionable and avoids the false-positive rate of
 pattern-matching tools. A human can accept a finding via a committed

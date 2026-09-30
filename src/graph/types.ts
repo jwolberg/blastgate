@@ -46,6 +46,22 @@ export interface EntryNode {
    * but not externally attacker-controllable, so the gate downgrades it fail→warn (U17).
    */
   guarded?: boolean;
+  /** Where untrusted text lands (`untrusted-text-injection` entries only, 0046). */
+  sinkClass?: SinkClass;
+  /** Source location of the sink, for `fail` evidence (0046 / plan R7). */
+  evidence?: SourceEvidence;
+}
+
+/**
+ * Where untrusted event text lands in a job (0046 / plan KTD1–KTD2), strongest first.
+ * Only `execution` can fail; the rest are warn-tier until the text is proven executed.
+ */
+export type SinkClass = 'execution' | 'agent-ingested' | 'action-input' | 'unrecognized';
+
+/** A 1-based source location in a repo file. */
+export interface SourceEvidence {
+  file: string;
+  line: number;
 }
 
 export interface DependencyNode {
@@ -71,6 +87,10 @@ export interface CiJobNode {
   forkTriggerable: boolean;
   /** The job runs a dependency install step (where a poisoned lifecycle script executes). */
   runsInstall: boolean;
+  /** Where attacker-controlled code first executes in the job (after an untrusted checkout, 0048). */
+  execEvidence?: SourceEvidence;
+  /** The dependency-install step (where a new dependency's install script runs, 0048). */
+  installEvidence?: SourceEvidence;
 }
 
 export interface AgentGrantNode {

@@ -1,0 +1,18 @@
+name: triage
+on:
+  issues:
+    types: [opened]
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log the new issue
+        # Safe pattern: the title is passed as an environment variable and quoted.
+        run: echo "New issue - $TITLE"
+        env:
+          TITLE: ${{ github.event.issue.title }}
+      - name: Deploy preview
+        run: ./scripts/deploy-preview.sh
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}

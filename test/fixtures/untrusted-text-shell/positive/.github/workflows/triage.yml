@@ -1,0 +1,16 @@
+name: triage
+on:
+  issues:
+    types: [opened]
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log the new issue
+        # Attacker-authored title is expanded into the shell before it runs.
+        run: echo "New issue - ${{ github.event.issue.title }}"
+      - name: Deploy preview
+        run: ./scripts/deploy-preview.sh
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}

@@ -9,12 +9,14 @@
  * job also holds a secret/token, the injection is a reachable exfiltration path.
  */
 
+import type { SinkClass } from '../../graph/types';
 import {
   collectStrings,
   hasActorGuard,
   hasScriptPermissionGuard,
   isLabelGated,
   type JobSpec,
+  type StepSpec,
 } from './parse';
 
 /** Events that carry attacker-authored free text (issue/PR/discussion bodies, comments). */
@@ -152,12 +154,52 @@ export function downloadsArtifact(job: JobSpec): boolean {
   });
 }
 
-/** Reading a file's contents into a shell command line (`$(<file)` / `$(cat file)`) — unsafe if the file is attacker-controlled. */
-const FILE_INTO_SHELL_RE = /\$\(\s*<|\$\(\s*cat\s/;
+/** A command substitution that reads a file: `$(<file)` or `$(cat file)`. */
+const FILE_SUBSTITUTION_AT = /^\$\(\s*(?:<|cat\s)/;
+/** Text immediately before `$(` that makes it an assignment's right-hand side. */
+const ASSIGNMENT_BEFORE =
+  /(?:^|[\s;&|])(?:(?:export|local|readonly|declare)\s+(?:-\w+\s+)*)?[A-Za-z_]\w*=$/;
 
-/** A `run:` step that splices file contents into the command line via command substitution. */
+/**
+ * Whether a `run:` script splices a file's contents into a command (0054 / plan KTD9): an
+ * unquoted `$(<file)` / `$(cat file)` in command-word or argument position, where the
+ * contents are word-split into the command line (argument injection at minimum). An
+ * assignment (`X=$(cat f)`, incl. `export`/`local`) neither executes nor word-splits the
+ * value, and a substitution inside quotes cannot add arguments — neither is a sink.
+ * Quote tracking spans the whole script, so multi-line quoted strings are handled.
+ * Accepted false negative: a quoted `"$(<f)"` used as a whole argument can still inject a
+ * leading `--flag`.
+ */
+export function splicesFileIntoCommand(run: string): boolean {
+  let inDouble = false;
+  let inSingle = false;
+  for (let i = 0; i < run.length; i++) {
+    const c = run[i];
+    if (inSingle) {
+      inSingle = c !== "'";
+      continue;
+    }
+    if (c === '\\') {
+      i++; // skip the escaped character (incl. a line continuation)
+      continue;
+    }
+    if (c === "'" && !inDouble) {
+      inSingle = true;
+    } else if (c === '"') {
+      inDouble = !inDouble;
+    } else if (!inDouble && c === '$' && FILE_SUBSTITUTION_AT.test(run.slice(i))) {
+      const before = run.slice(run.lastIndexOf('\n', i - 1) + 1, i);
+      if (!ASSIGNMENT_BEFORE.test(before)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** A `run:` step that splices a file's contents into a command (0042, sharpened by 0054). */
 export function readsFileIntoShell(job: JobSpec): boolean {
-  return (job.steps ?? []).some((s) => typeof s.run === 'string' && FILE_INTO_SHELL_RE.test(s.run));
+  return (job.steps ?? []).some((s) => typeof s.run === 'string' && splicesFileIntoCommand(s.run));
 }
 
 /**
@@ -171,4 +213,95 @@ export function readsFileIntoShell(job: JobSpec): boolean {
  */
 export function workflowRunArtifactInjection(job: JobSpec, triggers: string[]): boolean {
   return triggers.includes('workflow_run') && downloadsArtifact(job) && readsFileIntoShell(job);
+}
+
+const SINK_STRENGTH: Record<SinkClass, number> = {
+  execution: 4,
+  'agent-ingested': 3,
+  'action-input': 2,
+  unrecognized: 1,
+};
+
+export interface UntrustedTextSink {
+  sinkClass: SinkClass;
+  /** Job-relative key path of the sink (e.g. `['steps', 1, 'run']`), for the source locator. */
+  path: (string | number)[];
+}
+
+const GITHUB_SCRIPT_RE = /actions\/github-script/;
+
+/** Untrusted text that is interpolated, not merely compared inside a boolean guard call. */
+function interpolatesUntrustedText(value: unknown): boolean {
+  const strings: string[] = [];
+  collectStrings(value, strings);
+  return strings.some((s) => UNTRUSTED_TEXT_REF_TEST.test(s.replace(BOOLEAN_GUARD_CALL, '')));
+}
+
+/** Keys that never inject: `env` passes text safely as a variable, `if` only compares, `name`/`id` only label. */
+const INERT_KEYS = new Set(['env', 'if', 'name', 'id', 'uses']);
+
+type Hit = { sinkClass: SinkClass; path: (string | number)[] };
+
+function classifyStep(step: StepSpec): Hit | undefined {
+  const uses = typeof step.uses === 'string' ? step.uses : '';
+  if (interpolatesUntrustedText(step.run)) {
+    return { sinkClass: 'execution', path: ['run'] };
+  }
+  if (GITHUB_SCRIPT_RE.test(uses) && interpolatesUntrustedText(step.with?.script)) {
+    return { sinkClass: 'execution', path: ['with', 'script'] };
+  }
+  // A coding agent ingests the event context by design, with or without an interpolation.
+  if (AGENT_ACTION_RE.test(uses)) {
+    return { sinkClass: 'agent-ingested', path: ['uses'] };
+  }
+  for (const [key, value] of Object.entries(step.with ?? {})) {
+    if (interpolatesUntrustedText(value)) {
+      return { sinkClass: 'action-input', path: ['with', key] };
+    }
+  }
+  return unrecognizedIn(step, new Set(['run', 'with']));
+}
+
+/** Fail-closed: untrusted text in any key we do not classify is `unrecognized`, never dropped. */
+function unrecognizedIn(node: object, handled: Set<string>): Hit | undefined {
+  for (const [key, value] of Object.entries(node)) {
+    if (!handled.has(key) && !INERT_KEYS.has(key) && interpolatesUntrustedText(value)) {
+      // Point at the exact child of a map (e.g. `with.title`) so evidence names the input.
+      const child =
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? Object.keys(value).find((k) =>
+              interpolatesUntrustedText((value as Record<string, unknown>)[k]),
+            )
+          : undefined;
+      return { sinkClass: 'unrecognized', path: child === undefined ? [key] : [key, child] };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Classify the strongest sink untrusted event text reaches in a job (0046). `undefined`
+ * when the text never lands anywhere that could inject — only passed through `env:`, only
+ * compared in `if:` / `contains()`, or absent. Guard exemptions (R6) are applied by the
+ * analyzer, not here.
+ */
+export function classifyUntrustedText(job: JobSpec): UntrustedTextSink | undefined {
+  let best: UntrustedTextSink | undefined;
+  const consider = (hit: Hit | undefined, prefix: (string | number)[]): void => {
+    if (hit && (!best || SINK_STRENGTH[hit.sinkClass] > SINK_STRENGTH[best.sinkClass])) {
+      best = { sinkClass: hit.sinkClass, path: [...prefix, ...hit.path] };
+    }
+  };
+  (job.steps ?? []).forEach((step, i) => consider(classifyStep(step), ['steps', i]));
+  // Job-level keys (e.g. a reusable workflow's `with:`) — permissions/secrets hold no event text.
+  consider(unrecognizedIn(job, new Set(['steps', 'permissions', 'secrets'])), []);
+  return best;
+}
+
+/** Index of the `run:` step that splices a downloaded artifact into a shell (0042 evidence). */
+export function artifactSpliceStep(job: JobSpec): number | undefined {
+  const i = (job.steps ?? []).findIndex(
+    (s) => typeof s.run === 'string' && splicesFileIntoCommand(s.run),
+  );
+  return i >= 0 ? i : undefined;
 }
