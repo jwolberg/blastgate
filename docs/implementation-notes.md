@@ -1026,3 +1026,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Engine identity: the CLI reports `0.1.0`, which does not change when rules change, so a version
   string alone would never re-vouch listed passes after an engine fix (e.g. 0070). U8's
   orchestrator passes `engineVersion` as `<cli version>+<blastgate commit SHA>`.
+
+## 2026-10-01 — 0074: disclosure gate and report composer (public-crawler U4)
+
+- Escaping: one `inert()` pass over a payload-free copy of each finding before the shared
+  per-finding markdown block (`markdownFinding`, now exported from `src/cli/render.ts` with
+  output unchanged). It strips control/bidi/zero-width characters, caps length, and swaps the
+  characters that make links, images, HTML, code spans, mentions, issue refs, autolinks, and
+  table cells (`` ` < > [ ] @ #N :// www. | ``) for look-alikes. Side effect: action refs read
+  `run-gemini-cli＠v0.1.21` in reports.
+- The threat-model link is a bare URL, not `[text](url)`, so the inertness check can forbid `](`
+  outright.
+- Gate order: allowlist, then duplicate (same rule as `createDisclosure`). Config is strict
+  JSON (`allowlist`, `submitMode`, `publishSite`, `throttle`), unknown keys rejected.
+- `src/crawl/fixtures/disclose/real-fails.json` holds real engine fail findings, payloads
+  included (fixed illustrative strings, never repo-derived), so the no-payload test is real.

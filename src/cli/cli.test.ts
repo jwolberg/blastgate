@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Finding } from '../findings/finding';
 import type { RepoFs } from './collect';
 import { hookOutput } from './gate';
-import { renderJson, renderMarkdown, renderText, scanExitCode } from './render';
+import { markdownFinding, renderJson, renderMarkdown, renderText, scanExitCode } from './render';
 import type { GateResult } from '../engine/gate';
 import { runCli, scanCollectOptions } from './index';
 import { collectInputs } from './collect';
@@ -291,6 +291,22 @@ describe('renderMarkdown (--format md report)', () => {
     expect(md).toContain('UNKNOWN');
     expect(md).toMatch(/block/i);
     expect(md).toContain('could not parse package-lock.json');
+  });
+});
+
+describe('markdownFinding (exported per-finding block)', () => {
+  it('is byte-identical to the finding sections inside renderMarkdown', () => {
+    const a = secretFinding();
+    const b = secretFinding({
+      id: 'second',
+      tier: 'warn',
+      sink: { kind: 'privileged-capability', identity: 'cap|x' },
+    });
+    const md = renderMarkdown({ verdict: 'fail', findings: [a, b], diagnostics: [] });
+    const parts = md.split('\n\n---\n\n');
+    expect(parts).toHaveLength(4); // header+guidance, finding a, finding b, next steps
+    expect(parts[1]).toBe(markdownFinding(a).join('\n'));
+    expect(parts[2]).toBe(markdownFinding(b).join('\n'));
   });
 });
 
