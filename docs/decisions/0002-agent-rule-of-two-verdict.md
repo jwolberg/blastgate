@@ -57,3 +57,15 @@ rules apply unchanged.
 - On the 50-repo sample the agent model produced no fails
   (`docs/evaluations/2026-10-01-agent-model-rescan.md`); the incident fixtures are the
   positive evidence.
+
+## [5] Amendment (2026-10-01, ticket 0070): claude's default tools read the workspace
+
+The [4] bullet "claude's default tool set counts as none" is superseded for file reads. Claude
+Code runs its built-in read-only commands (`cat`, `ls`, `grep`, ...) and file reads inside the
+working directory with no grant "in every mode" (https://code.claude.com/docs/en/permissions,
+"Read-only commands"). Verified headless on CLI 2.1.287, the version claude-code-action
+v1.0.239 pins: with no grants, `cat .git/config` ran; `echo $SECRET` was denied ("couldn't check
+the variable's value"); `cat` of a file outside the working directory was denied. So a claude
+step with no grants holds file read for the workspace (checkout-persisted tokens,
+`gha-creds-*.json`) but not env read, shell, or network. On the 50-repo sample this changed no
+finding (re-scan of the same clones with both engines).

@@ -467,7 +467,15 @@ const CLAUDE_BYPASS_RE = /--dangerously-skip-permissions|--permission-mode[\s=]+
 const CLAUDE_TOOLS_FLAG_RE = /--allowed-?tools[\s=]+((?:"[^"]*"|'[^']*'|[^\s-][^\s]*|\s+)+)/gi;
 const TOOL_TOKEN_RE = /([A-Za-z]+)(?:\(([^)]*)\))?/g;
 
-/** claude-code-action: only explicitly granted tools count (`claude_args`, `settings`). */
+/**
+ * claude-code-action: granted tools (`claude_args`, `settings`) on top of what Claude Code allows
+ * with no grant. Its built-in read-only commands (`cat`, `ls`, `grep`, ...) and file reads run
+ * without a prompt "in every mode" inside the working directory
+ * (https://code.claude.com/docs/en/permissions, "Read-only commands"), so a step with no grants
+ * can still read the workspace, which holds checkout-persisted tokens and gha-creds files. Reads
+ * outside the workspace and `$VAR` expansion are not read-only and are denied headless, so env
+ * secrets still need a grant (0070: verified with CLI 2.1.287, pinned by v1.0.239).
+ */
 function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
   const args = w.claude_args;
   if (isExpression(args)) {
@@ -491,7 +499,7 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
       granted.push(...allow.map(str));
     }
   }
-  const tools = { ...NO_TOOLS };
+  const tools: Tools = { ...NO_TOOLS, fileRead: 'held' };
   for (const m of granted.join(' ').matchAll(TOOL_TOKEN_RE)) {
     const [, name, spec] = m;
     if (name === 'Bash' && (spec === undefined || /^\s*\*?\s*(?::\s*\*)?\s*$/.test(spec))) {
