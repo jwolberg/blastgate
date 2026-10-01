@@ -16,8 +16,10 @@ import {
   hasActorGuard,
   hasScriptPermissionGuard,
   isLabelGated,
+  normalizeTriggers,
   type JobSpec,
   type StepSpec,
+  type WorkflowSpec,
 } from './parse';
 
 /** Events that carry attacker-authored free text (issue/PR/discussion bodies, comments). */
@@ -46,6 +48,49 @@ export function untrustedTextTriggers(triggers: string[]): string[] {
  */
 export function credentialReachableTextTriggers(triggers: string[]): string[] {
   return untrustedTextTriggers(triggers).filter((t) => t !== 'pull_request');
+}
+
+/**
+ * Attacker-text events that reach each workflow through `workflow_run` (0067). A
+ * `workflow_run` workflow names its upstreams by `name:` (or file path when unnamed); when an
+ * upstream starts on attacker text — directly or through its own relay — that text is handed
+ * on (an issue or PR number the downstream job fetches). Keyed by workflow path; cycle-safe.
+ */
+export function relayedTextEvents(
+  workflows: { path: string; spec: WorkflowSpec }[],
+): Map<string, string[]> {
+  const byName = new Map<string, { path: string; spec: WorkflowSpec }[]>();
+  for (const w of workflows) {
+    const name = typeof w.spec.name === 'string' ? w.spec.name : w.path;
+    byName.set(name, [...(byName.get(name) ?? []), w]);
+  }
+  const upstreamsOf = (spec: WorkflowSpec): string[] => {
+    const on = spec.on as Record<string, unknown> | undefined;
+    const run = on && typeof on === 'object' && !Array.isArray(on) ? on.workflow_run : undefined;
+    const names = (run as { workflows?: unknown } | undefined)?.workflows;
+    return Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : [];
+  };
+  const reaching = (spec: WorkflowSpec, seen: Set<WorkflowSpec>): string[] => {
+    if (seen.has(spec)) {
+      return [];
+    }
+    seen.add(spec);
+    const own = credentialReachableTextTriggers(normalizeTriggers(spec.on));
+    const relayed = upstreamsOf(spec).flatMap((n) =>
+      (byName.get(n) ?? []).flatMap((u) => reaching(u.spec, seen)),
+    );
+    return [...new Set([...own, ...relayed])];
+  };
+  const out = new Map<string, string[]>();
+  for (const w of workflows) {
+    const relayed = upstreamsOf(w.spec).flatMap((n) =>
+      (byName.get(n) ?? []).flatMap((u) => reaching(u.spec, new Set([w.spec]))),
+    );
+    if (relayed.length > 0) {
+      out.set(w.path, [...new Set(relayed)]);
+    }
+  }
+  return out;
 }
 
 // Attacker-authored fields of the event payload: `.body` / `.title` on issue,

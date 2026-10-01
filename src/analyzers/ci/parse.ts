@@ -20,6 +20,7 @@ export interface JobSpec {
 }
 
 export interface WorkflowSpec {
+  name?: unknown;
   on?: unknown;
   permissions?: unknown;
   env?: Record<string, unknown>;

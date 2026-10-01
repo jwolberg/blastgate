@@ -236,6 +236,8 @@ export interface AssessInputs {
   job: JobSpec;
   stepIndex: number;
   visibility: RepoVisibility;
+  /** Attacker-text events that reach this workflow through `workflow_run` (0067). */
+  relayedEvents?: string[];
 }
 
 /** What the agent's granted tools can do. */
@@ -303,7 +305,15 @@ export function assessAgentStep(inputs: AssessInputs): AgentAssessment {
   const { profile } = resolved;
   const unknown: string[] = resolved.unknown ? [resolved.unknown] : [];
   const tools = toolsOf(profile, step, [step.env, job.env, workflow.env], unknown);
-  const direct = directLeg(profile, workflow, job, step, inputs.visibility, unknown);
+  const direct = directLeg(
+    profile,
+    workflow,
+    job,
+    step,
+    inputs.visibility,
+    inputs.relayedEvents ?? [],
+    unknown,
+  );
   const access = accessLeg(profile, workflow, job, stepIndex, tools);
   const exfil = exfilLeg(workflow, job, tools, inputs.visibility);
   return {
@@ -328,9 +338,11 @@ function directLeg(
   job: JobSpec,
   step: StepSpec,
   visibility: RepoVisibility,
+  relayedEvents: string[],
   unknown: string[],
 ): Verdict {
-  const events = credentialReachableTextTriggers(normalizeTriggers(workflow.on));
+  const own = credentialReachableTextTriggers(normalizeTriggers(workflow.on));
+  const events = [...new Set([...own, ...relayedEvents])];
   if (events.length === 0) {
     return { leg: 'missing', why: 'no outsider-triggerable event starts this job' };
   }
@@ -347,7 +359,8 @@ function directLeg(
       why: `it needs job ${gate}, whose guard restricts who can trigger it`,
     };
   }
-  const on = events.join('/');
+  const on =
+    own.length > 0 ? own.join('/') : `${relayedEvents.join('/')} (relayed via workflow_run)`;
   if (profile.gate === 'none') {
     return { leg: 'held', why: `any ${on} author triggers it (the action has no actor check)` };
   }

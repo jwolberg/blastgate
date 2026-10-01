@@ -478,3 +478,88 @@ describe('agent verdict — PR #39 review fixes', () => {
     expect(f?.evidence?.line).toBe(8);
   });
 });
+
+/**
+ * 0067: an agent job on `workflow_run` whose upstream workflow (by `name:`, transitively)
+ * starts on attacker-authored text ingests that text by design (it fetches the issue it is
+ * handed), so it is judged against the Rule of Two with the relayed events as its trigger.
+ */
+describe('agent steps reached through a workflow_run relay (0067)', () => {
+  const upstream = (on: string[]) => ({
+    path: '.github/workflows/triage.yml',
+    content: [
+      'name: Issue Triage',
+      'on:',
+      ...on,
+      'jobs:',
+      '  capture:',
+      '    steps:',
+      '      - run: echo ok',
+    ].join('\n'),
+  });
+  const relay = (withLines: string[], workflows = 'Issue Triage', name = 'Issue Triage Run') => ({
+    path: '.github/workflows/triage-run.yml',
+    content: [
+      `name: ${name}`,
+      'on:',
+      '  workflow_run:',
+      `    workflows: ["${workflows}"]`,
+      '    types: [completed]',
+      'permissions:',
+      '  issues: write',
+      'jobs:',
+      '  triage:',
+      '    steps:',
+      '      - uses: anthropics/claude-code-action@v1', // 11
+      '        env:',
+      '          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0',
+      '        with:',
+      '          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}',
+      '          github_token: ${{ secrets.GITHUB_TOKEN }}',
+      ...withLines.map((l) => `          ${l}`),
+    ].join('\n'),
+  });
+  const keyFinding = (wfs: { path: string; content: string }[]) =>
+    runEngine({ ci: { workflows: wfs } }).findings.find(
+      (f) => f.sink.identity === 'ANTHROPIC_API_KEY',
+    );
+  const BYPASS = ["allowed_non_write_users: '*'", "claude_args: '--allowedTools Bash'"];
+
+  it('an issues-triggered upstream relayed to a bypassed claude with Bash → fail at the agent step', () => {
+    const f = keyFinding([upstream(['  issues:', '    types: [opened]']), relay(BYPASS)]);
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence).toMatchObject({ file: '.github/workflows/triage-run.yml', line: 11 });
+    expect(f?.reason).toMatch(/workflow_run/);
+  });
+
+  it('a named allowed_bots relay (pytorch claude-issue-triage-run shape) → warn, direct missing', () => {
+    const f = keyFinding([
+      upstream(['  issues:', '    types: [opened]']),
+      relay(["allowed_bots: 'pytorch-bot'", "claude_args: '--allowedTools Bash'"]),
+    ]);
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).toMatch(/direct trigger: missing/i);
+  });
+
+  it('an upstream that only runs on push relays no attacker text → no finding', () => {
+    expect(keyFinding([upstream(['  push:']), relay(BYPASS)])).toBeUndefined();
+  });
+
+  it('a two-hop chain (issues → run → downstream) still relays the text', () => {
+    const middle = { ...relay([]), path: '.github/workflows/mid.yml' };
+    middle.content = middle.content
+      .replace('jobs:', 'jobs:')
+      .replace(/ {6}- uses:[\s\S]*$/, '      - run: echo ok');
+    const downstream = relay(BYPASS, 'Issue Triage Run', 'Downstream');
+    downstream.path = '.github/workflows/down.yml';
+    const f = keyFinding([upstream(['  issues:', '    types: [opened]']), middle, downstream]);
+    expect(f?.tier).toBe('fail');
+  });
+
+  it('a workflow_run cycle terminates', () => {
+    const a = relay(BYPASS, 'B', 'A');
+    const b = { ...relay(BYPASS, 'A', 'B'), path: '.github/workflows/b.yml' };
+    expect(() => runEngine({ ci: { workflows: [a, b] } })).not.toThrow();
+    expect(keyFinding([a, b])).toBeUndefined();
+  });
+});

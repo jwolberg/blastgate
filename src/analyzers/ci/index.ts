@@ -6,6 +6,7 @@ import {
   artifactSpliceStep,
   agentIngestedSteps,
   classifyUntrustedText,
+  relayedTextEvents,
   credentialReachableTextTriggers,
   injectableTextRefs,
   injectionNeutralized,
@@ -64,6 +65,16 @@ function strongestAgent(
 
 export function analyzeCi(inputs: CiInputs): AnalyzerResult {
   const result = emptyResult();
+  // 0067: attacker text handed to a workflow through `workflow_run`, resolved across files.
+  const relayed = relayedTextEvents(
+    inputs.workflows.flatMap((w) => {
+      try {
+        return [{ path: w.path, spec: parseWorkflow(w.content) }];
+      } catch {
+        return [];
+      }
+    }),
+  );
 
   for (const wf of inputs.workflows) {
     let spec;
@@ -171,10 +182,23 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       // keeps only the original narrow actor-guard exemption.
       // 0046: classify WHERE the text lands; only a sink that could inject becomes an entry
       // (env-passed / boolean-compared text never does). Tiering by class is the engine's.
-      const textSink =
+      // 0067: a relayed issue/PR reaches the job as a number, not text, so only an agent that
+      // fetches and reads it ingests the text; other sinks need the job's own text events.
+      const relayEvents = triggers.includes('workflow_run') ? (relayed.get(wf.path) ?? []) : [];
+      const directSink =
         injectableEvents.length > 0 && !injectionNeutralized(job)
           ? classifyUntrustedText(job)
           : undefined;
+      const relaySink =
+        !directSink && relayEvents.length > 0 && !injectionNeutralized(job)
+          ? classifyUntrustedText(job)
+          : undefined;
+      const textSink =
+        directSink ?? (relaySink?.sinkClass === 'agent-ingested' ? relaySink : undefined);
+      const textEvents =
+        directSink !== undefined
+          ? injectableEvents.join('/')
+          : `${relayEvents.join('/')} (relayed via workflow_run)`;
       const spliceStep =
         workflowRunArtifactInjection(job, triggers) && !hasActorGuard(job)
           ? artifactSpliceStep(job)
@@ -194,6 +218,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
                   job,
                   stepIndex,
                   visibility: inputs.visibility ?? 'unknown',
+                  relayedEvents: relayEvents,
                 }),
               })),
             )
@@ -208,7 +233,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         const via = refs.length > 0 ? refs.join(', ') : agentActionsUsed(job).join(', ');
         const label = artifactWins
           ? `untrusted workflow_run artifact reaches a shell in job ${jobId}`
-          : `untrusted ${injectableEvents.join('/')} text reaches job ${jobId} (${via})`;
+          : `untrusted ${textEvents} text reaches job ${jobId} (${via})`;
         const line = locator.line(['jobs', jobId, ...sinkPath]);
         const entryId = `entry:injection:${wf.path}#${jobId}`;
         result.nodes.push({

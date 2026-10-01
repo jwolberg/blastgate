@@ -965,3 +965,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Maintenance: re-run the script when an action releases. Until then, a brand-new release's SHA
   is unknown, so it warns and never fails. Effect on the sample: home-assistant's SHA-pinned
   `actions/ai-inference` is now covered, but tool-less steps still only warn (R8).
+
+## 2026-10-01 — 0067: agent steps reached through a workflow_run relay
+
+- `relayedTextEvents` (injection.ts) maps each workflow to the attacker-text events reaching it
+  through `workflow_run`, matching upstreams by `name:` (or file path when unnamed),
+  transitively and cycle-safe.
+- A `workflow_run` job with relayed text becomes an injection entry **only when its sink is an
+  agent**. A relay hands over an issue/PR number, not text, so only an agent that fetches the
+  issue ingests it; other sinks still need the job's own text events. The direct leg treats the
+  relayed events as the trigger, and the action's own gate still applies (claude checks the
+  upstream actor's write access).
+- pytorch effect (previously silent, 2026-10-01 re-scan §4): `claude-distributed-triage` warns
+  (direct held via `allowed_bots: '*'` on a public repo, access missing),
+  `claude-issue-triage-run` warns (named `allowed_bots`), and `hardened-pr-review-run` warns
+  (tool grants unreadable). No new fails.
