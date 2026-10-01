@@ -234,3 +234,241 @@ describe('fail contract (0048)', () => {
     expect(fails(result.findings)[0]?.evidence?.payload).toBeTruthy();
   });
 });
+
+/**
+ * Agent-in-CI U5 (0059; R6, R7, R9, R10; KTD6): an agent path fails only when all three
+ * Rule-of-Two legs hold, the profile covers the version, and the path's sink is a
+ * credential the agent can read. Every other agent finding warns, naming each leg.
+ */
+describe('agent verdict (0059)', () => {
+  const claude = (opts: { bypass?: boolean; args?: string; scrubOff?: boolean; ref?: string }) =>
+    gh([
+      'on: issue_comment', // 1
+      'permissions:', // 2
+      '  issues: write', // 3
+      'jobs:', // 4
+      '  claude:', // 5
+      '    steps:', // 6
+      `      - uses: anthropics/claude-code-action@${opts.ref ?? 'v1'}`, // 7
+      '        env:',
+      `          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: ${opts.scrubOff === false ? 1 : 0}`,
+      '        with:',
+      '          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}',
+      '          github_token: ${{ secrets.GITHUB_TOKEN }}',
+      ...(opts.bypass === false ? [] : ["          allowed_non_write_users: '*'"]),
+      `          claude_args: '${opts.args ?? '--allowedTools Bash'}'`,
+    ]);
+  const onKey = (r: ReturnType<typeof runEngine>) =>
+    r.findings.find((f) => f.sink.identity === 'ANTHROPIC_API_KEY');
+
+  it('AE1: claude bypass *, Bash, scrub off, API key → fail with evidence at the agent step', () => {
+    const f = onKey(runEngine(claude({})));
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.file).toBe(WF);
+    expect(f?.evidence?.line).toBe(7);
+    expect(f?.evidence?.capability).toBe('ANTHROPIC_API_KEY');
+    expect(f?.evidence?.payload).toContain('attacker.example');
+  });
+
+  it('AE2: without the bypass → warn naming indirect injection', () => {
+    const f = onKey(runEngine(claude({ bypass: false })));
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).toMatch(/indirect/i);
+    expect(f?.evidence?.payload).toBeUndefined();
+  });
+
+  it('AE3 (revised): a scoped Bash(gh issue view:*) can expand the API key into its arguments → fail', () => {
+    const f = onKey(runEngine(claude({ args: '--allowedTools "Bash(gh issue view:*)"' })));
+    expect(f?.tier).toBe('fail');
+    expect(f?.reason).toMatch(/sensitive access: held/i);
+  });
+
+  it('AE5: a pinned version outside every profile → warn naming the version', () => {
+    const f = onKey(runEngine(claude({ ref: 'v0.0.17' })));
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).toContain('v0.0.17');
+  });
+
+  it('scrub default: the scrubbed API key warns while the persisted code-write token fails', () => {
+    const result = runEngine(
+      gh([
+        'on: issue_comment',
+        'permissions:',
+        '  contents: write',
+        'jobs:',
+        '  claude:',
+        '    steps:',
+        '      - uses: actions/checkout@v4',
+        '      - uses: anthropics/claude-code-action@v1', // 8
+        '        with:',
+        '          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}',
+        '          github_token: ${{ secrets.GITHUB_TOKEN }}',
+        "          allowed_non_write_users: '*'",
+        "          claude_args: '--allowedTools Bash'",
+      ]),
+    );
+    expect(onKey(result)?.tier).toBe('warn');
+    const token = result.findings.find((f) => f.sink.identity.startsWith('GITHUB_TOKEN'));
+    expect(token?.tier).toBe('fail');
+    expect(token?.evidence?.line).toBe(8);
+  });
+
+  it('a warn reason names each leg as held, missing, or unknown (R10)', () => {
+    const f = onKey(runEngine(claude({ bypass: false })));
+    expect(f?.reason).toMatch(/direct trigger: missing/i);
+    expect(f?.reason).toMatch(/sensitive access: held/i);
+    expect(f?.reason).toMatch(/exfiltration: held/i);
+  });
+
+  it('a tool-less LLM step never fails (R8)', () => {
+    const result = runEngine(
+      gh([
+        'on: issues',
+        'permissions:',
+        '  contents: write',
+        'jobs:',
+        '  label:',
+        '    steps:',
+        '      - uses: actions/ai-inference@v2',
+        '        with:',
+        '          prompt: ${{ github.event.issue.body }}',
+        '          token: ${{ secrets.MODELS_PAT }}',
+      ]),
+    );
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(fails(result.findings)).toHaveLength(0);
+  });
+
+  it('no agent finding fails without all three legs recorded as held (sweep)', () => {
+    let sawFail = false;
+    for (const bypass of [true, false]) {
+      for (const args of [
+        '--allowedTools Bash',
+        '--allowedTools Read',
+        '--allowedTools "Bash(gh issue view:*)"',
+      ]) {
+        for (const scrubOff of [true, false]) {
+          for (const ref of ['v1', 'v0.0.17', 'main']) {
+            for (const f of fails(runEngine(claude({ bypass, args, scrubOff, ref })).findings)) {
+              sawFail = true;
+              expect(f.reason).toMatch(/direct trigger: held/);
+              expect(f.reason).toMatch(/sensitive access: held/);
+              expect(f.reason).toMatch(/exfiltration: held/);
+              expect(f.evidence?.payload).toBeTruthy();
+            }
+          }
+        }
+      }
+    }
+    expect(sawFail).toBe(true);
+  });
+
+  // Hardened counterparts of the U6 incident fixtures (R11, KTD8): each warns or passes.
+  const promptPwnd = (cliVersion: string) =>
+    gh([
+      'on:',
+      '  issues:',
+      'permissions:',
+      '  contents: write',
+      'jobs:',
+      '  triage:',
+      '    steps:',
+      '      - uses: google-github-actions/run-gemini-cli@v0.1.21',
+      '        env:',
+      '          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
+      '        with:',
+      '          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}',
+      `          gemini_cli_version: '${cliVersion}'`,
+      `          settings: '{"tools":{"core":["run_shell_command(gh issue edit)"]}}'`,
+      '          prompt: ${{ github.event.issue.body }}',
+    ]);
+
+  it('PromptPwnd hardened: a patched Gemini CLI enforces the gh-only allowlist → warn', () => {
+    // An old CLI auto-trusts the repo's .gemini/settings.json, so its tools are unknown → warn.
+    expect(fails(runEngine(promptPwnd('0.38.0')).findings)).toHaveLength(0);
+    const hardened = runEngine(promptPwnd('latest'));
+    expect(hardened.findings.length).toBeGreaterThan(0);
+    expect(fails(hardened.findings)).toHaveLength(0);
+  });
+
+  it('gemini OIDC hardened: an author_association guard → no fail', () => {
+    const result = runEngine(
+      gh([
+        'on:',
+        '  issues:',
+        'permissions:',
+        '  id-token: write',
+        'jobs:',
+        '  triage:',
+        '    if: contains(fromJSON(\'["OWNER","MEMBER"]\'), github.event.issue.author_association)',
+        '    steps:',
+        '      - uses: google-github-actions/run-gemini-cli@v0',
+        '        with:',
+        '          gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}',
+        '          prompt: Triage this issue.',
+      ]),
+    );
+    expect(fails(result.findings)).toHaveLength(0);
+  });
+
+  it('an acknowledged agent fail → warn with evidence kept', () => {
+    const inputs = claude({});
+    const id = onKey(runEngine(inputs))!.id;
+    const acked = runEngine({ ...inputs, acknowledged: [{ id, reason: 'accepted risk' }] });
+    const f = acked.findings.find((x) => x.id === id);
+    expect(f?.tier).toBe('warn');
+    expect(f?.evidence?.line).toBe(7);
+  });
+});
+
+/** PR #39 review fixes at the engine level. */
+describe('agent verdict — PR #39 review fixes', () => {
+  it('a secret held only by another step never fails on the agent path', () => {
+    const result = runEngine(
+      gh([
+        'on: issue_comment',
+        'jobs:',
+        '  claude:',
+        '    steps:',
+        '      - uses: anthropics/claude-code-action@v1',
+        '        env:',
+        '          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0',
+        '        with:',
+        '          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}',
+        '          github_token: ${{ secrets.GITHUB_TOKEN }}',
+        "          allowed_non_write_users: '*'",
+        "          claude_args: '--allowedTools Bash'",
+        '      - run: ./deploy.sh',
+        '        env:',
+        '          DEPLOY: ${{ secrets.DEPLOY_KEY }}',
+      ]),
+    );
+    expect(result.findings.find((f) => f.sink.identity === 'ANTHROPIC_API_KEY')?.tier).toBe('fail');
+    expect(result.findings.find((f) => f.sink.identity === 'DEPLOY_KEY')?.tier).toBe('warn');
+  });
+
+  it('a tool-less LLM step ahead of a fail-capable agent does not mask its fail', () => {
+    const result = runEngine(
+      gh([
+        'on: issue_comment',
+        'jobs:',
+        '  triage:',
+        '    steps:',
+        '      - uses: actions/ai-inference@v2',
+        '        with:',
+        '          prompt: ${{ github.event.comment.body }}',
+        '      - uses: anthropics/claude-code-action@v1', // 8
+        '        env:',
+        '          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0',
+        '        with:',
+        '          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}',
+        '          github_token: ${{ secrets.GITHUB_TOKEN }}',
+        "          allowed_non_write_users: '*'",
+        "          claude_args: '--allowedTools Bash'",
+      ]),
+    );
+    const f = result.findings.find((x) => x.sink.identity === 'ANTHROPIC_API_KEY');
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(8);
+  });
+});

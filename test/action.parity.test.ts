@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { RepoFs } from '../src/cli/collect';
 import { runCli } from '../src/cli/index';
-import { runAction, runActionCore, type ActionEnv } from '../src/action/index';
+import {
+  actionCollectOptions,
+  runAction,
+  runActionCore,
+  visibilityFromEvent,
+  type ActionEnv,
+} from '../src/action/index';
 
 const HEAD_LOCK = JSON.stringify({
   lockfileVersion: 3,
@@ -119,5 +125,29 @@ describe('runAction PR surfacing', () => {
   it('does not throw on a failing run even though findings carry no file/line position', () => {
     const { env } = captureEnv(failingFs(), 'HEAD');
     expect(() => runAction(env)).not.toThrow();
+  });
+});
+
+/** Agent-in-CI U4 (0058; R5, KTD5): visibility comes from the event payload, never a guess. */
+describe('repository visibility from the Action event payload (0058)', () => {
+  it('repository.private: false → public', () => {
+    expect(visibilityFromEvent(JSON.stringify({ repository: { private: false } }))).toBe('public');
+  });
+  it('repository.private: true → private', () => {
+    expect(visibilityFromEvent(JSON.stringify({ repository: { private: true } }))).toBe('private');
+  });
+  it.each([
+    [null],
+    ['{}'],
+    ['{"repository":{}}'],
+    ['not json'],
+    ['{"repository":{"private":"no"}}'],
+  ])('no readable payload (%s) → unknown', (payload) => {
+    expect(visibilityFromEvent(payload)).toBe('unknown');
+  });
+  it('runAction hands the visibility to the engine inputs, defaulting to unknown', () => {
+    const { env } = captureEnv(cleanFs());
+    expect(actionCollectOptions(env).visibility).toBe('unknown');
+    expect(actionCollectOptions({ ...env, visibility: 'public' }).visibility).toBe('public');
   });
 });

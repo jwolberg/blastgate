@@ -267,6 +267,45 @@ const CHECKS: CheckSpec[] = [
       expect(f!.labels).toContain('ASI04:2026');
     },
   },
+  // Agent-in-CI U6 (0060; R11, KTD8): the public agent incident shapes fail with evidence at
+  // the agent step; each negative is the same workflow on push. Hardened variants (gate
+  // intact, tools restricted, secrets scrubbed) are engine tests in contract.test.ts (U5).
+  {
+    // Comment and Control: bypassed gate, shell, scrubbing disabled, API key in env.
+    name: 'agent-claude-bypass',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.tier === 'fail');
+      expect(f, 'an agent Rule-of-Two fail').toBeDefined();
+      expect(f!.sink.identity).toBe('ANTHROPIC_API_KEY');
+      expect(f!.evidence).toMatchObject({ file: '.github/workflows/claude.yml', line: 16 });
+      expect(f!.reason).toMatch(/direct trigger: held/);
+    },
+  },
+  {
+    // GHSA-wpqr-6v78-jr5g: an ungated --yolo agent on issues in a job that mints OIDC credentials.
+    name: 'agent-gemini-oidc',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.tier === 'fail');
+      expect(f, 'an agent Rule-of-Two fail').toBeDefined();
+      expect(f!.sink.identity).toMatch(/^GITHUB_TOKEN \(.*id-token:write/);
+      expect(f!.evidence).toMatchObject({
+        file: '.github/workflows/gemini-triage.yml',
+        line: 16,
+      });
+    },
+  },
+  {
+    // PromptPwnd: issue body in the prompt of a --yolo agent granted the shell.
+    name: 'agent-promptpwnd',
+    positiveVerdict: 'fail',
+    assertPositive: (r) => {
+      const f = r.findings.find((x) => x.tier === 'fail' && x.sink.identity === 'GEMINI_API_KEY');
+      expect(f, 'an agent Rule-of-Two fail on GEMINI_API_KEY').toBeDefined();
+      expect(f!.evidence).toMatchObject({ file: '.github/workflows/issue-triage.yml', line: 14 });
+    },
+  },
 ];
 
 describe('engine e2e over fixture repos (R13)', () => {

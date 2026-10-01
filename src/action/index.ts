@@ -6,11 +6,12 @@
  * a job-summary table) and the Action's env-driven input handling.
  */
 
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { collectInputs, type CollectOptions, type RepoFs } from '../cli/collect';
 import { nodeRepoFs } from '../cli/node-fs';
 import { renderMarkdown, scanExitCode } from '../cli/render';
+import type { RepoVisibility } from '../engine/build';
 import { type GateResult, runEngine } from '../engine/gate';
 import type { Finding } from '../findings/finding';
 
@@ -24,6 +25,8 @@ export interface ActionEnv {
   fs: RepoFs;
   base?: string;
   provenance?: boolean;
+  /** Repository visibility from the event payload (KTD5); absent = `unknown`. */
+  visibility?: RepoVisibility;
   /** A single PR annotation (`::error`/`::warning`). */
   annotate: (level: 'error' | 'warning', message: string) => void;
   /** The job-summary markdown (appended to `$GITHUB_STEP_SUMMARY`). */
@@ -37,9 +40,31 @@ function annotationMessage(f: Finding): string {
   return `${f.path.join(' → ')} — ${f.reason}${at} Fix: ${f.remediation}${labels}`;
 }
 
+/** `repository.private` from the workflow event payload; anything unreadable is `unknown`. */
+export function visibilityFromEvent(payload: string | null): RepoVisibility {
+  if (payload === null) {
+    return 'unknown';
+  }
+  try {
+    const priv = (JSON.parse(payload) as { repository?: { private?: unknown } })?.repository
+      ?.private;
+    return priv === true ? 'private' : priv === false ? 'public' : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** The collect options the Action scans with. */
+export function actionCollectOptions(env: ActionEnv): CollectOptions {
+  return {
+    ...(env.base !== undefined ? { base: env.base } : {}),
+    visibility: env.visibility ?? 'unknown',
+  };
+}
+
 /** Run the engine, surface findings on the PR, and return the process exit code. */
 export function runAction(env: ActionEnv): number {
-  const result = runActionCore(env.fs, env.base !== undefined ? { base: env.base } : {});
+  const result = runActionCore(env.fs, actionCollectOptions(env));
   for (const f of result.findings) {
     env.annotate(f.tier === 'fail' ? 'error' : 'warning', annotationMessage(f));
   }
@@ -76,6 +101,18 @@ function writeSummary(markdown: string): void {
   process.stdout.write(`${markdown}\n`);
 }
 
+function readEventPayload(): string | null {
+  const file = process.env.GITHUB_EVENT_PATH;
+  if (!file) {
+    return null;
+  }
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 function main(): number {
   const path = input('path') ?? '.';
   // Default the diff base to the PR base ref so the Action gets change signals for free.
@@ -91,6 +128,7 @@ function main(): number {
     fs: nodeRepoFs(path),
     base,
     provenance,
+    visibility: visibilityFromEvent(readEventPayload()),
     annotate: emitAnnotation,
     summary: writeSummary,
   });
