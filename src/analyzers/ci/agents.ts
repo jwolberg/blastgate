@@ -231,8 +231,6 @@ export function geminiYoloIgnoresAllowlist(cliVersion: unknown): boolean | 'unkn
 
 // ---- Rule-of-Two assessment (U3) ----
 
-export type { AgentAssessment, Leg } from '../../graph/types';
-
 export interface AssessInputs {
   workflow: WorkflowSpec;
   job: JobSpec;
