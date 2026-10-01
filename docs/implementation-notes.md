@@ -1064,3 +1064,17 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   none of the reported ids still failing; a repo not rescanned this run is left alone.
 - 404/other errors and malformed report URLs leave state unchanged and are flagged in the run
   summary.
+
+## 2026-10-01 — 0075: PVR submitter (public-crawler U5)
+
+- Deviation from the plan's step order: the disclosure gate runs **before** the PVR pre-check, so
+  a non-allowlisted fail costs no API call and gets the clearer reason.
+- Retry policy for held entries: "no PVR", "archetype not allowlisted", and rate-limit holds are
+  retried on later runs; "submission state uncertain" (crash, transport error mid-POST, 201
+  without a URL) and "submission failed (HTTP n)" are never retried automatically.
+- A 403/429 or `GitHubRateLimitError` stops all submission for the run. Throttle counts
+  `submitting` + `submitted` by `updatedAt`; dry runs don't count.
+- Dry runs store the exact request body on the disclosure (`wouldSend`); it is left in place
+  after later transitions as a record of what was reviewed.
+- Integration: U5 and U6 both extended the ledger in parallel (`wouldSend`, `trippedArchetypes`);
+  merged by hand, both suites kept.

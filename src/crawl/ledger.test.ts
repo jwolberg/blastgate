@@ -10,6 +10,7 @@ import {
   emptyLedger,
   lsRemoteHeads,
   parseLedger,
+  recordWouldSend,
   recoverSubmitting,
   serializeLedger,
   transition,
@@ -442,5 +443,32 @@ describe('tripped archetypes (KTD6.2 tripwire)', () => {
   it('rejects a malformed trippedArchetypes', () => {
     const bad = '{"schemaVersion":1,"repos":{},"disclosures":[],"trippedArchetypes":"x"}';
     expect(() => parseLedger(bad)).toThrow(/trippedArchetypes/);
+  });
+});
+
+describe('wouldSend (dry-run record)', () => {
+  const body = { summary: 's', description: 'd', severity: 'high', vulnerabilities: [] };
+
+  it('records the body on a queued disclosure and round-trips it', () => {
+    let l = createDisclosure(emptyLedger(), base('a/b', ['x'], 'queued'));
+    l = recordWouldSend(l, { repo: 'a/b', findingIds: ['x'] }, body, T1);
+    expect(l.disclosures[0]?.wouldSend).toEqual(body);
+    expect(l.disclosures[0]?.state).toBe('queued');
+    expect(l.disclosures[0]?.updatedAt).toBe(T1);
+    expect(parseLedger(serializeLedger(l))).toEqual(l);
+  });
+
+  it('refuses a non-queued disclosure and a malformed stored value', () => {
+    const l = createDisclosure(emptyLedger(), base('a/b', ['x'], 'held'));
+    expect(() => recordWouldSend(l, { repo: 'a/b', findingIds: ['x'] }, body, T1)).toThrow();
+    const q = recordWouldSend(
+      createDisclosure(emptyLedger(), base('a/b', ['x'], 'queued')),
+      { repo: 'a/b', findingIds: ['x'] },
+      body,
+      T1,
+    );
+    const bad = JSON.parse(serializeLedger(q));
+    bad.disclosures[0].wouldSend = 'nope';
+    expect(() => parseLedger(JSON.stringify(bad))).toThrow(/wouldSend/);
   });
 });

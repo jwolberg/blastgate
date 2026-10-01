@@ -29,10 +29,7 @@
         "agentic": "ASI01",
         "mcp": "MCP10"
       },
-      "labels": [
-        "ASI01:2026",
-        "MCP10:2025"
-      ],
+      "labels": ["ASI01:2026", "MCP10:2025"],
       "evidence": {
         "file": ".github/workflows/triage.yml",
         "line": 12,
@@ -71,10 +68,7 @@
         "agentic": "ASI01",
         "mcp": "MCP10"
       },
-      "labels": [
-        "ASI01:2026",
-        "MCP10:2025"
-      ],
+      "labels": ["ASI01:2026", "MCP10:2025"],
       "evidence": {
         "file": ".github/workflows/issue-triage.yml",
         "line": 14,
@@ -111,10 +105,7 @@
         "agentic": "ASI01",
         "mcp": "MCP10"
       },
-      "labels": [
-        "ASI01:2026",
-        "MCP10:2025"
-      ],
+      "labels": ["ASI01:2026", "MCP10:2025"],
       "evidence": {
         "file": ".github/workflows/issue-triage.yml",
         "line": 14,
@@ -152,9 +143,7 @@
       "owasp": {
         "agentic": "ASI03"
       },
-      "labels": [
-        "ASI03:2026"
-      ],
+      "labels": ["ASI03:2026"],
       "evidence": {
         "file": ".github/workflows/ci.yml",
         "line": 7,
@@ -192,9 +181,7 @@
       "owasp": {
         "agentic": "ASI03"
       },
-      "labels": [
-        "ASI03:2026"
-      ],
+      "labels": ["ASI03:2026"],
       "evidence": {
         "file": ".github/workflows/ci.yml",
         "line": 7,
@@ -233,10 +220,7 @@
         "agentic": "ASI04",
         "mcp": "MCP04"
       },
-      "labels": [
-        "ASI04:2026",
-        "MCP04:2025"
-      ],
+      "labels": ["ASI04:2026", "MCP04:2025"],
       "evidence": {
         "file": ".github/workflows/ci.yml",
         "line": 7,

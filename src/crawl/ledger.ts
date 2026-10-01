@@ -52,6 +52,8 @@ export interface Disclosure {
   reportUrl?: string;
   ghsaId?: string;
   reason?: string;
+  /** Dry run only: the exact request body that would have been POSTed. */
+  wouldSend?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,6 +97,17 @@ function optStr(o: Record<string, unknown>, k: string, where: string): string | 
   return v;
 }
 
+function optObj(
+  o: Record<string, unknown>,
+  k: string,
+  where: string,
+): Record<string, unknown> | undefined {
+  const v = o[k];
+  if (v === undefined) return undefined;
+  if (!isObj(v)) fail(`${where}.${k} must be an object`);
+  return v;
+}
+
 function parseScan(v: unknown, repo: string): RepoScan {
   const where = `repos["${repo}"]`;
   if (!isObj(v)) fail(`${where} must be an object`);
@@ -133,6 +146,7 @@ function parseDisclosure(v: unknown, i: number): Disclosure {
     reportUrl: optStr(v, 'reportUrl', where),
     ghsaId: optStr(v, 'ghsaId', where),
     reason: optStr(v, 'reason', where),
+    wouldSend: optObj(v, 'wouldSend', where),
     createdAt: str(v, 'createdAt', where),
     updatedAt: str(v, 'updatedAt', where),
   });
@@ -181,6 +195,7 @@ function normalizeDisclosure(d: Disclosure): Disclosure {
     ...(d.reportUrl !== undefined ? { reportUrl: d.reportUrl } : {}),
     ...(d.ghsaId !== undefined ? { ghsaId: d.ghsaId } : {}),
     ...(d.reason !== undefined ? { reason: d.reason } : {}),
+    ...(d.wouldSend !== undefined ? { wouldSend: d.wouldSend } : {}),
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -330,6 +345,26 @@ export function transition(
     reason: opts.reason ?? (to === 'held' ? cur.reason : undefined),
     updatedAt: opts.now,
   });
+  return { ...ledger, disclosures: ledger.disclosures.map((d, i) => (i === idx ? next : d)) };
+}
+
+/** Dry run: attach the exact would-send request body to a `queued` disclosure (no state change). */
+export function recordWouldSend(
+  ledger: Ledger,
+  key: DisclosureKey,
+  wouldSend: Record<string, unknown>,
+  now: string,
+): Ledger {
+  const k = idsKey(key.findingIds);
+  const idx = ledger.disclosures.findIndex(
+    (d) => d.repo === key.repo && idsKey(d.findingIds) === k,
+  );
+  const cur = ledger.disclosures[idx];
+  if (!cur) throw new Error(`recordWouldSend: no disclosure for ${key.repo}`);
+  if (cur.state !== 'queued') {
+    throw new Error(`recordWouldSend: ${key.repo} is ${cur.state}, expected queued`);
+  }
+  const next = normalizeDisclosure({ ...cur, wouldSend, updatedAt: now });
   return { ...ledger, disclosures: ledger.disclosures.map((d, i) => (i === idx ? next : d)) };
 }
 
