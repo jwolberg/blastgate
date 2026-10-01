@@ -245,6 +245,9 @@ interface Tools {
    * Reads environment secrets. A general shell does; so does a command-scoped one, since the
    * shell expands `$SECRET` into the allowed command's arguments (PromptPwnd's
    * `gh issue edit --body "$GEMINI_API_KEY"`). A scoped command is not a general shell.
+   * Claude Code matches a Bash rule against the command text, and `*` matches any text, so
+   * `Bash(gh issue view:*)` admits `gh issue view 1 "$KEY"`; a rule with no `*` matches one
+   * exact command (https://code.claude.com/docs/en/permissions, "Wildcard patterns").
    */
   envRead: Leg;
   fileRead: Leg;

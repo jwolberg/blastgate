@@ -936,3 +936,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   claude's scoped grants should go back to not reading env.
 - Re-scan: 50 repos, 2 fails (the known gh-aw exception), 18 warns. The agent model produces no
   fails on this sample.
+
+## 2026-10-01 — 0063: claude scoped Bash rules do admit `$VAR` expansion (documented)
+
+- Claude Code's permissions doc (https://code.claude.com/docs/en/permissions): "A Bash rule
+  matches the command text Claude writes", "A `*` in a Bash rule matches any text", and
+  "Bash permission patterns that try to constrain command arguments are fragile" (its example
+  includes `curl $URL`). So `Bash(gh issue view:*)` admits `gh issue view 1 "$ANTHROPIC_API_KEY"`,
+  and the shell expands it. The revised AE3 stands for claude. A rule with no `*` "matches one
+  exact command", which admits no injected argument (ticket 0064).
+- Verified from documentation, not by running Claude Code.
+- **Open finding (not acted on):** the same doc says Claude Code runs a built-in set of
+  read-only commands (`cat`, `echo`, `grep`, …) "without a permission prompt in every mode". If
+  that holds inside claude-code-action, a claude step with no `--allowedTools` can still read
+  `.git/config` or echo env, so "default tools = none" understates access (missed fails, never
+  false ones). Raised with the user.
