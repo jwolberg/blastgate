@@ -980,3 +980,17 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   (direct held via `allowed_bots: '*'` on a public repo, access missing),
   `claude-issue-triage-run` warns (named `allowed_bots`), and `hardened-pr-review-run` warns
   (tool grants unreadable). No new fails.
+
+## 2026-10-01 — 0072: crawl ledger (public-crawler U2)
+
+- Disclosures are keyed by repo + sorted finding ids (no separate id). The duplicate guard
+  refuses any new disclosure overlapping ids of a live one on the same repo, including
+  `submitting` and recovered `held` entries, since those may already have been filed.
+- Delta priority: listed passes whose engine **or SHA** changed come first (reasons
+  `listed-pass-old-engine` / `listed-pass-changed`), then new repos, then the rest oldest-scanned
+  first. The plan only named the engine case; the SHA case was added at integration so a listed
+  repo that may now fail is re-vouched before anything else (AE6). Engine versions compare by
+  string equality, not semver.
+- Follow-up: a listed repo that stops being discovered (workflow removed, repo made private)
+  never reaches the delta, so it stays listed. The site build (U7) or orchestrator (U8) should
+  drop passes for repos absent from the current discovery set.
