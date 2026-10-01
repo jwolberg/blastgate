@@ -29,7 +29,18 @@ import {
   reportSummaryPrefix,
 } from './disclose';
 import { type DiscoverResult, type Eligibility, checkEligible, discover } from './discover';
-import { type GitHubClient, createGitHubClient, isPlainRepoName } from './github';
+import {
+  type DiscoveryState,
+  parseDiscoveryState,
+  serializeDiscoveryState,
+  validateDiscoveryState,
+} from './discovery-state';
+import {
+  GitHubRateLimitError,
+  type GitHubClient,
+  createGitHubClient,
+  isPlainRepoName,
+} from './github';
 import {
   type Ledger,
   type RepoScan,
@@ -66,6 +77,8 @@ export interface ScanResultFile {
   candidates: SubmitCandidate[];
   /** Fail finding ids per rescanned repo (empty = rescanned and clean). Not-rescanned repos are absent. */
   currentFails: Record<string, string[]>;
+  /** Incremental discovery state for the next run; submit validates it and commits it (0083). */
+  discoveryState?: DiscoveryState;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -176,6 +189,10 @@ export function parseScanResult(text: string): ParsedScanResult {
   }
   if (!Array.isArray(raw.candidates)) bad('candidates');
 
+  // Strict, and fatal: a forged state would otherwise be committed to the ops repo.
+  const discoveryState =
+    raw.discoveryState === undefined ? undefined : validateDiscoveryState(raw.discoveryState);
+
   const engineVersion = raw.engineVersion as string;
   const discovered = (raw.discovered as string[]).filter(isPlainRepoName);
   const known = new Set(discovered);
@@ -203,6 +220,7 @@ export function parseScanResult(text: string): ParsedScanResult {
     scans,
     candidates,
     currentFails,
+    ...(discoveryState ? { discoveryState } : {}),
     dropped,
   };
 }
@@ -226,12 +244,23 @@ export interface ScanArgs {
   config: string;
   out: string;
   cap?: number;
+  /** Discovery state file (ops/discovery.json); a missing file means a fresh sweep. */
+  discovery?: string;
 }
+
+/** What runScan needs from discovery; the state-related fields are absent in simple fakes. */
+export type ScanDiscovery = Pick<DiscoverResult, 'repos' | 'truncated' | 'partial'> &
+  Partial<
+    Pick<DiscoverResult, 'state' | 'complete' | 'rateLimited' | 'budgetExhausted' | 'searches'>
+  >;
 
 export interface ScanDeps {
   /** Read-only client (search + metadata). */
   client: GitHubClient;
-  discover: (client: GitHubClient) => Promise<DiscoverResult>;
+  discover: (
+    client: GitHubClient,
+    ctx: { state: DiscoveryState | undefined; budget: number },
+  ) => Promise<ScanDiscovery>;
   lsRemoteHeads: (repos: readonly string[]) => Promise<Map<string, string | null>>;
   scanRepos: typeof scanRepos;
   reverify: typeof reverify;
@@ -269,7 +298,8 @@ export function defaultScanDeps(env: NodeJS.ProcessEnv): ScanDeps {
   const runner: Runner = defaultRunner;
   return {
     client: createGitHubClient({ ...(env.GITHUB_TOKEN ? { token: env.GITHUB_TOKEN } : {}) }),
-    discover: (client) => discover({ client }),
+    discover: (client, ctx) =>
+      discover({ client, budget: ctx.budget, ...(ctx.state ? { state: ctx.state } : {}) }),
     lsRemoteHeads: (repos) => lsRemoteHeads(repos),
     scanRepos,
     reverify,
@@ -304,11 +334,33 @@ function readFailFindings(evalDir: string, repo: string): Finding[] | null {
 
 export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResultFile> {
   const ledger = readLedgerFile(args.ledger);
-  readConfigFile(args.config); // fail fast on a bad config, even though scanning does not use it
+  const config = readConfigFile(args.config);
+  const priorState =
+    args.discovery !== undefined && existsSync(args.discovery)
+      ? parseDiscoveryState(readFileSync(args.discovery, 'utf8'))
+      : undefined;
   const out = resolve(args.out);
   mkdirSync(out, { recursive: true });
 
-  const found = await deps.discover(deps.client);
+  // A rate limit must never kill the job and discard the run: discovery ends early, and the
+  // scan proceeds with the repos already known.
+  let found: ScanDiscovery;
+  try {
+    found = await deps.discover(deps.client, {
+      state: priorState,
+      budget: config.discoveryBudget,
+    });
+  } catch (e) {
+    if (!(e instanceof GitHubRateLimitError)) throw e;
+    deps.log('scan: discovery stopped by a rate limit; continuing with known repos');
+    found = {
+      repos: priorState ? Object.keys(priorState.repos).sort() : [],
+      truncated: priorState?.sweep.truncated ?? [],
+      partial: priorState?.sweep.partial ?? [],
+      ...(priorState ? { state: priorState } : {}),
+      rateLimited: true,
+    };
+  }
   const heads = await deps.lsRemoteHeads(found.repos);
   const engineVersion = `${await deps.cliVersion()}+${await deps.blastgateSha()}`;
   const cap = args.cap ?? DEFAULT_CAP;
@@ -409,6 +461,7 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
     scans,
     candidates,
     currentFails,
+    ...(found.state ? { discoveryState: found.state } : {}),
   };
   writeFileSync(join(out, 'scan-result.json'), `${JSON.stringify(result, null, 2)}\n`);
 
@@ -419,6 +472,13 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
       `selected ${selected.length}, deferred ${deferred}, head-unresolved ${plan.skipped.length}, ` +
       `ineligible ${ineligible}, eligibility errors ${eligibilityErrors}`,
   );
+  if (found.state) {
+    deps.log(
+      `scan: discovery ${found.complete ? 'sweep complete' : `sweep in progress, ${found.state.sweep.pending.length} shard(s) pending`}; ` +
+        `searches ${found.searches ?? 0}/${config.discoveryBudget}; ` +
+        `${found.rateLimited ? 'stopped by rate limit' : found.budgetExhausted ? 'stopped by budget' : 'not interrupted'}`,
+    );
+  }
   deps.log(
     `scan: verdict counts ${
       Object.entries(verdicts)
@@ -435,6 +495,8 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
 
 export interface GitPersistOptions {
   ledgerPath: string;
+  /** Where the discovery state lives; committed together with the ledger. */
+  discoveryPath?: string;
   /** The ops repo checkout; defaults to the ledger's directory. */
   repoDir?: string;
   exec?: (args: string[], cwd: string) => Promise<string>;
@@ -442,15 +504,24 @@ export interface GitPersistOptions {
 
 const gitExec = (args: string[], cwd: string): Promise<string> => execOut('git', args, cwd);
 
-/** Durable ledger save: write the file, then commit and push it in the ops checkout. */
-export function gitPersist(opts: GitPersistOptions): (ledger: Ledger) => Promise<void> {
+/**
+ * Durable save: write the ledger (and the discovery state, if given), then commit and push
+ * them in the ops checkout as one commit.
+ */
+export function gitPersist(
+  opts: GitPersistOptions,
+): (ledger: Ledger, discovery?: DiscoveryState) => Promise<void> {
   const repoDir = opts.repoDir ?? dirname(resolve(opts.ledgerPath));
   const exec = opts.exec ?? gitExec;
-  return async (ledger) => {
+  return async (ledger, discovery) => {
     writeFileSync(opts.ledgerPath, serializeLedger(ledger));
-    const rel = relative(repoDir, resolve(opts.ledgerPath));
-    await exec(['add', '--', rel], repoDir);
-    const changed = await exec(['status', '--porcelain', '--', rel], repoDir);
+    const files = [relative(repoDir, resolve(opts.ledgerPath))];
+    if (discovery && opts.discoveryPath) {
+      writeFileSync(opts.discoveryPath, serializeDiscoveryState(discovery));
+      files.push(relative(repoDir, resolve(opts.discoveryPath)));
+    }
+    await exec(['add', '--', ...files], repoDir);
+    const changed = await exec(['status', '--porcelain', '--', ...files], repoDir);
     if (changed.trim() === '') return;
     await exec(
       [
@@ -492,7 +563,8 @@ export interface SubmitArgs {
 export interface SubmitDeps {
   /** Client holding the reporting token. */
   client: GitHubClient;
-  persist: (ledger: Ledger) => Promise<void>;
+  /** `discovery` rides in the same commit as the ledger. */
+  persist: (ledger: Ledger, discovery?: DiscoveryState) => Promise<void>;
   publish: (siteDir: string, remoteUrl: string) => Promise<void>;
   now: () => Date;
   log: (line: string) => void;
@@ -534,11 +606,14 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
   const result = parseScanResult(readFileSync(args.in, 'utf8'));
   const iso = (): string => deps.now().toISOString();
 
+  // Every ledger write carries the validated discovery state, so progress is never lost.
+  const persist = (l: Ledger): Promise<void> => deps.persist(l, result.discoveryState);
+
   let ledger = readLedgerFile(args.ledger);
   const recovered = recoverSubmitting(ledger, iso());
   if (recovered !== ledger) {
     ledger = recovered;
-    await deps.persist(ledger);
+    await persist(ledger);
   }
   if (result.dropped.scans > 0 || result.dropped.candidates > 0) {
     deps.log(
@@ -554,7 +629,7 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
     config,
     client: deps.client,
     killSwitch,
-    persist: deps.persist,
+    persist,
     now: deps.now,
   });
   ledger = sub.ledger;
@@ -584,7 +659,7 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
   }
 
   // The ledger is the one thing that cannot be rederived: save it before the site is touched.
-  await deps.persist(ledger);
+  await persist(ledger);
 
   const counts = Object.entries(sub.summary.counts)
     .sort(([a], [b]) => a.localeCompare(b))
@@ -629,8 +704,8 @@ export async function runPublish(
 // ---------------------------------------------------------------- CLI
 
 const USAGE = `usage:
-  crawl scan    --ledger <path> --config <path> --out <dir> [--cap N]
-  crawl submit  --ledger <path> --config <path> --in <scan-result.json> --site <dir> [--kill-switch <path>] [--remote <url>]
+  crawl scan    --ledger <path> --config <path> --out <dir> [--cap N] [--discovery <path>]
+  crawl submit  --ledger <path> --config <path> --in <scan-result.json> --site <dir> [--kill-switch <path>] [--remote <url>] [--discovery <path>]
   crawl publish --config <path> --site <dir> --remote <url>`;
 
 const REGISTRY_AUTHOR = {
@@ -651,6 +726,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
       config: { type: 'string' },
       out: { type: 'string' },
       cap: { type: 'string' },
+      discovery: { type: 'string' },
       in: { type: 'string' },
       site: { type: 'string' },
       'kill-switch': { type: 'string' },
@@ -670,6 +746,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
         config: need(values.config, 'config'),
         out: need(values.out, 'out'),
         ...(cap !== undefined ? { cap } : {}),
+        ...(values.discovery ? { discovery: values.discovery } : {}),
       },
       defaultScanDeps(env),
     );
@@ -688,7 +765,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
       },
       {
         client: createGitHubClient({ ...(env.GITHUB_TOKEN ? { token: env.GITHUB_TOKEN } : {}) }),
-        persist: gitPersist({ ledgerPath: ledger }),
+        persist: gitPersist({
+          ledgerPath: ledger,
+          ...(values.discovery ? { discoveryPath: values.discovery } : {}),
+        }),
         publish,
         now: () => new Date(),
         log,

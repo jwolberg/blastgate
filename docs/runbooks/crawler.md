@@ -15,14 +15,14 @@ code creates them. Ship nothing live until the go-live gate in [6] is met.
 ## [1] Create the repos
 
 1. **Ops repo** `jwolberg/blastgate-crawl`, **private**. Holds the workflow, `ledger.json`,
-   `config.json`, and `KILL_SWITCH` when needed. Its Actions logs and artifacts stay private;
+   `discovery.json`, `config.json`, and `KILL_SWITCH` when needed. Its Actions logs and artifacts stay private;
    the public `blastgate` repo's would not.
 2. **Registry repo** `jwolberg/blastgate-registry`, **public**. Pages from branch `gh-pages`
    (Settings, Pages, deploy from branch). The crawler force-pushes one orphan commit there each
    publish, so no removal ever shows in its history.
 3. In the ops repo copy the template: `ops/crawl.yml` to `.github/workflows/crawl.yml`.
 4. Seed `config.json` with `{}` (every default is the safe one, see [3]) and commit it. A missing
-   `ledger.json` is treated as empty; the first submit run creates it.
+   `ledger.json` or `discovery.json` is treated as empty; the first submit run creates them.
 5. Set repo variable `BLASTGATE_SHA` to the full commit SHA of `jwolberg/blastgate` to run. The
    template checks the code out at exactly that SHA; bumping it is a reviewed change.
 
@@ -68,6 +68,7 @@ Strict JSON; unknown keys are rejected so a typo cannot silently flip a safety d
 | `publishSite` | `false` | Off builds the site but never pushes it. |
 | `reporterLogin` | `""` | Login the reports are filed as. Empty skips advisory tracking. |
 | `throttle` | `{perHour: 5, perDay: 20}` | Submission budget per trailing hour and day. |
+| `discoveryBudget` | `300` | Max code-search requests one run spends on discovery (1 to 5000). Searches are throttled to 9/min, so 300 is about 35 minutes. |
 
 Turn on `submitMode` and `publishSite` independently, and only after [6].
 
@@ -94,6 +95,22 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   commit>`. Changing `BLASTGATE_SHA` therefore re-queues every listed pass first (then the rest,
   oldest first), so the pass list is re-vouched by the new engine before it ages. Do this after
   any engine fix that could turn a pass into a fail.
+- **Discovery spans several runs.** GitHub code search caps at 1,000 hits per query and 10
+  requests a minute, and claude-code-action alone has ~19,000 hits, so a full pass over the
+  agent actions takes more requests than one run's `discoveryBudget`. Each run works a queue of
+  search shards (size ranges, then filenames) until the queue empties, the budget runs out, or
+  GitHub's rate limit persists; the queue and the repos found so far are committed to
+  `discovery.json` by the submit job (the scan job is read-only, so it hands the new state over
+  inside `scan-result.json`). The next run resumes the queue. A rate limit or exhausted budget
+  never fails the job: the run goes on to scan the repos already known. The `scan: discovery ...`
+  log line says whether the sweep is complete or how many shards are pending, searches spent, and
+  why discovery stopped.
+- **Sweeps.** When the queue empties the sweep is complete; repos it did not see are dropped from
+  `discovery.json` (they no longer use an agent action), and the next run starts a new sweep,
+  keeping the known repo set meanwhile. A sweep with a failed (partial) shard drops nothing,
+  since absence then proves nothing. To force a fresh sweep, delete `discovery.json`; to speed up
+  the first pass, raise `discoveryBudget` or dispatch the workflow repeatedly. `discovery.json` is
+  machine-written and strictly validated; do not hand-edit it.
 - **Run logs** carry counts only (discovered, truncated/partial shards, verdict counts, outcome
   counts), never a repo name next to a verdict. Truncated or partial shards mean discovery missed
   some repos; the run still finishes.

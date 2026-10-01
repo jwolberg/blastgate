@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Finding } from '../findings/finding';
 import { composeReport } from './disclose';
+import { discover } from './discover';
+import { type DiscoveryState, serializeDiscoveryState } from './discovery-state';
 import type { HttpRequest, HttpResponse } from './github';
 import { createGitHubClient } from './github';
 import {
@@ -219,6 +221,108 @@ describe('runScan', () => {
     const raw = readFileSync(p('out', 'scan-result.json'), 'utf8');
     expect(raw).not.toContain('PAYLOAD-SECRET-TEXT');
     expect(raw).not.toContain('attacker.example');
+  });
+
+  describe('resilient, incremental discovery (0083)', () => {
+    const CLAUDE_ACTION = 'anthropics/claude-code-action';
+    const dstate = (over: Partial<DiscoveryState['sweep']> = {}): DiscoveryState => ({
+      schemaVersion: 1,
+      sweep: {
+        startedAt: '2026-09-30T00:00:00.000Z',
+        pending: [{ action: CLAUDE_ACTION, size: [0, 1000], depth: 0 }],
+        truncated: [],
+        partial: [],
+        ...over,
+      },
+      repos: { 'acme/pass': { lastSeenSweep: '2026-09-30T00:00:00.000Z' } },
+    });
+
+    it('a persistent search rate limit does not kill the job: it scans what is known', async () => {
+      writeFileSync(p('discovery.json'), serializeDiscoveryState(dstate()));
+      let searches = 0;
+      const client = createGitHubClient({
+        sleep: async () => {},
+        transport: async (r) => {
+          if (r.url.includes('/search/code')) {
+            searches++;
+            return { status: 429, headers: { 'retry-after': '1' }, json: null };
+          }
+          return publicRepo();
+        },
+      });
+      const scanned: string[][] = [];
+      const res = await runScan(
+        { ...scanArgs(), discovery: p('discovery.json') },
+        localScanDeps({
+          client,
+          discover: (c, ctx) => discover({ client: c, ...ctx, now: () => NOW }),
+          lsRemoteHeads: async (repos) => new Map(repos.map((r) => [r, SHA])),
+          scanRepos: async (repos, o) => {
+            scanned.push([...repos]);
+            return {
+              'acme/pass': {
+                fullSha: SHA,
+                engineVersion: o.engineVersion ?? '',
+                verdict: 'pass',
+                scannedAt: NOW.toISOString(),
+                failFindings: [],
+              },
+            };
+          },
+        }),
+      );
+      expect(searches).toBeGreaterThan(0);
+      expect(scanned.flat()).toEqual(['acme/pass']);
+      expect(res.discovered).toEqual(['acme/pass']);
+      expect(res.discoveryState?.sweep.pending).toHaveLength(1);
+      const onDisk = JSON.parse(
+        readFileSync(p('out', 'scan-result.json'), 'utf8'),
+      ) as ScanResultFile;
+      expect(onDisk.discoveryState).toEqual(res.discoveryState);
+    });
+
+    it('survives a rate-limit error escaping a custom discover dep, keeping the old state', async () => {
+      writeFileSync(p('discovery.json'), serializeDiscoveryState(dstate()));
+      const { GitHubRateLimitError } = await import('./github');
+      const res = await runScan(
+        { ...scanArgs(), discovery: p('discovery.json') },
+        localScanDeps({
+          discover: async () => {
+            throw new GitHubRateLimitError('limited', 429);
+          },
+          lsRemoteHeads: async (repos) => new Map(repos.map((r) => [r, SHA])),
+          scanRepos: async () => ({}),
+        }),
+      );
+      expect(res.discovered).toEqual(['acme/pass']);
+      expect(res.discoveryState).toEqual(dstate());
+    });
+
+    it('loads --discovery state (missing file = fresh) and passes the config budget', async () => {
+      const seen: Array<{ state: DiscoveryState | undefined; budget: number }> = [];
+      const deps = localScanDeps({
+        discover: async (_c, ctx) => {
+          seen.push(ctx);
+          return { repos: [], truncated: [], partial: [] };
+        },
+        lsRemoteHeads: async () => new Map(),
+        scanRepos: async () => ({}),
+      });
+      await runScan({ ...scanArgs(), discovery: p('nope.json') }, deps);
+      expect(seen[0]).toEqual({ state: undefined, budget: 300 });
+
+      writeFileSync(p('discovery.json'), serializeDiscoveryState(dstate()));
+      writeFileSync(p('config.json'), JSON.stringify({ discoveryBudget: 42 }));
+      await runScan({ ...scanArgs(), discovery: p('discovery.json') }, deps);
+      expect(seen[1]).toEqual({ state: dstate(), budget: 42 });
+    });
+
+    it('refuses a corrupt discovery file instead of silently restarting the sweep', async () => {
+      writeFileSync(p('discovery.json'), '{"schemaVersion":1,"sweep":"x"}');
+      await expect(
+        runScan({ ...scanArgs(), discovery: p('discovery.json') }, localScanDeps()),
+      ).rejects.toThrow(/discovery/);
+    });
   });
 
   it('checks eligibility only for the capped selection, not for every discovered repo (review #4)', async () => {
@@ -663,6 +767,143 @@ describe('forged scan-job artifacts (review #6)', () => {
   });
 });
 
+describe('discoveryState in the scan result (0083)', () => {
+  const good = (): DiscoveryState => ({
+    schemaVersion: 1,
+    sweep: {
+      startedAt: '2026-10-01T00:00:00.000Z',
+      pending: [{ action: 'openai/codex-action', size: [0, 1000], depth: 0 }],
+      truncated: [],
+      partial: [],
+    },
+    repos: { 'acme/fail': { lastSeenSweep: '2026-10-01T00:00:00.000Z' } },
+  });
+  const withState = (st: unknown): string =>
+    JSON.stringify({ ...scanResult(), discoveryState: st });
+
+  it('accepts a well-formed state and returns it', () => {
+    expect(parseScanResult(withState(good())).discoveryState).toEqual(good());
+  });
+
+  it('is optional: an older scan result without it still parses', () => {
+    expect(parseScanResult(JSON.stringify(scanResult())).discoveryState).toBeUndefined();
+  });
+
+  const forgeries: Array<[string, (s: DiscoveryState) => unknown]> = [
+    ['wrong schemaVersion', (s) => ({ ...s, schemaVersion: 2 })],
+    ['dot-dot repo', (s) => ({ ...s, repos: { 'acme/..': s.repos['acme/fail'] } })],
+    ['traversal repo', (s) => ({ ...s, repos: { '../x/y': s.repos['acme/fail'] } })],
+    ['non-ISO startedAt', (s) => ({ ...s, sweep: { ...s.sweep, startedAt: 'now' } })],
+    [
+      'unknown action',
+      (s) => ({
+        ...s,
+        sweep: { ...s.sweep, pending: [{ action: 'evil" x', size: [0, 5], depth: 0 }] },
+      }),
+    ],
+    [
+      'inverted size range',
+      (s) => ({
+        ...s,
+        sweep: { ...s.sweep, pending: [{ action: 'openai/codex-action', size: [9, 1], depth: 0 }] },
+      }),
+    ],
+    [
+      'size beyond 1,000,000',
+      (s) => ({
+        ...s,
+        sweep: {
+          ...s.sweep,
+          pending: [{ action: 'openai/codex-action', size: [0, 2_000_000], depth: 0 }],
+        },
+      }),
+    ],
+    [
+      'filename with a space or injection',
+      (s) => ({
+        ...s,
+        sweep: {
+          ...s.sweep,
+          pending: [
+            { action: 'openai/codex-action', size: [5, 5], filename: 'a.yml size:1', depth: 1 },
+          ],
+        },
+      }),
+    ],
+    [
+      'negative depth',
+      (s) => ({
+        ...s,
+        sweep: {
+          ...s.sweep,
+          pending: [{ action: 'openai/codex-action', size: [0, 5], depth: -1 }],
+        },
+      }),
+    ],
+    [
+      'extra key on a shard',
+      (s) => ({
+        ...s,
+        sweep: {
+          ...s.sweep,
+          pending: [{ action: 'openai/codex-action', size: [0, 5], depth: 0, x: 1 }],
+        },
+      }),
+    ],
+    [
+      'repo entry with a bad lastSeenSweep',
+      (s) => ({ ...s, repos: { 'acme/fail': { lastSeenSweep: 5 } } }),
+    ],
+    ['repos as an array', (s) => ({ ...s, repos: ['acme/fail'] })],
+    ['pending as a string', (s) => ({ ...s, sweep: { ...s.sweep, pending: 'all' } })],
+    ['an unexpected top-level key', (s) => ({ ...s, extra: 1 })],
+    [
+      'oversized pending queue',
+      (s) => ({
+        ...s,
+        sweep: {
+          ...s.sweep,
+          pending: Array.from({ length: 200_001 }, () => ({
+            action: 'openai/codex-action',
+            size: [0, 5],
+            depth: 0,
+          })),
+        },
+      }),
+    ],
+    ['truncated holding a non-string', (s) => ({ ...s, sweep: { ...s.sweep, truncated: [1] } })],
+    ['not an object', () => 'state'],
+  ];
+
+  it.each(forgeries)('rejects the whole result with %s', (_n, mutate) => {
+    expect(() => parseScanResult(withState(mutate(good())))).toThrow(/discoveryState/);
+  });
+
+  it('runSubmit hands the validated state to persist, with every ledger write', async () => {
+    setup({}, { ...scanResult(), discoveryState: good() } as ScanResultFile);
+    const seen: Array<DiscoveryState | undefined> = [];
+    const h = harness({
+      persist: async (_l, d) => {
+        seen.push(d);
+      },
+    });
+    await runSubmit(submitArgs(), h.deps);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const d of seen) expect(d).toEqual(good());
+  });
+
+  it('a forged state is refused before any network call or write', async () => {
+    setup({}, {
+      ...scanResult(),
+      discoveryState: { ...good(), schemaVersion: 9 },
+    } as unknown as ScanResultFile);
+    const h = harness();
+    await expect(runSubmit(submitArgs(), h.deps)).rejects.toThrow(/discoveryState/);
+    expect(h.net.reqs).toEqual([]);
+    expect(h.persisted).toEqual([]);
+  });
+});
+
 describe('execOut timeout (review #5)', () => {
   it('rejects a git-style subprocess that outlives its bound', async () => {
     const t0 = Date.now();
@@ -701,6 +942,43 @@ describe('gitPersist', () => {
     expect(sh(origin, 'show', 'main:ledger.json')).toBe(serializeLedger(l).trim());
     await persist(l);
     expect(sh(origin, 'rev-list', '--count', 'main')).toBe('2');
+    await persist(emptyLedger());
+    expect(sh(origin, 'rev-list', '--count', 'main')).toBe('3');
+  });
+
+  it('commits discovery.json in the same commit as the ledger', async () => {
+    const origin = p('ops2.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+    const work = p('ops2');
+    execFileSync('git', ['clone', '-q', origin, work]);
+    sh(work, 'checkout', '-q', '-b', 'main');
+    writeFileSync(join(work, 'README'), 'ops');
+    sh(work, 'add', '-A');
+    sh(work, 'commit', '-qm', 'init');
+    sh(work, 'push', '-q', 'origin', 'main');
+
+    const persist = gitPersist({
+      ledgerPath: join(work, 'ledger.json'),
+      discoveryPath: join(work, 'discovery.json'),
+    });
+    const st: DiscoveryState = {
+      schemaVersion: 1,
+      sweep: { startedAt: NOW.toISOString(), pending: [], truncated: [], partial: [] },
+      repos: {},
+    };
+    await persist(emptyLedger(), st);
+    expect(sh(origin, 'rev-list', '--count', 'main')).toBe('2');
+    expect(sh(origin, 'show', '--name-only', '--format=', 'main').split('\n').sort()).toEqual([
+      'discovery.json',
+      'ledger.json',
+    ]);
+    expect(sh(origin, 'show', 'main:discovery.json')).toBe(serializeDiscoveryState(st).trim());
+    // discovery progress alone is enough for a commit
+    await persist(emptyLedger(), {
+      ...st,
+      repos: { 'a/b': { lastSeenSweep: st.sweep.startedAt } },
+    });
+    expect(sh(origin, 'rev-list', '--count', 'main')).toBe('3');
     await persist(emptyLedger());
     expect(sh(origin, 'rev-list', '--count', 'main')).toBe('3');
   });

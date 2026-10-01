@@ -9,6 +9,7 @@ describe('parseCrawlConfig', () => {
       publishSite: false,
       reporterLogin: '',
       throttle: { perHour: 5, perDay: 20 },
+      discoveryBudget: 300,
     });
     expect(DEFAULT_CRAWL_CONFIG.allowlist).toEqual([]);
   });
@@ -29,7 +30,20 @@ describe('parseCrawlConfig', () => {
       publishSite: true,
       reporterLogin: 'blastgate-bot',
       throttle: { perHour: 2, perDay: 20 },
+      discoveryBudget: 300,
     });
+  });
+
+  it('accepts a positive integer discoveryBudget', () => {
+    expect(parseCrawlConfig('{"discoveryBudget":50}').discoveryBudget).toBe(50);
+  });
+
+  it('rejects a zero, negative, fractional, huge, or non-number discoveryBudget', () => {
+    for (const v of ['0', '-3', '1.5', '"300"', 'null', '100000']) {
+      expect(() => parseCrawlConfig(`{"discoveryBudget":${v}}`), v).toThrow(
+        /discoveryBudget must be/,
+      );
+    }
   });
 
   it('rejects unknown keys at the top level and in throttle', () => {

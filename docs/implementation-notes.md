@@ -1168,3 +1168,53 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   sanity check, not trusted.
 - Open: `permissions.deny`/`disallowedTools` that remove `Read` and the read-only commands are not
   modelled as removing the leg (rare; would only lower recall, never cause a false fail).
+
+## 2026-10-01 — 0083: resilient, incremental discovery
+
+- Trigger: the first real dry run spent 90 minutes in discovery, then a 429 that outlasted the
+  client's retries threw `GitHubRateLimitError` out of `discover()` and killed the scan job,
+  discarding everything. claude-code-action alone is ~19,000 hits.
+- Resilience: `discover()` now catches `GitHubRateLimitError` itself and ends discovery for the
+  run (`rateLimited: true`); the shard stays at the head of the queue. `runScan` also catches a
+  rate-limit error escaping a custom `discover` dep and falls back to the previously known repos.
+  Non-rate-limit failures keep the old per-shard `partial` behaviour.
+- State (`src/crawl/discovery-state.ts`, `ops/discovery.json`): `{ schemaVersion: 1, sweep:
+  { startedAt, pending: Shard[], completedAt?, truncated, partial }, repos: { <repo>:
+  { lastSeenSweep } } }`. `startedAt` is the sweep id. `truncated`/`partial` are kept per sweep
+  so the report is cumulative across the runs of one sweep. Chose a stored work queue (not a
+  cursor) because bisection is data-dependent: the queue is the only faithful resume point.
+- Sweep semantics: a run with no state, or whose sweep is complete, starts a new sweep and keeps
+  the known repo set. When the queue empties the sweep completes and repos with an older
+  `lastSeenSweep` are dropped. Tradeoff (my call): a sweep with any `partial` shard drops nothing,
+  because a failed search proves nothing about absence; the stale repos go on the next clean sweep.
+  A repo a search item flags private/fork/archived is dropped immediately.
+- Budget: `discoveryBudget`, default 300 search requests (~35 min at 9/min), allowed 1..5000 (the
+  cap is my choice: more than a 5 h job can spend at the throttle). Counted per search request
+  attempted, including the one incomplete-results retry; the client's own rate-limit retries are
+  not counted. A shard interrupted by the budget (or a rate limit) mid-paging stays pending and is
+  re-run from page 1 next run, so at most one shard's first pages repeat per run. Rejected:
+  checkpointing page numbers (more state, little gain).
+- Persistence (KTD1): scan job writes `discoveryState` into `scan-result.json`; `parseScanResult`
+  validates it strictly (schema version, known actions only, size ranges within 0..1,000,000,
+  filename charset, depth, ISO dates, plain repo names, caps: 500k repos, 200k shards, 5k query
+  strings) and a bad state rejects the whole result before any write, unlike candidates which are
+  dropped individually, because a half-trusted queue is worse than none. The field is optional so
+  an older result still parses. `gitPersist` commits `discovery.json` with the ledger in one
+  commit, and `runSubmit` attaches the state to every persist so progress survives a late failure.
+  `scan --discovery` loads the file (missing = fresh; corrupt = hard error rather than a silent
+  restart of the sweep).
+- Sharding: every action still starts with one whole-range probe; only a saturated (>= 1,000
+  hits) whole-range shard is split into `DEFAULT_SIZE_SEEDS` (250-byte steps to 3,000, 500 to
+  6,000, 1,000 to 12,000, 2,000 to 20,000, then 20,001..1,000,000: 29 ranges) instead of halving
+  0..1,000,000. Deviation from "seed every action": seeding unconditionally would cost 29 probes
+  for an action with 830 hits that needs 1 probe plus 9 pages. Saturated seeds still bisect, then
+  filename-split, with the same truncated/partial reporting. Honest numbers: paging (hits / 100)
+  is the floor for both strategies, so on a synthetic log-normal distribution of 19,000 hits the
+  total is ~222 requests vs ~243 with plain bisection (probes ~32 vs ~53), not an order of
+  magnitude. The 90-minute run (~800 requests) is therefore likely dominated by real size
+  clustering (many identical template files) that forces filename splits, which seeding does not
+  fix; the budget plus resume is what makes that tractable. Follow-up: look at the first real
+  `truncated` list before tuning the filename variants.
+- Open: the whole-range query omits `size:`; relying on GitHub treating that as all sizes (as the
+  old code did).
+

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AGENT_PROFILES } from '../analyzers/ci/agents';
 import { checkEligible, discover } from './discover';
+import { DEFAULT_SIZE_SEEDS } from './discovery-state';
 import {
   createFetchTransport,
   createGitHubClient,
@@ -310,7 +311,12 @@ describe('discover', () => {
   });
 
   it('terminates and reports truncation when the depth cap is reached', async () => {
-    const env = makeEnv({ data: (a) => (a === CLAUDE ? uniform(3000, 50) : []) });
+    const dense = Array.from({ length: 4000 }, (_, i) => ({
+      repo: `org${i}/repo${i}`,
+      size: i >> 3,
+      filename: 'claude.yml',
+    }));
+    const env = makeEnv({ data: (a) => (a === CLAUDE ? dense : []) });
     const out = await discover({ client: clientFor(env), maxDepth: 1 });
     expect(out.truncated.length).toBeGreaterThan(0);
     expect(env.searches.length).toBeLessThan(200);
@@ -427,15 +433,16 @@ describe('discover', () => {
     expect(out.partial).toHaveLength(1);
   });
 
-  it('still propagates a persistent rate limit', async () => {
+  it('ends discovery (no throw) on a persistent rate limit and reports it', async () => {
     const env = makeEnv({
       data: () => [],
       intercept: (req) =>
         req.url.includes('/search/code') ? json(null, 429, { 'retry-after': '1' }) : undefined,
     });
-    await expect(discover({ client: clientFor(env), actions: [CLAUDE] })).rejects.toBeInstanceOf(
-      GitHubRateLimitError,
-    );
+    const out = await discover({ client: clientFor(env), actions: [CLAUDE] });
+    expect(out.rateLimited).toBe(true);
+    expect(out.complete).toBe(false);
+    expect(out.state.sweep.pending.length).toBeGreaterThan(0);
   });
 });
 
@@ -603,5 +610,230 @@ describe('discover (cont.)', () => {
     const env = makeEnv({ data: () => data });
     const out = await discover({ client: clientFor(env) });
     expect(out.repos).toEqual(['abe/a', 'zed/z']);
+  });
+});
+
+describe('resilient, incremental discovery (0083)', () => {
+  const t = (n: number) => new Date(T0 + n * 86_400_000);
+
+  it('a rate limit mid-discovery ends this run but keeps what was found and what is pending', async () => {
+    let searchCalls = 0;
+    const env = makeEnv({
+      data: (a) => (a === CLAUDE ? uniform(2400) : []),
+      intercept: (req) =>
+        req.url.includes('/search/code') && ++searchCalls > 4
+          ? json(null, 429, { 'retry-after': '1' })
+          : undefined,
+    });
+    const out = await discover({ client: clientFor(env), actions: [CLAUDE], now: () => t(0) });
+    expect(out.rateLimited).toBe(true);
+    expect(out.complete).toBe(false);
+    expect(out.repos.length).toBeGreaterThan(0);
+    expect(out.state.sweep.pending.length).toBeGreaterThan(0);
+    expect(out.state.sweep.completedAt).toBeUndefined();
+    // a non-rate-limit failure is still just a partial shard, not an end of discovery
+    expect(out.partial).toEqual([]);
+  });
+
+  it('resumes across two runs under a budget without re-searching finished shards', async () => {
+    const data = (a: string) => (a === CLAUDE ? uniform(2400) : []);
+    const full = makeEnv({ data });
+    const fullOut = await discover({ client: clientFor(full), actions: [CLAUDE], now: () => t(0) });
+    expect(fullOut.complete).toBe(true);
+
+    const env1 = makeEnv({ data });
+    const r1 = await discover({
+      client: clientFor(env1),
+      actions: [CLAUDE],
+      budget: 12,
+      now: () => t(0),
+    });
+    expect(r1.complete).toBe(false);
+    expect(r1.budgetExhausted).toBe(true);
+    const env2 = makeEnv({ data });
+    const r2 = await discover({
+      client: clientFor(env2),
+      actions: [CLAUDE],
+      state: JSON.parse(JSON.stringify(r1.state)),
+      now: () => t(0),
+    });
+    expect(r2.complete).toBe(true);
+    expect(r2.repos).toEqual(fullOut.repos);
+    // run 2 is the same sweep, not a fresh one
+    expect(r2.state.sweep.startedAt).toBe(r1.state.sweep.startedAt);
+    // Finished shards are not searched again: at most the one interrupted shard repeats.
+    const first = (e: Env) => new Set(e.searches.filter((s) => s.page === 1).map((s) => s.q.raw));
+    const repeated = [...first(env1)].filter((q) => first(env2).has(q));
+    expect(repeated.length).toBeLessThanOrEqual(1);
+    expect(env1.searches.length + env2.searches.length).toBeLessThanOrEqual(
+      full.searches.length + 1,
+    );
+  });
+
+  it('never spends more search requests than the budget, and says so', async () => {
+    const env = makeEnv({ data: (a) => (a === CLAUDE ? uniform(2400) : []) });
+    const out = await discover({ client: clientFor(env), budget: 5, now: () => t(0) });
+    expect(env.searches.length).toBeLessThanOrEqual(5);
+    expect(out.searches).toBeLessThanOrEqual(5);
+    expect(out.budgetExhausted).toBe(true);
+    expect(out.rateLimited).toBe(false);
+    expect(out.complete).toBe(false);
+    expect(out.state.sweep.pending.length).toBeGreaterThan(0);
+  });
+
+  it('a completed sweep drops repos it did not see, but only once the sweep completes', async () => {
+    const withGone: Record_[] = [
+      ...uniform(1500),
+      { repo: 'gone/repo', size: 77, filename: 'claude.yml' },
+    ];
+    const env1 = makeEnv({ data: (a) => (a === CLAUDE ? withGone : []) });
+    const s1 = await discover({ client: clientFor(env1), actions: [CLAUDE], now: () => t(0) });
+    expect(s1.complete).toBe(true);
+    expect(s1.repos).toContain('gone/repo');
+    expect(s1.state.sweep.completedAt).toBeDefined();
+
+    // Next run starts a new sweep. Mid-sweep the known set is kept.
+    const still = uniform(1500);
+    const env2 = makeEnv({ data: (a) => (a === CLAUDE ? still : []) });
+    const s2 = await discover({
+      client: clientFor(env2),
+      actions: [CLAUDE],
+      state: s1.state,
+      budget: 3,
+      now: () => t(1),
+    });
+    expect(s2.complete).toBe(false);
+    expect(s2.state.sweep.startedAt).not.toBe(s1.state.sweep.startedAt);
+    expect(s2.repos).toContain('gone/repo');
+
+    const env3 = makeEnv({ data: (a) => (a === CLAUDE ? still : []) });
+    const s3 = await discover({
+      client: clientFor(env3),
+      actions: [CLAUDE],
+      state: s2.state,
+      now: () => t(1),
+    });
+    expect(s3.complete).toBe(true);
+    expect(s3.repos).not.toContain('gone/repo');
+    expect(s3.repos).toHaveLength(1500);
+    expect(Object.keys(s3.state.repos).sort()).toEqual(s3.repos);
+  });
+
+  it('does not drop unseen repos when the sweep had partial (failed) shards', async () => {
+    const env1 = makeEnv({ data: (a) => (a === CLAUDE ? uniform(10) : []) });
+    const s1 = await discover({ client: clientFor(env1), actions: [CLAUDE], now: () => t(0) });
+    const env2 = makeEnv({
+      data: () => [],
+      intercept: (req) => (req.url.includes('/search/code') ? json(null, 500) : undefined),
+    });
+    const s2 = await discover({
+      client: clientFor(env2),
+      actions: [CLAUDE],
+      state: s1.state,
+      now: () => t(1),
+    });
+    expect(s2.complete).toBe(true);
+    expect(s2.partial.length).toBeGreaterThan(0);
+    expect(s2.repos).toEqual(s1.repos);
+  });
+
+  it('drops a known repo that a search item now flags as a fork', async () => {
+    const env1 = makeEnv({ data: (a) => (a === CLAUDE ? uniform(3) : []) });
+    const s1 = await discover({ client: clientFor(env1), actions: [CLAUDE], now: () => t(0) });
+    const env2 = makeEnv({
+      data: () => [],
+      intercept: (req) =>
+        req.url.includes('/search/code')
+          ? json({
+              total_count: 1,
+              incomplete_results: false,
+              items: [{ repository: { full_name: 'org0/repo0', fork: true } }],
+            })
+          : undefined,
+    });
+    const s2 = await discover({
+      client: clientFor(env2),
+      actions: [CLAUDE],
+      state: s1.state,
+      now: () => t(1),
+    });
+    expect(s2.repos).not.toContain('org0/repo0');
+  });
+
+  describe('size-range seeding', () => {
+    /** Workflow-file sizes cluster at 1-5 KB with a long tail (deterministic LCG, log-normal-ish). */
+    function realistic(n: number): Record_[] {
+      let x = 12345;
+      const rnd = () => {
+        x = (x * 1103515245 + 12345) % 2 ** 31;
+        return x / 2 ** 31;
+      };
+      return Array.from({ length: n }, (_, i) => {
+        const g = rnd() + rnd() + rnd() + rnd() - 2; // ~N(0, .58)
+        return {
+          repo: `o${i}/r${i}`,
+          size: Math.max(1, Math.round(2200 * Math.exp(g * 1.3))),
+          filename: 'claude.yml',
+        };
+      });
+    }
+
+    it('seeds are contiguous, non-overlapping, start at 0 and end with one tail range', () => {
+      expect(DEFAULT_SIZE_SEEDS[0]?.[0]).toBe(0);
+      for (let i = 1; i < DEFAULT_SIZE_SEEDS.length; i++) {
+        expect(DEFAULT_SIZE_SEEDS[i]?.[0]).toBe((DEFAULT_SIZE_SEEDS[i - 1]?.[1] ?? 0) + 1);
+      }
+      expect(DEFAULT_SIZE_SEEDS.at(-1)).toEqual([20_001, 1_000_000]);
+    });
+
+    it('finds the same repos in fewer requests than bisecting from the whole range', async () => {
+      const data = realistic(9000);
+      const seeded = makeEnv({ data: (a) => (a === CLAUDE ? data : []) });
+      const a = await discover({ client: clientFor(seeded), actions: [CLAUDE], now: () => t(0) });
+      const old = makeEnv({ data: (x) => (x === CLAUDE ? data : []) });
+      const b = await discover({
+        client: clientFor(old),
+        actions: [CLAUDE],
+        sizeSeeds: [],
+        now: () => t(0),
+      });
+      expect(a.repos).toEqual(b.repos);
+      expect(a.repos).toHaveLength(9000);
+      expect(a.truncated).toEqual([]);
+      // Paging (hits / 100) is the floor for both; the saving is in the probing requests.
+      const probes = (e: Env) => e.searches.filter((s) => s.page === 1).length;
+      expect(probes(seeded)).toBeLessThan(probes(old));
+      expect(seeded.searches.length).toBeLessThan(old.searches.length);
+      expect(seeded.searches.length).toBeLessThanOrEqual(9000 / 100 + 40);
+    });
+
+    it('an action with under 1,000 hits costs one probe plus its pages, not a seed sweep', async () => {
+      const env = makeEnv({ data: (a) => (a === CLAUDE ? realistic(830) : []) });
+      const out = await discover({ client: clientFor(env), actions: [CLAUDE], now: () => t(0) });
+      expect(out.repos).toHaveLength(830);
+      expect(env.searches.length).toBe(9);
+      expect(env.searches.filter((s) => s.page === 1)).toHaveLength(1);
+    });
+
+    it('a saturated seed range still bisects, then filename-splits, and reports truncation', async () => {
+      const env = makeEnv({
+        data: (a) =>
+          a === CLAUDE
+            ? Array.from({ length: 1200 }, (_, i) => ({
+                repo: `b${i}/x`,
+                size: 5000,
+                filename: 'ci.yml',
+              }))
+            : [],
+      });
+      const out = await discover({
+        client: clientFor(env),
+        actions: [CLAUDE],
+        filenameVariants: ['ci.yml'],
+        now: () => t(0),
+      });
+      expect(out.truncated.length).toBeGreaterThan(0);
+      expect(out.repos).toHaveLength(1000);
+    });
   });
 });
