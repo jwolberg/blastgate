@@ -1011,3 +1011,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   silently). Every saturated shard still collects its first 1,000 reachable hits.
 - A non-200 search response (after retries) throws rather than skipping a shard; repo metadata
   404/410/451 drops the repo.
+
+## 2026-10-01 — 0073: scan and ingest (public-crawler U3)
+
+- `eval-scan.sh` now emits full 40-char SHAs and no longer aborts the whole run when one repo's
+  JSON is unparseable (its row gets `-` counts; the crawler records `unknown`). Older evaluation
+  docs keep their short SHAs.
+- Verdict precedence: any fail-tier finding is `fail` regardless of exit code; otherwise a parse
+  failure or any non-zero exit is `unknown`. Archetype = `${entry.kind}->${sink.kind}`, built
+  only from finding structure.
+- A `clone-failed` row has no SHA; it is recorded with a zero SHA so the delta retries it next run.
+- `reverify` returns `resolved` when the reported ids no longer fail, even if new ids fail; those
+  get their own disclosure from the next regular scan.
+- Engine identity: the CLI reports `0.1.0`, which does not change when rules change, so a version
+  string alone would never re-vouch listed passes after an engine fix (e.g. 0070). U8's
+  orchestrator passes `engineVersion` as `<cli version>+<blastgate commit SHA>`.

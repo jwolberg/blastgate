@@ -7,7 +7,7 @@
 #
 # Usage: scripts/eval-scan.sh <workdir> <outdir> [repo-list]
 #   outdir gets one <owner>__<repo>.json per repo (findings, payloads included — local
-#   evaluation only, do not publish) plus index.tsv: repo, sha, exit code, fail, warn.
+#   evaluation only, do not publish) plus index.tsv: repo, full 40-char sha, exit code, fail, warn.
 #   SCAN_FLAGS adds CLI flags to every scan, e.g. SCAN_FLAGS=--public for a public sample.
 #   A clone whose checkout is missing tracked files (a network timeout mid-checkout) is
 #   re-cloned once; one that still cannot be completed is reported as `clone-failed`, never
@@ -56,16 +56,22 @@ scan_one() {
     fi
   fi
   local sha code
-  sha=$(git -C "$dir" rev-parse --short HEAD)
+  sha=$(git -C "$dir" rev-parse HEAD)
   set +e
   # shellcheck disable=SC2086 # SCAN_FLAGS is a deliberately word-split flag list
   node "$CLI" "$dir" --json --include-payloads ${SCAN_FLAGS:-} >"$OUTDIR/$name.json" 2>"$OUTDIR/$name.err"
   code=$?
   set -e
   node -e '
-    const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8") || "[]");
-    const n = (t) => f.filter((x) => x.tier === t).length;
-    console.log([process.argv[2], process.argv[3], process.argv[4], n("fail"), n("warn")].join("\t"));
+    // Unparseable output must not abort the whole run: report "-" counts, the crawler
+    // treats that row as unknown.
+    let fail = "-", warn = "-";
+    try {
+      const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8") || "[]");
+      const n = (t) => f.filter((x) => x.tier === t).length;
+      fail = n("fail"); warn = n("warn");
+    } catch {}
+    console.log([process.argv[2], process.argv[3], process.argv[4], fail, warn].join("\t"));
   ' "$OUTDIR/$name.json" "$repo" "$sha" "$code"
 }
 export -f scan_one clone_sparse clone_complete
