@@ -95,3 +95,17 @@ U2 now taints the outputs of such a step (fix in 0056), and it is the second war
 | supabase/supabase | `be976be` | 0 | 1 |
 
 The other 43 repos: 0 fail, 0 warn.
+
+## [7] Addendum — after the 0063–0069 follow-ups
+
+Re-scan on branch `feat/agent-in-ci-followups` with the same cached clones (all 50 verified
+complete by the 0066 check): **2 fails (the §3 exception, unchanged), 21 warns.**
+
+- The +3 warns are pytorch's `workflow_run` relays from §4, now judged by 0067:
+  `claude-distributed-triage` (direct held through `allowed_bots: '*'` on a public repo,
+  access missing), `claude-issue-triage-run` (direct missing: named `allowed_bots`),
+  `hardened-pr-review-run` (direct missing; tool grants unreadable). None fails.
+- 0065 resolves SHA-pinned agents, so home-assistant's `actions/ai-inference` pins are now
+  covered. They are still tool-less warns (R8).
+- 0063/0064 (scoped and exact-match claude grants) and 0068 (fork-PR reason wording) change
+  no tier on this sample.
