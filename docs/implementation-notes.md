@@ -1041,3 +1041,13 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   JSON (`allowlist`, `submitMode`, `publishSite`, `throttle`), unknown keys rejected.
 - `src/crawl/fixtures/disclose/real-fails.json` holds real engine fail findings, payloads
   included (fixed illustrative strings, never repo-derived), so the no-payload test is real.
+
+## 2026-10-01 — 0077: static site (public-crawler U7)
+
+- `renderSite(ledger, {generatedAt, discovered?})` returns a files map (`index.html` only; badges
+  were deferred by the doc review). Passes sort by repo; the only time shown is the day passed
+  in as `generatedAt`.
+- `discovered` drops listed passes for repos no longer found (closes the U2 follow-up about
+  undiscoverable repos staying listed). Credited advisories always render.
+- Tests assert fail/warn/unknown repo names and any scanned counts appear nowhere, and
+  "privately" appears only in the method copy.
