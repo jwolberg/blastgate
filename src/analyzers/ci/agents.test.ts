@@ -6,6 +6,7 @@ import {
   assessAgentStep,
   geminiYoloIgnoresAllowlist,
 } from './agents';
+import { AGENT_RELEASE_SHAS } from './agent-release-shas';
 import { parseWorkflow } from './parse';
 
 /**
@@ -64,6 +65,43 @@ describe('agentProfileFor — action + ref → profile', () => {
     const r = agentProfileFor('openai/codex-action@0123456789abcdef0123456789abcdef01234567');
     expect(r?.covered).toBe(false);
     expect(r?.unknown).toMatch(/SHA/);
+  });
+
+  // 0065: a SHA pin resolves through the recorded release tags, then the version range.
+  it('resolves a recorded SHA pin to its release and covers it (claude v1.0.238)', () => {
+    const r = agentProfileFor(
+      'anthropics/claude-code-action@12dd8d74c712f5f3669365b2369b558c495b1104',
+    );
+    expect(r?.profile.id).toBe('claude');
+    expect(r?.covered).toBe(true);
+  });
+
+  it('resolves a recorded SHA of an out-of-range release to unknown, naming the release', () => {
+    const r = agentProfileFor(
+      'anthropics/claude-code-action@bdd0c925cb06995712d4dbd690e8b8bc513a08eb',
+    );
+    expect(r?.covered).toBe(false);
+    expect(r?.unknown).toMatch(/v0\.0\.17/);
+  });
+
+  it("covers home-assistant's SHA-pinned actions/ai-inference (v2.1.1)", () => {
+    expect(
+      agentProfileFor('actions/ai-inference@a7805884c80886efc241e94a5351df715968a0ad')?.covered,
+    ).toBe(true);
+  });
+
+  it('every recorded SHA is a full commit SHA mapped to a release tag', () => {
+    for (const [action, shas] of Object.entries(AGENT_RELEASE_SHAS)) {
+      expect(
+        AGENT_PROFILES.some((p) => p.action === action),
+        action,
+      ).toBe(true);
+      expect(Object.keys(shas).length, action).toBeGreaterThan(0);
+      for (const [sha, tag] of Object.entries(shas)) {
+        expect(sha).toMatch(/^[0-9a-f]{40}$/);
+        expect(tag).toMatch(/^v?\d+(\.\d+){0,2}$/);
+      }
+    }
   });
 
   it('marks a missing ref unknown', () => {

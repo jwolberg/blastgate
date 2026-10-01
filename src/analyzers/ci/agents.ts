@@ -7,6 +7,7 @@
  */
 
 import type { AgentAssessment, Leg, RepoVisibility } from '../../graph/types';
+import { AGENT_RELEASE_SHAS } from './agent-release-shas';
 import { credentialReachableTextTriggers } from './injection';
 import {
   findSecretRefs,
@@ -44,8 +45,6 @@ export interface AgentProfile {
   defaults: Record<string, string>;
   /** No tools of its own: ingests text, cannot act on it (R8). */
   toolLess: boolean;
-  /** Full commit SHAs known to fall inside `range`. Empty: every SHA pin is unknown. */
-  pinnedShas: string[];
   citations: string[];
 }
 
@@ -62,7 +61,6 @@ export const AGENT_PROFILES: readonly AgentProfile[] = [
     // cloud, and Actions secrets unless CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is 0 (KTD2).
     defaults: { subprocessEnvScrub: 'on when allowed_non_write_users is set' },
     toolLess: false,
-    pinnedShas: [],
     citations: [
       'https://github.com/anthropics/claude-code-action/blob/v1/docs/security.md',
       'https://github.com/anthropics/claude-code-action/blob/v1/action.yml',
@@ -80,7 +78,6 @@ export const AGENT_PROFILES: readonly AgentProfile[] = [
     credentialInputs: ['openai-api-key'],
     defaults: { sandbox: 'workspace-write', 'safety-strategy': 'drop-sudo' },
     toolLess: false,
-    pinnedShas: [],
     citations: [
       'https://github.com/openai/codex-action/blob/v1/docs/security.md',
       'https://github.com/openai/codex-action/blob/v1/src/checkActorPermissions.ts',
@@ -97,7 +94,6 @@ export const AGENT_PROFILES: readonly AgentProfile[] = [
     credentialInputs: ['gemini_api_key', 'google_api_key', 'gcp_workload_identity_provider'],
     defaults: { gemini_cli_version: 'latest', mode: '--yolo' },
     toolLess: false,
-    pinnedShas: [],
     citations: [
       'https://github.com/google-github-actions/run-gemini-cli/blob/v0/action.yml',
       'https://github.com/google-github-actions/run-gemini-cli/security/advisories/GHSA-wpqr-6v78-jr5g',
@@ -114,7 +110,6 @@ export const AGENT_PROFILES: readonly AgentProfile[] = [
     credentialInputs: ['token', 'github-mcp-token'],
     defaults: { 'enable-github-mcp': 'false', provider: 'github-models' },
     toolLess: true,
-    pinnedShas: [],
     citations: ['https://github.com/actions/ai-inference/blob/v2/action.yml'],
   },
 ];
@@ -140,22 +135,23 @@ const VERSION_RE = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/;
 export function agentProfileFor(uses: string): AgentResolution | undefined {
   const at = uses.indexOf('@');
   const name = (at < 0 ? uses : uses.slice(0, at)).toLowerCase();
-  const ref = at < 0 ? '' : uses.slice(at + 1);
+  const pinned = at < 0 ? '' : uses.slice(at + 1);
   const profile = AGENT_PROFILES.find((p) => p.action === name);
   if (!profile) {
     return undefined;
   }
-  if (ref === '') {
+  if (pinned === '') {
     return { profile, covered: false, unknown: `${profile.action} has no pinned ref` };
   }
-  if (SHA_RE.test(ref)) {
-    return profile.pinnedShas.includes(ref.toLowerCase())
-      ? { profile, covered: true }
-      : {
-          profile,
-          covered: false,
-          unknown: `SHA ${ref} is not a recorded ${profile.action} release`,
-        };
+  // A SHA pin resolves to the release tag recorded for it (0065), then the range applies.
+  const isSha = SHA_RE.test(pinned);
+  const ref = isSha ? AGENT_RELEASE_SHAS[profile.action]?.[pinned.toLowerCase()] : pinned;
+  if (ref === undefined) {
+    return {
+      profile,
+      covered: false,
+      unknown: `SHA ${pinned} is not a recorded ${profile.action} release`,
+    };
   }
   const m = VERSION_RE.exec(ref);
   if (!m) {
@@ -171,7 +167,11 @@ export function agentProfileFor(uses: string): AgentResolution | undefined {
     .map(Number);
   return inRange(prefix, profile.range)
     ? { profile, covered: true }
-    : { profile, covered: false, unknown: `no profile covers ${profile.action}@${ref}` };
+    : {
+        profile,
+        covered: false,
+        unknown: `no profile covers ${profile.action}@${isSha ? `${pinned} (${ref})` : ref}`,
+      };
 }
 
 /** A partial ref (`v1` = every 1.x.y) is covered only when all it can point to lies in range. */

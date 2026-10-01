@@ -951,3 +951,17 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   that holds inside claude-code-action, a claude step with no `--allowedTools` can still read
   `.git/config` or echo env, so "default tools = none" understates access (missed fails, never
   false ones). Raised with the user.
+
+## 2026-10-01 — 0065: SHA-pinned agents resolve through recorded release tags
+
+- `scripts/refresh-agent-shas.sh` (read-only GitHub API) writes
+  `src/analyzers/ci/agent-release-shas.ts`, mapping every release tag's commit SHA to the tag,
+  for the four profiled actions (360 SHAs on 2026-10-01). A commit with several tags keeps the
+  most specific one (`v1.0.238` over the moving `v1`).
+- `agentProfileFor` resolves a SHA pin to its tag, then applies the profile's version range. A
+  SHA of an out-of-range release (claude `v0.0.17`) stays unknown and names the release. A SHA
+  that is no release (a fork, an unreleased commit) stays unknown. The per-profile `pinnedShas`
+  field is gone.
+- Maintenance: re-run the script when an action releases. Until then, a brand-new release's SHA
+  is unknown, so it warns and never fails. Effect on the sample: home-assistant's SHA-pinned
+  `actions/ai-inference` is now covered, but tool-less steps still only warn (R8).
