@@ -1,0 +1,11 @@
+{
+  "total_count": 1,
+  "incomplete_results": true,
+  "items": [
+    {
+      "name": "gemini.yml",
+      "path": ".github/workflows/gemini.yml",
+      "repository": { "full_name": "acme/widgets" }
+    }
+  ]
+}

@@ -980,3 +980,173 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   (direct held via `allowed_bots: '*'` on a public repo, access missing),
   `claude-issue-triage-run` warns (named `allowed_bots`), and `hardened-pr-review-run` warns
   (tool grants unreadable). No new fails.
+
+## 2026-10-01 — 0072: crawl ledger (public-crawler U2)
+
+- Disclosures are keyed by repo + sorted finding ids (no separate id). The duplicate guard
+  refuses any new disclosure overlapping ids of a live one on the same repo, including
+  `submitting` and recovered `held` entries, since those may already have been filed.
+- Delta priority: listed passes whose engine **or SHA** changed come first (reasons
+  `listed-pass-old-engine` / `listed-pass-changed`), then new repos, then the rest oldest-scanned
+  first. The plan only named the engine case; the SHA case was added at integration so a listed
+  repo that may now fail is re-vouched before anything else (AE6). Engine versions compare by
+  string equality, not semver.
+- Follow-up: a listed repo that stops being discovered (workflow removed, repo made private)
+  never reaches the delta, so it stays listed. The site build (U7) or orchestrator (U8) should
+  drop passes for repos absent from the current discovery set.
+
+## 2026-10-01 — 0071: discovery via sharded code search (public-crawler U1)
+
+- Deviation: crawl fixtures live in `src/crawl/fixtures/`, not the plan's `test/fixtures/crawl/`.
+  `test/engine.e2e.test.ts` asserts every `test/fixtures/` directory is a declared check, so later
+  crawl units put fixtures there too.
+- Throttle is 9 searches per sliding 60s (strictest reading of "<10"); only `/search/` paths are
+  throttled. A 403/429 carrying `retry-after` or an exhausted `x-ratelimit-remaining` is waited out
+  and retried up to 5 times, then `GitHubRateLimitError` is thrown — the orchestrator treats that
+  as the plan's "stop on abuse/secondary limit" signal. A 403 with no rate-limit signal is
+  returned as-is.
+- Sharding bisects `size:0..1000000` to depth 24; a single-byte bucket is split by 20 common
+  workflow filenames. That list cannot partition a bucket, so a filename-split bucket is always
+  reported `truncated` (fixed at integration: the worker's version lost unlisted filenames
+  silently). Every saturated shard still collects its first 1,000 reachable hits.
+- A non-200 search response (after retries) throws rather than skipping a shard; repo metadata
+  404/410/451 drops the repo.
+
+## 2026-10-01 — 0073: scan and ingest (public-crawler U3)
+
+- `eval-scan.sh` now emits full 40-char SHAs and no longer aborts the whole run when one repo's
+  JSON is unparseable (its row gets `-` counts; the crawler records `unknown`). Older evaluation
+  docs keep their short SHAs.
+- Verdict precedence: any fail-tier finding is `fail` regardless of exit code; otherwise a parse
+  failure or any non-zero exit is `unknown`. Archetype = `${entry.kind}->${sink.kind}`, built
+  only from finding structure.
+- A `clone-failed` row has no SHA; it is recorded with a zero SHA so the delta retries it next run.
+- `reverify` returns `resolved` when the reported ids no longer fail, even if new ids fail; those
+  get their own disclosure from the next regular scan.
+- Engine identity: the CLI reports `0.1.0`, which does not change when rules change, so a version
+  string alone would never re-vouch listed passes after an engine fix (e.g. 0070). U8's
+  orchestrator passes `engineVersion` as `<cli version>+<blastgate commit SHA>`.
+
+## 2026-10-01 — 0074: disclosure gate and report composer (public-crawler U4)
+
+- Escaping: one `inert()` pass over a payload-free copy of each finding before the shared
+  per-finding markdown block (`markdownFinding`, now exported from `src/cli/render.ts` with
+  output unchanged). It strips control/bidi/zero-width characters, caps length, and swaps the
+  characters that make links, images, HTML, code spans, mentions, issue refs, autolinks, and
+  table cells (`` ` < > [ ] @ #N :// www. | ``) for look-alikes. Side effect: action refs read
+  `run-gemini-cli＠v0.1.21` in reports.
+- The threat-model link is a bare URL, not `[text](url)`, so the inertness check can forbid `](`
+  outright.
+- Gate order: allowlist, then duplicate (same rule as `createDisclosure`). Config is strict
+  JSON (`allowlist`, `submitMode`, `publishSite`, `throttle`), unknown keys rejected.
+- `src/crawl/fixtures/disclose/real-fails.json` holds real engine fail findings, payloads
+  included (fixed illustrative strings, never repo-derived), so the no-payload test is real.
+
+## 2026-10-01 — 0077: static site (public-crawler U7)
+
+- `renderSite(ledger, {generatedAt, discovered?})` returns a files map (`index.html` only; badges
+  were deferred by the doc review). Passes sort by repo; the only time shown is the day passed
+  in as `generatedAt`.
+- `discovered` drops listed passes for repos no longer found (closes the U2 follow-up about
+  undiscoverable repos staying listed). Credited advisories always render.
+- Tests assert fail/warn/unknown repo names and any scanned counts appear nowhere, and
+  "privately" appears only in the method copy.
+
+## 2026-10-01 — 0076: advisory tracker and tripwire (public-crawler U6)
+
+- The repository-advisory API has no close reason, so a false positive cannot be told apart from
+  a policy close. Tradeoff accepted: any `closed`/`withdrawn` advisory on a submitted report
+  becomes `declined` **and trips its archetype** (the gate then holds it even if allowlisted).
+  Cost: a maintainer closing a real finding for policy reasons slows that archetype's rollout.
+  Re-admitting a tripped archetype is a manual ledger edit (no un-trip command yet).
+- Credit match: case-insensitive login in `credits` or `credits_detailed` (a `declined` credit
+  does not count). `draft`/`triage` advisories become `fixed` only when the current rescan shows
+  none of the reported ids still failing; a repo not rescanned this run is left alone.
+- 404/other errors and malformed report URLs leave state unchanged and are flagged in the run
+  summary.
+
+## 2026-10-01 — 0075: PVR submitter (public-crawler U5)
+
+- Deviation from the plan's step order: the disclosure gate runs **before** the PVR pre-check, so
+  a non-allowlisted fail costs no API call and gets the clearer reason.
+- Retry policy for held entries: "no PVR", "archetype not allowlisted", and rate-limit holds are
+  retried on later runs; "submission state uncertain" (crash, transport error mid-POST, 201
+  without a URL) and "submission failed (HTTP n)" are never retried automatically.
+- A 403/429 or `GitHubRateLimitError` stops all submission for the run. Throttle counts
+  `submitting` + `submitted` by `updatedAt`; dry runs don't count.
+- Dry runs store the exact request body on the disclosure (`wouldSend`); it is left in place
+  after later transitions as a record of what was reviewed.
+- Integration: U5 and U6 both extended the ledger in parallel (`wouldSend`, `trippedArchetypes`);
+  merged by hand, both suites kept.
+
+## 2026-10-01 — 0078: ops wiring and runbook (public-crawler U8)
+
+- Three subcommands, not two: `scan`, `submit`, and `publish`. A separate `publish` step means
+  the registry deploy key exists only there; it verifies github.com's ed25519 host key against
+  GitHub's published fingerprint (checked against `gh api meta` on 2026-10-01) before loading the
+  key into a temporary ssh-agent.
+- The scan job uses the job's read-only `github.token` for code search and metadata (no
+  `secrets.*`). Unverified: whether REST code search accepts an Actions installation token; the
+  U11 dry run must confirm it, else the scan job needs a separate read-only search token.
+- `currentFails` covers repos scanned pass/warn/fail (empty = clean) and excludes unknown and
+  clone-failed, so the tracker only marks `fixed` on a real clean rescan.
+- Engine identity is `<cli version>+<blastgate commit>` (from `BLASTGATE_SHA`), so bumping the
+  pinned crawler commit re-vouches every listed pass before new repos are scanned.
+- Kill switch is the file `ops/KILL_SWITCH` in the ops repo; `--cap` defaults to 100.
+- TDD note: for `publish.ts` and the orchestrator the worker wrote tests first but captured the
+  red failure by moving the implementation aside afterward, rather than observing red before
+  writing code. The template test, pack test, and config change followed red-first normally.
+- Not exercised against real GitHub: no PVR POST, SSH push, or real ops repo run. The workflow is
+  checked structurally only (pins, secret placement, concurrency, permissions). `gitPersist`'s
+  rebase-and-retry path is untested. The ops repo must allow `github-actions` to push to its
+  default branch.
+
+## 2026-10-01 — code-review fixes (public-crawler)
+
+- #1 Ledger lookups (`transition`, `recordWouldSend`) prefer the latest live entry and skip
+  `resolved-before-report` ones, so a re-detected finding with the same ids no longer wedges the run.
+- #2 `delta` re-queues an unchanged `fail` repo with a pending disclosure (reason
+  `pending-disclosure`, ranked after listed-pass re-vouching, before new repos): a `queued` entry, a
+  `held` entry with a retryable reason, or fail ids no disclosure covers. Retryable-hold rules moved
+  from `submit.ts` into `ledger.ts` (`isRetryableHold`) so both share them. Cost: in dry-run mode
+  `queued` entries never leave `queued`, so those repos are rescanned every run (bounded by `--cap`).
+- #3 `createGitHubClient` retries GETs on 5xx and thrown transport errors (3 tries, 1s/2s backoff,
+  injectable sleep). POSTs are never retried: a repeated PVR POST could file a second report.
+  `discover` marks a failing shard (or a later page of it) `partial` instead of throwing; a
+  persistent `GitHubRateLimitError` still propagates. A metadata failure now skips that repo and is
+  counted in the log (`eligibility errors N`).
+- #4 Decision: both halves. Code-search items carry `repository.private/fork/archived` (GitHub docs,
+  minimal-repository schema: `private`, `fork`, `archived` all required), so `discover` drops flagged
+  repos with zero metadata calls. The authoritative `checkEligible` (one `/repos` call) now runs in
+  `runScan` after `delta`, walking the priority order until the cap is filled, with at most 3x cap
+  checks. Known limit: if more than 2x cap ineligible repos rank first, later ones wait for a later
+  run (only reachable for repos the search items did not flag, e.g. deleted since indexing).
+  `discovered` (site filter) is therefore no longer metadata-verified, only item-flag-filtered.
+- #5 Timeouts: `fetchTransport` aborts after 30s (`createFetchTransport({timeoutMs})`); the scan
+  runner bounds `eval-scan.sh` at 2h and `--version` at 30s; `execOut` (git) at 120s with
+  `GIT_TERMINAL_PROMPT=0`. `eval-scan.sh` wraps each clone (`CLONE_TIMEOUT`, 120s) and scan
+  (`SCAN_TIMEOUT`, 300s) in `timeout`/`gtimeout` when present (unbounded otherwise, e.g. stock
+  macOS), discards a timed-out scan's output, and reports any failed or timed-out clone as
+  `clone-failed`. Tests use a stand-in `timeout` binary, so GNU `timeout` itself is unexercised here.
+- #6 `parseScanResult` validates the scan-job artifact: strict repo names that appear in
+  `discovered`; scan rows well-formed (40-hex sha, ISO time, bounded strings, fail iff fail ids);
+  candidate ids a non-empty subset of the stored fail ids with the stored archetype; summary
+  <= 1024 and description <= 65535 whose text begins with the exact `reportSummaryPrefix` /
+  `reportHeader` and ends with the exact `reportFooter` (version + scanned sha) from `disclose.ts`.
+  Invalid entries are dropped and counted (`submit: dropped N scan(s) and M candidate(s)`).
+  Tradeoff: the middle of the description (per-finding blocks) cannot be re-derived in the submit
+  job, so it stays scan-job-controlled text between a verified header and footer.
+- #7 Ops-template test now matches `\bsecrets\b` on the scan job and everything before `submit:`,
+  has a mutation-style negative control (`secrets['X']`, `toJSON(secrets)`, `secrets.X`,
+  `secrets: inherit`), and asserts both crawler checkouts use `vars.BLASTGATE_SHA` and every
+  scan-job checkout sets `persist-credentials: false`.
+- #9 One `isPlainRepoName` in `github.ts` (rejects `.`/`..` segments), used by `discover`,
+  `ledger` (`lsRemoteHeads`), `submit`, and the submit-job validation.
+- #10 Only a 429 or a `GitHubRateLimitError` (header-signalled 403) stops a submit run. A plain 403
+  on the PVR pre-check holds the repo as `no PVR (HTTP 403)` (retryable); on the POST it holds
+  `submission failed (HTTP 403)` (final). Also fixed a latent `held -> held` illegal move when a
+  retried hold's reason changes (now goes through `queued`).
+- #14 The scan child env is an allowlist (`PATH HOME LANG LC_ALL TMPDIR TERM BLASTGATE_CLI
+  EVAL_REMOTE_BASE JOBS SCAN_FLAGS SCAN_TIMEOUT CLONE_TIMEOUT`) plus caller overrides, with
+  credential-looking names (`GITHUB_*`, `GH_*`, `ACTIONS_*`, `RUNNER_*`, `*TOKEN*`, `*SECRET*`, ...)
+  stripped from both. Applies to `scanRepos`, `reverify`, and the CLI version probe.

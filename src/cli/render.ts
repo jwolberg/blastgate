@@ -152,7 +152,7 @@ function markdownHeader(result: GateResult): string[] {
 }
 
 /** One finding as a section: heading, the path, then why / fix / sink / labels. */
-function markdownFinding(f: Finding): string[] {
+export function markdownFinding(f: Finding): string[] {
   const mark = f.tier === 'fail' ? '❌' : '⚠️';
   const chain = f.path.map((n) => `\`${n.replace(/`/g, '')}\``).join(' → ');
   const out = [

@@ -59,7 +59,7 @@ describe('eval-scan.sh — incomplete clones (0066)', () => {
     const [row] = scan(['acme/app']);
     expect(row?.split('\t')).toEqual([
       'acme/app',
-      expect.stringMatching(/^[0-9a-f]{7}/),
+      expect.stringMatching(/^[0-9a-f]{40}$/),
       '0',
       '0',
       '1',

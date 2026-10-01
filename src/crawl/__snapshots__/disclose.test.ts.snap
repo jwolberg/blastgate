@@ -1,0 +1,145 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`composeReport (KTD7) > snapshots the real incident fixtures > agent-promptpwnd 1`] = `
+"Blastgate: reachable attacker-controlled path to a secret in acme/widgets reaches GITHUB_TOKEN (contents:write, issues:write) at .github/workflows/issue-triage.yml:14 (+1 more)
+
+## Blastgate automated security report
+
+This is an automated report from Blastgate, a scanner for attacker-to-secret paths in CI workflows. It is limited to proven paths: Blastgate only reports a fail when it can trace a reachable path from attacker-controllable input to a secret or credential in \`acme/widgets\`.
+
+2 reachable paths found. Each lists where the input enters, what it reaches, why, and how to break the path. How the scanner decides what is reportable: https://github.com/jwolberg/blastgate/blob/main/docs/threat-model.md
+
+**How to respond:** if this is accurate, breaking any edge on a path (the fix lines below) closes it. If it is wrong, or you accept the risk, reply here or close this report to decline; no further report will be filed for these findings.
+
+**Disclosure:** we suggest a 90-day coordinated-disclosure window from the date of this report. Blastgate does not publish this finding; any advisory is yours to publish.
+
+---
+
+### ❌ untrusted issues text reaches job triage (github.event.issue.title, github.event.issue.body) → … → 🔑 GITHUB_TOKEN (contents:write, issues:write)
+
+\`untrusted issues text reaches job triage (github.event.issue.title, github.event.issue.body)\` → \`.github/workflows/issue-triage.yml#triage\` → \`GITHUB_TOKEN (contents:write, issues:write)\`
+
+- **why:** untrusted issues text reaches job triage (github.event.issue.title, github.event.issue.body) — an outsider can steer the agent google-github-actions/run-gemini-cli＠v0.1.21 in job .github/workflows/issue-triage.yml#triage into reading credential GITHUB_TOKEN (contents:write, issues:write) and getting it out. Rule of Two — direct trigger: held (any issues author triggers it (the action has no actor check)); sensitive access: held (its tools can read GEMINI_API_KEY; a contents:write GITHUB_TOKEN); exfiltration: held (it has a shell or network tool).
+- **fix:** Break a leg: restrict who can trigger google-github-actions/run-gemini-cli＠v0.1.21 (keep its write-access gate, add an author_association guard), deny it shell/network tools it does not need, and keep GITHUB_TOKEN (contents:write, issues:write) out of the agent job (the Agents Rule of Two).
+- **sink:** credential \`GITHUB_TOKEN (contents:write, issues:write)\`
+- **at:** \`.github/workflows/issue-triage.yml:14\` → \`GITHUB_TOKEN (contents:write, issues:write)\`
+- **OWASP:** \`ASI01:2026\`, \`MCP10:2025\`
+
+---
+
+### ❌ untrusted issues text reaches job triage (github.event.issue.title, github.event.issue.body) → … → 🔑 GEMINI_API_KEY
+
+\`untrusted issues text reaches job triage (github.event.issue.title, github.event.issue.body)\` → \`.github/workflows/issue-triage.yml#triage\` → \`GEMINI_API_KEY\`
+
+- **why:** untrusted issues text reaches job triage (github.event.issue.title, github.event.issue.body) — an outsider can steer the agent google-github-actions/run-gemini-cli＠v0.1.21 in job .github/workflows/issue-triage.yml#triage into reading credential GEMINI_API_KEY and getting it out. Rule of Two — direct trigger: held (any issues author triggers it (the action has no actor check)); sensitive access: held (its tools can read GEMINI_API_KEY; a contents:write GITHUB_TOKEN); exfiltration: held (it has a shell or network tool).
+- **fix:** Break a leg: restrict who can trigger google-github-actions/run-gemini-cli＠v0.1.21 (keep its write-access gate, add an author_association guard), deny it shell/network tools it does not need, and keep GEMINI_API_KEY out of the agent job (the Agents Rule of Two).
+- **sink:** credential \`GEMINI_API_KEY\`
+- **at:** \`.github/workflows/issue-triage.yml:14\` → \`GEMINI_API_KEY\`
+- **OWASP:** \`ASI01:2026\`, \`MCP10:2025\`
+
+---
+
+_Scanned by Blastgate 0.1.0 at commit \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab\`._"
+`;
+
+exports[`composeReport (KTD7) > snapshots the real incident fixtures > fork-pr-secret 1`] = `
+"Blastgate: reachable attacker-controlled path to a secret in acme/widgets reaches AWS_SECRET_ACCESS_KEY at .github/workflows/ci.yml:7
+
+## Blastgate automated security report
+
+This is an automated report from Blastgate, a scanner for attacker-to-secret paths in CI workflows. It is limited to proven paths: Blastgate only reports a fail when it can trace a reachable path from attacker-controllable input to a secret or credential in \`acme/widgets\`.
+
+1 reachable path found. Each lists where the input enters, what it reaches, why, and how to break the path. How the scanner decides what is reportable: https://github.com/jwolberg/blastgate/blob/main/docs/threat-model.md
+
+**How to respond:** if this is accurate, breaking any edge on a path (the fix lines below) closes it. If it is wrong, or you accept the risk, reply here or close this report to decline; no further report will be filed for these findings.
+
+**Disclosure:** we suggest a 90-day coordinated-disclosure window from the date of this report. Blastgate does not publish this finding; any advisory is yours to publish.
+
+---
+
+### ❌ pull_request_target reaches job test → … → 🔑 AWS_SECRET_ACCESS_KEY
+
+\`pull_request_target reaches job test\` → \`.github/workflows/ci.yml#test\` → \`AWS_SECRET_ACCESS_KEY\`
+
+- **why:** Job .github/workflows/ci.yml#test is triggered by untrusted input (pull_request_target) and runs PR code at .github/workflows/ci.yml:7 while holding credential AWS_SECRET_ACCESS_KEY, which that code can read and exfiltrate.
+- **fix:** Remove AWS_SECRET_ACCESS_KEY from the untrusted-triggerable job .github/workflows/ci.yml#test, or restrict its triggers to trusted events.
+- **sink:** credential \`AWS_SECRET_ACCESS_KEY\`
+- **at:** \`.github/workflows/ci.yml:7\` → \`AWS_SECRET_ACCESS_KEY\`
+- **OWASP:** \`ASI03:2026\`
+
+---
+
+_Scanned by Blastgate 0.1.0 at commit \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab\`._"
+`;
+
+exports[`composeReport (KTD7) > snapshots the real incident fixtures > install-script-secret 1`] = `
+"Blastgate: reachable attacker-controlled path to a secret in acme/widgets reaches AWS_SECRET_ACCESS_KEY at .github/workflows/ci.yml:7 (+1 more)
+
+## Blastgate automated security report
+
+This is an automated report from Blastgate, a scanner for attacker-to-secret paths in CI workflows. It is limited to proven paths: Blastgate only reports a fail when it can trace a reachable path from attacker-controllable input to a secret or credential in \`acme/widgets\`.
+
+2 reachable paths found. Each lists where the input enters, what it reaches, why, and how to break the path. How the scanner decides what is reportable: https://github.com/jwolberg/blastgate/blob/main/docs/threat-model.md
+
+**How to respond:** if this is accurate, breaking any edge on a path (the fix lines below) closes it. If it is wrong, or you accept the risk, reply here or close this report to decline; no further report will be filed for these findings.
+
+**Disclosure:** we suggest a 90-day coordinated-disclosure window from the date of this report. Blastgate does not publish this finding; any advisory is yours to publish.
+
+---
+
+### ❌ pull_request_target reaches job test → … → 🔑 AWS_SECRET_ACCESS_KEY
+
+\`pull_request_target reaches job test\` → \`.github/workflows/ci.yml#test\` → \`AWS_SECRET_ACCESS_KEY\`
+
+- **why:** Job .github/workflows/ci.yml#test is triggered by untrusted input (pull_request_target) and runs PR code at .github/workflows/ci.yml:7 while holding credential AWS_SECRET_ACCESS_KEY, which that code can read and exfiltrate.
+- **fix:** Remove AWS_SECRET_ACCESS_KEY from the untrusted-triggerable job .github/workflows/ci.yml#test, or restrict its triggers to trusted events.
+- **sink:** credential \`AWS_SECRET_ACCESS_KEY\`
+- **at:** \`.github/workflows/ci.yml:7\` → \`AWS_SECRET_ACCESS_KEY\`
+- **OWASP:** \`ASI03:2026\`
+
+---
+
+### ❌ added dependency evil-pkg＠1.0.0 → … → 🔑 AWS_SECRET_ACCESS_KEY
+
+\`added dependency evil-pkg＠1.0.0\` → \`evil-pkg＠1.0.0\` → \`.github/workflows/ci.yml#test\` → \`AWS_SECRET_ACCESS_KEY\`
+
+- **why:** New or changed dependency evil-pkg＠1.0.0 declares an install script that executes in job .github/workflows/ci.yml#test, which is triggered by untrusted input (fork PRs) and holds credential AWS_SECRET_ACCESS_KEY, which the script can exfiltrate.
+- **fix:** Gate lifecycle scripts in that job (e.g. run 'npm ci --ignore-scripts') or remove AWS_SECRET_ACCESS_KEY from .github/workflows/ci.yml#test.
+- **sink:** credential \`AWS_SECRET_ACCESS_KEY\`
+- **at:** \`.github/workflows/ci.yml:7\` → \`AWS_SECRET_ACCESS_KEY\`
+- **OWASP:** \`ASI04:2026\`, \`MCP04:2025\`
+
+---
+
+_Scanned by Blastgate 0.1.0 at commit \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab\`._"
+`;
+
+exports[`composeReport (KTD7) > snapshots the real incident fixtures > untrusted-text-shell 1`] = `
+"Blastgate: reachable attacker-controlled path to a secret in acme/widgets reaches DEPLOY_KEY at .github/workflows/triage.yml:12
+
+## Blastgate automated security report
+
+This is an automated report from Blastgate, a scanner for attacker-to-secret paths in CI workflows. It is limited to proven paths: Blastgate only reports a fail when it can trace a reachable path from attacker-controllable input to a secret or credential in \`acme/widgets\`.
+
+1 reachable path found. Each lists where the input enters, what it reaches, why, and how to break the path. How the scanner decides what is reportable: https://github.com/jwolberg/blastgate/blob/main/docs/threat-model.md
+
+**How to respond:** if this is accurate, breaking any edge on a path (the fix lines below) closes it. If it is wrong, or you accept the risk, reply here or close this report to decline; no further report will be filed for these findings.
+
+**Disclosure:** we suggest a 90-day coordinated-disclosure window from the date of this report. Blastgate does not publish this finding; any advisory is yours to publish.
+
+---
+
+### ❌ untrusted issues text reaches job triage (github.event.issue.title) → … → 🔑 DEPLOY_KEY
+
+\`untrusted issues text reaches job triage (github.event.issue.title)\` → \`.github/workflows/triage.yml#triage\` → \`DEPLOY_KEY\`
+
+- **why:** untrusted issues text reaches job triage (github.event.issue.title) — attacker-authored text from an untrusted event is read by job .github/workflows/triage.yml#triage, which holds credential DEPLOY_KEY. A prompt/command injection in that text (e.g. an HTML comment invisible on the rendered page but read via the API) can drive the job to exfiltrate it.
+- **fix:** Do not pass untrusted event text (issue/PR/comment body) into a privileged step; restrict the workflow to trusted actors (author_association / github.actor) and remove DEPLOY_KEY from the untrusted-triggered job.
+- **sink:** credential \`DEPLOY_KEY\`
+- **at:** \`.github/workflows/triage.yml:12\` → \`DEPLOY_KEY\`
+- **OWASP:** \`ASI01:2026\`, \`MCP10:2025\`
+
+---
+
+_Scanned by Blastgate 0.1.0 at commit \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab\`._"
+`;

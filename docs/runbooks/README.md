@@ -16,3 +16,8 @@ Anchor steps with `[N]` so a specific step is greppable / referenceable
 (`RB-deploy#3`). `/document` proposes runbooks from manual ops sequences;
 `/document-audit` flags any with `last-verified` older than 90 days. Bump
 `last-verified` whenever you re-run and confirm a runbook still works.
+
+## Index
+
+- [`release.md`](./release.md): cut a release (npm + GitHub Marketplace Action).
+- [`crawler.md`](./crawler.md): set up, operate, and respond to incidents on the public crawler.
