@@ -363,6 +363,53 @@ describe('agent verdict (0059)', () => {
     expect(sawFail).toBe(true);
   });
 
+  // Hardened counterparts of the U6 incident fixtures (R11, KTD8): each warns or passes.
+  const promptPwnd = (cliVersion: string) =>
+    gh([
+      'on:',
+      '  issues:',
+      'permissions:',
+      '  contents: write',
+      'jobs:',
+      '  triage:',
+      '    steps:',
+      '      - uses: google-github-actions/run-gemini-cli@v0.1.21',
+      '        env:',
+      '          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
+      '        with:',
+      '          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}',
+      `          gemini_cli_version: '${cliVersion}'`,
+      `          settings: '{"tools":{"core":["run_shell_command(gh issue edit)"]}}'`,
+      '          prompt: ${{ github.event.issue.body }}',
+    ]);
+
+  it('PromptPwnd hardened: a patched Gemini CLI enforces the gh-only allowlist → warn', () => {
+    expect(fails(runEngine(promptPwnd('0.38.0')).findings).length).toBeGreaterThan(0);
+    const hardened = runEngine(promptPwnd('latest'));
+    expect(hardened.findings.length).toBeGreaterThan(0);
+    expect(fails(hardened.findings)).toHaveLength(0);
+  });
+
+  it('gemini OIDC hardened: an author_association guard → no fail', () => {
+    const result = runEngine(
+      gh([
+        'on:',
+        '  issues:',
+        'permissions:',
+        '  id-token: write',
+        'jobs:',
+        '  triage:',
+        '    if: contains(fromJSON(\'["OWNER","MEMBER"]\'), github.event.issue.author_association)',
+        '    steps:',
+        '      - uses: google-github-actions/run-gemini-cli@v0',
+        '        with:',
+        '          gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}',
+        '          prompt: Triage this issue.',
+      ]),
+    );
+    expect(fails(result.findings)).toHaveLength(0);
+  });
+
   it('an acknowledged agent fail → warn with evidence kept', () => {
     const inputs = claude({});
     const id = onKey(runEngine(inputs))!.id;

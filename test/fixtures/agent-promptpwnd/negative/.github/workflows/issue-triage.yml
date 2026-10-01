@@ -1,0 +1,22 @@
+name: issue-triage
+# Same agent configuration, but it only runs on push: no outsider can trigger it.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0.1.21
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_cli_version: '0.38.0'
+          settings: '{"tools":{"core":["run_shell_command(gh issue edit)","run_shell_command(gh label list)"]}}'
+          prompt: |
+            Label this issue. Title: ${{ github.event.issue.title }}
+            Body: ${{ github.event.issue.body }}

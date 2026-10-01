@@ -789,3 +789,17 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   leg first, then an uncovered version, then a privileged-capability sink (e.g.
   `issues:write`), then a credential the tools cannot read. A sweep test checks that every
   agent fail across 36 claude variants names all three legs held and carries a payload.
+
+## 2026-10-01 — Agent-in-CI U6 (0060): incident fixture pairs
+
+- **Decision — the PromptPwnd fixture is a gemini issue-triage job**, matching Aikido's
+  flagship example. It has the issue body interpolated into `prompt:`, a `gh`-only
+  `run_shell_command` allowlist, and `gemini_cli_version: '0.38.0'`. That CLI ignores the
+  allowlist under `--yolo` (GHSA-wpqr-6v78-jr5g), so it fails on `GEMINI_API_KEY`. The
+  hardened engine test pins `latest` and warns.
+- **Verified the fixtures are meaningful:** the three positives fail against the pre-U5 commit
+  (6cb258b, all agents warn) and pass at U5. The negatives are the same workflows on `push`
+  (KTD8) and produce zero findings.
+- Hardened variants as engine tests: claude gate intact (AE2), tools restricted (AE3), and
+  scrub default (U5); gemini with an `author_association` guard and PromptPwnd with a patched
+  CLI (U6).
