@@ -157,9 +157,10 @@ A check fails **only** on a proven exploit (plan
 1. **A secret or code-write sink.** A named secret, or a `GITHUB_TOKEN` with
    `contents: write` / `id-token: write` / `write-all`. A token that can only write PRs,
    issues, comments, or labels is a privileged capability and warns.
-2. **A fail-eligible entry.** Untrusted text reaching an *execution* sink; a fork PR whose
-   job runs a step after checking out the PR head; a new dependency whose install script
-   runs in such a job; or a GitLab MR pipeline job.
+2. **A fail-eligible entry.** Untrusted text reaching an *execution* sink; an agent step
+   whose three Rule-of-Two legs hold (below); a fork PR whose job runs a step after
+   checking out the PR head (gh-aw's own runtime steps excepted, 0062); a new dependency
+   whose install script runs in such a job; or a GitLab MR pipeline job.
 3. **Complete evidence.** The `file:line` where the input lands and the capability reached.
    A path whose evidence cannot be located warns instead.
 
@@ -168,10 +169,29 @@ Untrusted-text sink classes:
 | Sink class | Example | Secret or code-write in job | Otherwise |
 |---|---|---|---|
 | execution | `${{ github.event.issue.title }}` inside `run:` or a github-script `script:`; an unquoted `$(<artifact-file)` in a command | fail | warn |
-| agent-ingested | a coding-agent action on the event | warn | warn |
+| agent-ingested | a coding-agent or LLM step on the event | fail only per the agent verdict below | warn |
 | action-input | event text in a third-party action's `with:` | warn | warn |
 | unrecognized | event text in any other field | warn | warn |
 | env-passed / compared | `env: { T: ${{ … }} }` read as `"$T"`; `contains(…)` in `if:` | none | none |
+
+**Agent verdict (Agents Rule of Two).** Plan
+`docs/plans/2026-10-01-001-feat-agent-in-ci-model-plan.md`. A recognized agent step
+(`claude-code-action`, `codex-action`, `run-gemini-cli`) is judged against a cited,
+versioned profile of its trigger gate and tool defaults (`src/analyzers/ci/agents.ts`). It
+fails only when all three legs hold from readable configuration, the profile covers its
+version, and the path's sink is a credential the agent's tools can read:
+
+| Leg | Holds when | Examples that break it |
+|---|---|---|
+| Direct trigger (R3) | An outsider can trigger the agent step itself: an attacker-reachable event, the action's write-access gate absent (`run-gemini-cli`) or opened by `'*'` (`allowed_non_write_users` with `github_token`, `allowed_bots`, codex `allow-users`), and no job guard | No bypass, or named users only → indirect injection (warn) |
+| Sensitive access (R4) | An explicitly granted tool can read a credential the job holds: unrestricted `Bash` / `Read` (claude), `codex exec`, gemini's tools unless `settings` restricts them | Scoped `Bash(cmd:*)`; claude's subprocess env scrub (on by default with the bypass) leaves only on-disk credentials (a checkout-persisted `contents: write` token, an auth-action credentials file); codex's proxied OpenAI key |
+| Exfiltration (R5) | A shell or network tool, a token that writes issues/PRs/discussions, or a public repo (`--public` / the Action's event payload), whose Actions logs are readable | Private or unknown visibility with no shell, network, or public-write grant |
+
+Everything else warns, and the reason names each leg as held, missing, or unknown.
+A tool-less LLM step (`actions/ai-inference`, github-script calling GitHub Models) never
+fails (R8). Neither does a ref no profile covers (a branch, an unrecorded SHA, a version
+outside range; R9), nor an agent with no profile. Its effect on the 50-repo sample is in
+`docs/evaluations/2026-10-01-agent-model-rescan.md`.
 
 An execution sink in any step counts against every capability its job holds, because code
 running in one step can read the others' secrets. Local text output also prints an

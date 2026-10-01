@@ -110,12 +110,16 @@ Precision is the primary design constraint. A check fails only on a proven explo
 attacker-controlled input reaches an execution sink (a shell or inline script, or a spliced
 artifact) in a privileged job that holds a secret, a code-write token, or an OIDC
 `id-token: write` grant. Every fail cites the `file:line` where the input lands and the
-capability it reaches. Paths Blastgate can reach but not prove — a coding agent reading
-issue text, text handed to a third-party action, a token that can only write PRs or
-issues — are warnings. The full contract is in
+capability it reaches. An AI agent in CI (claude-code-action, codex-action, run-gemini-cli)
+fails only when all three legs of the Agents Rule of Two hold: an outsider can trigger it,
+its tools can read a credential the job holds, and it has a way to get data out. Paths
+Blastgate can reach but not prove are warnings. That covers an agent missing a leg, a
+tool-less LLM step reading issue text, text handed to a third-party action, and a token
+that can only write PRs or issues. The full contract is in
 [`docs/threat-model.md` §3.4](docs/threat-model.md#34-the-gate-precision-over-recall--r14);
 its effect on 50 popular repos is in
-[`docs/evaluations/2026-09-29-precision-core-rescan.md`](docs/evaluations/2026-09-29-precision-core-rescan.md).
+[`docs/evaluations/2026-09-29-precision-core-rescan.md`](docs/evaluations/2026-09-29-precision-core-rescan.md)
+and [`docs/evaluations/2026-10-01-agent-model-rescan.md`](docs/evaluations/2026-10-01-agent-model-rescan.md).
 The presence of a pattern alone does not produce a finding. A `postinstall` script
 in a job that holds no secrets and is not triggerable by untrusted input is not
 reported. This keeps findings actionable and avoids the false-positive rate of
@@ -170,6 +174,7 @@ passes in CI for the same reason — the surfaces cannot disagree.
 npx blastgate .                 # scan the current repo; exits non-zero on a fail verdict
 npx blastgate . --base main     # add diff signals (new deps, .npmrc changes) vs a ref
 npx blastgate . --provenance    # opt-in npm provenance-regression check (needs --base)
+npx blastgate . --public        # the repo is public: Actions logs count as an agent exfil channel
 npx blastgate . --json          # emit the findings array as JSON (has each finding `id`)
 npx blastgate . --format md      # human-readable markdown report (share it, or > report.md)
 npx blastgate . --advisories     # opt-in CVE/advisory enrichment of reachable deps (never gates)

@@ -834,3 +834,15 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - **Result:** both home-assistant fails become warns. Follow-up candidates: the fork-PR warn
   reason still says "exfiltratable from an untrusted run" when there is no execution
   evidence (pre-existing wording), and gh-aw's Copilot engine is not yet a profiled agent.
+
+## 2026-10-01 — Agent-in-CI U7 (0061): re-scan and documentation
+
+- Final re-scan (`SCAN_FLAGS=--public`, all 50 clones verified populated): **0 fails, 20 warns**.
+  The 2 agent findings are both home-assistant tool-less LLM warns. The 2 first-pass fails
+  were gh-aw false fails, fixed in 0062. Results:
+  `docs/evaluations/2026-10-01-agent-model-rescan.md`.
+- Threat model §3.4 gains the agent verdict table (three legs with what breaks each), and
+  the README states the Rule-of-Two fail rule and the `--public` flag.
+- Known gaps recorded there: `workflow_run` relays into an agent (pytorch ×3) are the
+  deferred multi-hop scope. Agent-fail precision is untestable on this sample (no proven
+  agent exploit in it); the U6 fixtures are the positive evidence.
