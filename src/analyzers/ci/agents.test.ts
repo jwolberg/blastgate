@@ -438,3 +438,63 @@ jobs:
     expect(a.reasons.direct && a.reasons.access && a.reasons.exfil).toBeTruthy();
   });
 });
+
+/** PR #38 review (plan KTD2, U3 step 5): bypass preconditions, scrub scope, and tool legs. */
+describe('assessAgentStep — claude bypass and scrub details (0057)', () => {
+  function assess(yaml: string, visibility: RepoVisibility = 'unknown') {
+    const wf = parseWorkflow(yaml);
+    const job = Object.values(wf.jobs ?? {})[0]!;
+    const idx = (job.steps ?? []).findIndex((s) => /claude-code-action/.test(String(s.uses)));
+    return assessAgentStep({ workflow: wf, job, stepIndex: idx, visibility });
+  }
+  const claude = (opts: { top?: string; jobEnv?: string; withLines: string[]; pre?: string }) => `
+on: issue_comment
+${opts.top ?? ''}
+jobs:
+  claude:
+${opts.jobEnv ?? ''}
+    steps:
+${opts.pre ?? ''}
+      - uses: anthropics/claude-code-action@v1
+        with:
+${opts.withLines.map((l) => `          ${l}`).join('\n')}
+`;
+  const KEY = 'anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}';
+  const TOKEN = 'github_token: ${{ secrets.GITHUB_TOKEN }}';
+
+  it("allowed_bots: '*' alone does not scrub, so environment secrets count", () => {
+    const a = assess(
+      claude({ withLines: [KEY, "allowed_bots: '*'", "claude_args: '--allowedTools Bash'"] }),
+    );
+    expect(a.direct).toBe('held');
+    expect(a.access).toBe('held');
+    expect(a.readable.secrets).toContain('ANTHROPIC_API_KEY');
+  });
+
+  it.each([
+    ['job', { jobEnv: '    env:\n      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0' }],
+    ['workflow', { top: 'env:\n  CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0' }],
+  ])('the scrub opt-out at %s env: is honored', (_scope, where) => {
+    const lines = [
+      KEY,
+      TOKEN,
+      "allowed_non_write_users: '*'",
+      "claude_args: '--allowedTools Bash'",
+    ];
+    expect(assess(claude({ withLines: lines })).access).toBe('missing');
+    expect(assess(claude({ withLines: lines, ...where })).access).toBe('held');
+  });
+
+  it('Read only, a checkout-persisted contents:write token, public repo → access via file read, exfil via logs', () => {
+    const yaml = claude({
+      top: 'permissions:\n  contents: write',
+      pre: '      - uses: actions/checkout@v4',
+      withLines: [KEY, TOKEN, "allowed_non_write_users: '*'", "claude_args: '--allowedTools Read'"],
+    });
+    const a = assess(yaml, 'public');
+    expect([a.direct, a.access, a.exfil]).toEqual(['held', 'held', 'held']);
+    expect(a.readable.token).toBe(true);
+    expect(a.readable.secrets).toEqual([]);
+    expect(assess(yaml, 'unknown').exfil).toBe('missing');
+  });
+});
