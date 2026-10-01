@@ -21,6 +21,7 @@ export interface JobSpec {
 export interface WorkflowSpec {
   on?: unknown;
   permissions?: unknown;
+  env?: Record<string, unknown>;
   jobs?: Record<string, JobSpec>;
 }
 

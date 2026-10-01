@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_PROFILES, agentProfileFor, geminiYoloIgnoresAllowlist } from './agents';
+import type { RepoVisibility } from '../../engine/build';
+import {
+  AGENT_PROFILES,
+  agentProfileFor,
+  assessAgentStep,
+  geminiYoloIgnoresAllowlist,
+} from './agents';
+import { parseWorkflow } from './parse';
 
 /**
  * Agent-in-CI U1 (0055): each recognized agent action resolves to a cited,
@@ -129,5 +136,305 @@ describe('geminiYoloIgnoresAllowlist — gemini_cli_version → bypass', () => {
     expect(geminiYoloIgnoresAllowlist('${{ vars.GEMINI_VERSION }}')).toBe('unknown');
     expect(geminiYoloIgnoresAllowlist('my-branch')).toBe('unknown');
     expect(geminiYoloIgnoresAllowlist(42)).toBe('unknown');
+  });
+});
+
+/**
+ * Agent-in-CI U3 (0057; R3–R5, R9, R10): each agent step is judged against the Agents
+ * Rule of Two. Direct = an outsider can trigger the agent itself; access = the agent
+ * has a tool that can read a credential the job holds; exfil = it has a way out. Each
+ * leg is held, missing, or unknown — only all three held may later fail (U5).
+ */
+describe('assessAgentStep — Rule of Two legs (0057)', () => {
+  function assess(yaml: string, visibility: RepoVisibility = 'unknown') {
+    const wf = parseWorkflow(yaml);
+    const [jobId, job] = Object.entries(wf.jobs ?? {})[0]!;
+    const idx = (job.steps ?? []).findIndex(
+      (s) => typeof s.uses === 'string' && agentProfileFor(s.uses) !== undefined,
+    );
+    expect(idx, jobId).toBeGreaterThanOrEqual(0);
+    return assessAgentStep({ workflow: wf, job, stepIndex: idx, visibility });
+  }
+
+  // AE1 (Comment and Control shape): bypass to all users, unrestricted Bash, scrub off.
+  const AE1 = `
+on: issue_comment
+permissions: { issues: write }
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0
+        with:
+          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Bash'
+`;
+
+  it('AE1: claude bypass *, Bash, scrub disabled, API key → all three legs hold', () => {
+    const a = assess(AE1);
+    expect([a.direct, a.access, a.exfil]).toEqual(['held', 'held', 'held']);
+    expect(a.covered).toBe(true);
+  });
+
+  it('claude bypass with the scrub default and a checkout-persisted contents:write token → access via .git/config', () => {
+    const a = assess(`
+on: issue_comment
+permissions: { contents: write }
+jobs:
+  claude:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Bash'
+`);
+    expect(a.access).toBe('held');
+    expect(a.reasons.access).toMatch(/\.git\/config/);
+  });
+
+  it('claude bypass with the scrub default, no persisted token, no credential files → access missing', () => {
+    const a = assess(`
+on: issue_comment
+permissions: { contents: write }
+jobs:
+  claude:
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Bash'
+`);
+    expect(a.access).toBe('missing');
+    expect(a.reasons.access).toMatch(/scrub/i);
+  });
+
+  it('a google-github-actions/auth credentials file counts as on-disk access under the scrub', () => {
+    const a = assess(`
+on: issue_comment
+permissions: { id-token: write }
+jobs:
+  claude:
+    steps:
+      - uses: google-github-actions/auth@v2
+        with: { workload_identity_provider: projects/1/locations/global/workloadIdentityPools/p/providers/g }
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Bash'
+`);
+    expect(a.access).toBe('held');
+  });
+
+  it('AE2: claude without the bypass → direct missing (indirect injection)', () => {
+    const a = assess(AE1.replace("allowed_non_write_users: '*'", ''));
+    expect(a.direct).toBe('missing');
+    expect(a.reasons.direct).toMatch(/write access/);
+  });
+
+  it('allowed_non_write_users without github_token does not open the gate (App auth)', () => {
+    const a = assess(AE1.replace('github_token: ${{ secrets.GITHUB_TOKEN }}', ''));
+    expect(a.direct).toBe('missing');
+  });
+
+  it('AE3: tools restricted to Bash(gh issue view:*) → access missing', () => {
+    const a = assess(
+      AE1.replace("'--allowedTools Bash'", `'--allowedTools "Bash(gh issue view:*)"'`),
+    );
+    expect(a.access).toBe('missing');
+    expect(a.direct).toBe('held');
+  });
+
+  it("allowed_bots: '*' on an issue_comment job → direct holds", () => {
+    const a = assess(AE1.replace("allowed_non_write_users: '*'", "allowed_bots: '*'"));
+    expect(a.direct).toBe('held');
+  });
+
+  it('a recognized job actor guard → direct missing', () => {
+    const a = assess(
+      AE1.replace(
+        '    runs-on: ubuntu-latest',
+        "    runs-on: ubuntu-latest\n    if: github.event.comment.author_association == 'OWNER'",
+      ),
+    );
+    expect(a.direct).toBe('missing');
+  });
+
+  it('a push-only trigger → direct missing', () => {
+    expect(assess(AE1.replace('on: issue_comment', 'on: push')).direct).toBe('missing');
+  });
+
+  it('codex with allow-users: someone → direct missing (KTD3)', () => {
+    const a = assess(`
+on: issue_comment
+jobs:
+  codex:
+    steps:
+      - uses: openai/codex-action@v1
+        with:
+          openai-api-key: \${{ secrets.OPENAI_API_KEY }}
+          allow-users: someone
+`);
+    expect(a.direct).toBe('missing');
+  });
+
+  it("codex with allow-users: '*' → direct holds (KTD3 revised)", () => {
+    const a = assess(`
+on: issue_comment
+jobs:
+  codex:
+    steps:
+      - uses: openai/codex-action@v1
+        with:
+          openai-api-key: \${{ secrets.OPENAI_API_KEY }}
+          allow-users: '*'
+`);
+    expect(a.direct).toBe('held');
+  });
+
+  it('codex: its own OpenAI key is proxied and sudo dropped, so it is not readable by default', () => {
+    const yaml = `
+on: issue_comment
+jobs:
+  codex:
+    steps:
+      - uses: openai/codex-action@v1
+        with:
+          openai-api-key: \${{ secrets.OPENAI_API_KEY }}
+          allow-users: '*'
+`;
+    expect(assess(yaml).access).toBe('missing');
+    const unsafe = yaml.replace(
+      "allow-users: '*'",
+      "allow-users: '*'\n          safety-strategy: unsafe",
+    );
+    expect(assess(unsafe).access).toBe('held');
+    const jobSecret = yaml.replace(
+      '      - uses: openai/codex-action@v1',
+      '      - uses: openai/codex-action@v1\n        env:\n          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}',
+    );
+    expect(assess(jobSecret).access).toBe('held');
+  });
+
+  const GEMINI = `
+on:
+  issues:
+    types: [opened]
+permissions: { id-token: write, issues: write }
+jobs:
+  triage:
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+        with:
+          gcp_workload_identity_provider: \${{ vars.GCP_WIF_PROVIDER }}
+          prompt: Triage this issue.
+`;
+
+  it('gemini on issues with OIDC and no guard → direct and access hold (KTD4)', () => {
+    const a = assess(GEMINI);
+    expect(a.direct).toBe('held');
+    expect(a.access).toBe('held');
+  });
+
+  it('gemini with an author_association guard → direct missing', () => {
+    const a = assess(
+      GEMINI.replace(
+        '  triage:\n',
+        '  triage:\n    if: contains(fromJSON(\'["OWNER","MEMBER"]\'), github.event.issue.author_association)\n',
+      ),
+    );
+    expect(a.direct).toBe('missing');
+  });
+
+  it('gemini settings restricting shell to one command → no shell; a CLI pin below 0.39.1 restores it', () => {
+    const restricted = GEMINI.replace(
+      '          prompt: Triage this issue.',
+      `          prompt: Triage this issue.
+          settings: '{"tools":{"core":["run_shell_command(gh issue edit)"]}}'`,
+    );
+    expect(assess(restricted).access).toBe('missing');
+    const pinned = restricted.replace(
+      '          prompt: Triage',
+      "          gemini_cli_version: '0.38.0'\n          prompt: Triage",
+    );
+    expect(assess(pinned).access).toBe('held');
+  });
+
+  it('claude_args built from a non-literal expression → unknown recorded', () => {
+    const a = assess(AE1.replace("'--allowedTools Bash'", '${{ vars.CLAUDE_ARGS }}'));
+    expect(a.access).toBe('unknown');
+    expect(a.unknown.join(' ')).toMatch(/claude_args/);
+  });
+
+  const READ_ONLY_SECRET = `
+on: issue_comment
+jobs:
+  claude:
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0
+        with:
+          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Read'
+`;
+
+  it('public visibility, a readable secret, but no shell or network tool → exfil holds via logs', () => {
+    const a = assess(READ_ONLY_SECRET, 'public');
+    expect(a.exfil).toBe('held');
+    expect(a.reasons.exfil).toMatch(/log/i);
+  });
+
+  it('unknown visibility and no shell, network, or public write → exfil missing', () => {
+    const a = assess(READ_ONLY_SECRET, 'unknown');
+    expect(a.exfil).toBe('missing');
+  });
+
+  it('a token that can write issues is a public-surface exfil channel', () => {
+    const a = assess(
+      READ_ONLY_SECRET.replace(
+        'on: issue_comment',
+        'on: issue_comment\npermissions: { issues: write }',
+      ),
+    );
+    expect(a.exfil).toBe('held');
+  });
+
+  it('a tool-less LLM step never holds access (R8)', () => {
+    const a = assess(`
+on: issues
+permissions: { issues: write, models: read }
+jobs:
+  label:
+    steps:
+      - uses: actions/ai-inference@v2
+        with:
+          prompt: \${{ github.event.issue.body }}
+`);
+    expect(a.access).toBe('missing');
+  });
+
+  it('an uncovered version is recorded as unknown, naming it (R9)', () => {
+    const a = assess(AE1.replace('claude-code-action@v1', 'claude-code-action@v0.0.17'));
+    expect(a.covered).toBe(false);
+    expect(a.unknown.join(' ')).toMatch(/v0\.0\.17/);
+  });
+
+  it('every leg carries a reason (R10)', () => {
+    const a = assess(AE1);
+    expect(a.reasons.direct && a.reasons.access && a.reasons.exfil).toBeTruthy();
   });
 });

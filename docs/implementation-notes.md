@@ -741,3 +741,31 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   `true` → private, `false` → public, missing/unreadable/non-boolean → unknown. Internal
   repos report `private: true`, so their logs are not counted as public. The MCP surface
   passes no visibility (unknown).
+
+## 2026-10-01 — Agent-in-CI U3 (0057): Rule-of-Two assessment
+
+- **Decision — only explicitly granted tools count.** For claude-code-action, tools come
+  from `claude_args --allowedTools` / `settings.permissions.allow` only; the action's own
+  default tool set is treated as no shell and no file read. An unrestricted `Bash` (or
+  `Bash(*)`, or a permission-bypass flag) grants shell + file read + network; a scoped
+  `Bash(cmd:*)` grants nothing; `Read` grants file read; `WebFetch` grants network.
+  Tradeoff: a default-tools agent can never fail, so we may miss some real fails. In
+  exchange, no fail rests on a default we did not read.
+- **Decision — codex always has a shell** (`codex exec` runs commands in its sandbox) and
+  has network only under `sandbox: danger-full-access`. Per the plan's R5, a shell tool alone
+  satisfies the exfil leg.
+- **Deviation — codex's own OpenAI key is not counted as readable.** The action serves
+  `openai-api-key` through a proxy and drops sudo by default, and its security doc says this
+  keeps the key secret. Counting it would have made every `allow-users: '*'` codex job a
+  false fail. Only `safety-strategy: unsafe` exposes it. Other job secrets still count.
+  (Found in self-review before commit; test added.)
+- **Decision — gemini tools follow `settings` `tools.core` (or legacy `coreTools`).** No
+  list means `--yolo` with every tool. A scoped `run_shell_command(cmd)` is not a shell unless
+  the pinned Gemini CLI ignores allowlists (U1's `geminiYoloIgnoresAllowlist`).
+- **Decision — on-disk credentials** are the `actions/checkout`-persisted token (only when it
+  is `contents: write`), a `google-github-actions/auth` credentials file, and gemini's own
+  `gcp_workload_identity_provider` credentials file. These stay readable under claude's
+  env scrub (KTD2).
+- **Decision — the public-surface exfil leg reads `issues` / `pull-requests` / `discussions:
+  write` (or `write-all`)** from the token permissions. Inherited/unknown permissions do not
+  count.
