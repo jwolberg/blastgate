@@ -338,7 +338,7 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
     };
   }
 
-  if (job && isSecret) {
+  if (job && (isSecret || path.entry.entryKind === 'fork-pr')) {
     if (isGuardedForkPr(path)) {
       return {
         reason:
@@ -351,11 +351,21 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
           `actor guard limits who can trigger the job but not its blast radius when it runs.`,
       };
     }
+    // 0068: say which proof is missing instead of claiming exfiltration for every path.
+    const where = `${job.workflow}#${job.job}`;
+    const on = `untrusted input (${job.triggers.join(', ')})`;
+    const at = job.execEvidence ? ` at ${job.execEvidence.file}:${job.execEvidence.line}` : '';
+    const reason = !job.execEvidence
+      ? `Job ${where} is triggered by ${on}, checks out the PR head, and holds ${sink.sinkKind} ` +
+        `${sink.identity}, but no later step was found to run the checked-out code, so the PR ` +
+        `is not shown to reach it — this warns.`
+      : tierForSink(sink.sinkKind) !== 'fail'
+        ? `Job ${where} is triggered by ${on} and runs PR code${at} while holding ` +
+          `${sink.identity}, a privileged capability rather than a secret or credential — this warns.`
+        : `Job ${where} is triggered by ${on} and runs PR code${at} while holding ` +
+          `${sink.sinkKind} ${sink.identity}, which that code can read and exfiltrate.`;
     return {
-      reason:
-        `Job ${job.workflow}#${job.job} is triggered by untrusted input ` +
-        `(${job.triggers.join(', ')}) and holds ${sink.sinkKind} ${sink.identity}, which is ` +
-        `exfiltratable from an untrusted run.`,
+      reason,
       remediation:
         `Remove ${sink.identity} from the untrusted-triggerable job ${job.workflow}#${job.job}, ` +
         `or restrict its triggers to trusted events.`,

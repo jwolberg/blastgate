@@ -563,3 +563,50 @@ describe('agent steps reached through a workflow_run relay (0067)', () => {
     expect(keyFinding([a, b])).toBeUndefined();
   });
 });
+
+/** 0068: a fork-PR warn says which proof is missing instead of claiming exfiltration. */
+describe('fork-PR warn reasons name the missing proof (0068)', () => {
+  const fork = (afterCheckout: string[], perms: string[] = []) =>
+    gh([
+      'on:',
+      '  pull_request_target:',
+      ...perms,
+      'jobs:',
+      '  test:',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '        with:',
+      '          ref: ${{ github.event.pull_request.head.sha }}',
+      ...afterCheckout,
+    ]);
+
+  it('checkout but no step that runs it → warn saying no execution was found', () => {
+    const f = runEngine(
+      fork([
+        '      - uses: some/lint-action@v1',
+        '        env:',
+        '          K: ${{ secrets.DEPLOY_KEY }}',
+      ]),
+    ).findings.find((x) => x.sink.identity === 'DEPLOY_KEY');
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).not.toMatch(/exfiltratable/);
+    expect(f?.reason).toMatch(/no later step/i);
+  });
+
+  it('PR code runs but the token only writes PRs → warn naming the privileged capability', () => {
+    const f = runEngine(
+      fork(['      - run: npm test'], ['permissions:', '  pull-requests: write']),
+    ).findings.find((x) => x.sink.identity.startsWith('GITHUB_TOKEN'));
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).not.toMatch(/exfiltratable/);
+    expect(f?.reason).toMatch(/privileged capability/i);
+  });
+
+  it('PR code runs with a secret → fail, reason says the PR code can read it', () => {
+    const f = runEngine(
+      fork(['      - run: npm test', '        env:', '          K: ${{ secrets.DEPLOY_KEY }}']),
+    ).findings.find((x) => x.sink.identity === 'DEPLOY_KEY');
+    expect(f?.tier).toBe('fail');
+    expect(f?.reason).toMatch(/runs PR code/i);
+  });
+});
