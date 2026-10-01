@@ -38,6 +38,10 @@ export interface GateDecision {
  */
 export function gate(input: GateInput, config: CrawlConfig, ledger: Ledger): GateDecision {
   const dryRun = !config.submitMode;
+  // Tripwire (KTD6.2) wins over the allowlist: a maintainer-rejected archetype stays held.
+  if (ledger.trippedArchetypes?.includes(input.archetype)) {
+    return { decision: 'held', dryRun, reason: 'archetype tripped by a false-positive report' };
+  }
   if (!config.allowlist.includes(input.archetype)) {
     return { decision: 'held', dryRun, reason: 'archetype not allowlisted' };
   }

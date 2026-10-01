@@ -60,6 +60,8 @@ export interface Ledger {
   schemaVersion: typeof LEDGER_SCHEMA_VERSION;
   repos: Record<string, RepoScan>;
   disclosures: Disclosure[];
+  /** Archetypes sent back to held by a false-positive report (KTD6.2 tripwire); sorted, unique. Absent = none. */
+  trippedArchetypes?: string[];
 }
 
 export const UNCERTAIN_REASON = 'submission state uncertain';
@@ -152,12 +154,22 @@ export function parseLedger(text: string): Ledger {
   if (!Array.isArray(raw.disclosures)) fail('disclosures must be an array');
   const repos: Record<string, RepoScan> = {};
   for (const [name, scan] of Object.entries(raw.repos)) repos[name] = parseScan(scan, name);
+  const tripped = raw.trippedArchetypes;
+  if (
+    tripped !== undefined &&
+    (!Array.isArray(tripped) || !tripped.every((x) => typeof x === 'string' && x !== ''))
+  ) {
+    fail('trippedArchetypes must be an array of non-empty strings');
+  }
   return {
     schemaVersion: LEDGER_SCHEMA_VERSION,
     repos,
     disclosures: raw.disclosures.map(parseDisclosure),
+    ...(tripped && tripped.length > 0 ? { trippedArchetypes: normalizeTripped(tripped) } : {}),
   };
 }
+
+const normalizeTripped = (a: readonly string[]): string[] => [...new Set(a)].sort();
 
 /** Fixed key order, optional keys only when set, finding ids sorted. */
 function normalizeDisclosure(d: Disclosure): Disclosure {
@@ -197,7 +209,19 @@ export function serializeLedger(ledger: Ledger): string {
         idsKey(a.findingIds).localeCompare(idsKey(b.findingIds)) ||
         a.createdAt.localeCompare(b.createdAt),
     );
-  return `${JSON.stringify({ schemaVersion: LEDGER_SCHEMA_VERSION, repos, disclosures }, null, 2)}\n`;
+  const tripped = ledger.trippedArchetypes?.length
+    ? { trippedArchetypes: normalizeTripped(ledger.trippedArchetypes) }
+    : {};
+  return `${JSON.stringify({ schemaVersion: LEDGER_SCHEMA_VERSION, repos, disclosures, ...tripped }, null, 2)}\n`;
+}
+
+/** Send an archetype back to held (KTD6.2 tripwire). Idempotent; `_now` is accepted for call-site symmetry. */
+export function tripArchetype(ledger: Ledger, archetype: string, _now: string): Ledger {
+  void _now;
+  return {
+    ...ledger,
+    trippedArchetypes: normalizeTripped([...(ledger.trippedArchetypes ?? []), archetype]),
+  };
 }
 
 // ---------------------------------------------------------------- scans

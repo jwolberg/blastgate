@@ -29,6 +29,15 @@ const cfg = (over: Partial<CrawlConfig> = {}): CrawlConfig => ({
 const input = { repo: 'acme/widgets', archetype: 'untrusted-text-injection', findingIds: ['f1'] };
 
 describe('gate (KTD6 steps 1, 3, 5)', () => {
+  it('holds an allowlisted archetype tripped by a false-positive report', () => {
+    const tripped = { ...emptyLedger(), trippedArchetypes: [input.archetype] };
+    const r = gate(input, cfg({ allowlist: [input.archetype], submitMode: true }), tripped);
+    expect(r).toMatchObject({
+      decision: 'held',
+      reason: 'archetype tripped by a false-positive report',
+    });
+  });
+
   it('holds every fail when the allowlist is empty', () => {
     const r = gate(input, cfg(), emptyLedger());
     expect(r).toMatchObject({ decision: 'held', reason: 'archetype not allowlisted' });

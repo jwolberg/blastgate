@@ -1051,3 +1051,16 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   undiscoverable repos staying listed). Credited advisories always render.
 - Tests assert fail/warn/unknown repo names and any scanned counts appear nowhere, and
   "privately" appears only in the method copy.
+
+## 2026-10-01 — 0076: advisory tracker and tripwire (public-crawler U6)
+
+- The repository-advisory API has no close reason, so a false positive cannot be told apart from
+  a policy close. Tradeoff accepted: any `closed`/`withdrawn` advisory on a submitted report
+  becomes `declined` **and trips its archetype** (the gate then holds it even if allowlisted).
+  Cost: a maintainer closing a real finding for policy reasons slows that archetype's rollout.
+  Re-admitting a tripped archetype is a manual ledger edit (no un-trip command yet).
+- Credit match: case-insensitive login in `credits` or `credits_detailed` (a `declined` credit
+  does not count). `draft`/`triage` advisories become `fixed` only when the current rescan shows
+  none of the reported ids still failing; a repo not rescanned this run is left alone.
+- 404/other errors and malformed report URLs leave state unchanged and are flagged in the run
+  summary.

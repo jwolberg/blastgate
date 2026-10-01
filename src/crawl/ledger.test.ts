@@ -13,6 +13,7 @@ import {
   recoverSubmitting,
   serializeLedger,
   transition,
+  tripArchetype,
 } from './ledger';
 
 const sha = (c: string): string => c.repeat(40);
@@ -417,5 +418,29 @@ describe('lsRemoteHeads', () => {
     const heads = await lsRemoteHeads(['--upload-pack=x/y', '../x'], { exec, concurrency: 1 });
     expect(called).toBe(0);
     expect(heads.get('--upload-pack=x/y')).toBeNull();
+  });
+});
+
+describe('tripped archetypes (KTD6.2 tripwire)', () => {
+  it('tripArchetype adds a sorted, unique entry and does not mutate', () => {
+    const l0 = emptyLedger();
+    const l1 = tripArchetype(tripArchetype(l0, 'zeta', T0), 'alpha', T0);
+    const l2 = tripArchetype(l1, 'alpha', T1);
+    expect(l1.trippedArchetypes).toEqual(['alpha', 'zeta']);
+    expect(l2.trippedArchetypes).toEqual(['alpha', 'zeta']);
+    expect(l0.trippedArchetypes).toBeUndefined();
+  });
+
+  it('round-trips, and a ledger without the key parses as untripped (backward compatible)', () => {
+    const l = tripArchetype(emptyLedger(), 'b', T0);
+    expect(parseLedger(serializeLedger(l)).trippedArchetypes).toEqual(['b']);
+    expect(serializeLedger(emptyLedger())).not.toContain('trippedArchetypes');
+    const old = '{"schemaVersion":1,"repos":{},"disclosures":[]}';
+    expect(parseLedger(old).trippedArchetypes ?? []).toEqual([]);
+  });
+
+  it('rejects a malformed trippedArchetypes', () => {
+    const bad = '{"schemaVersion":1,"repos":{},"disclosures":[],"trippedArchetypes":"x"}';
+    expect(() => parseLedger(bad)).toThrow(/trippedArchetypes/);
   });
 });
