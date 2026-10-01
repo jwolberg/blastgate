@@ -219,7 +219,7 @@ jobs:
     expect(a.reasons.access).toMatch(/scrub/i);
   });
 
-  it('a google-github-actions/auth credentials file counts as on-disk access under the scrub', () => {
+  it('under the scrub, a WIF credentials file is unusable (its exchange needs the scrubbed OIDC token) → access missing', () => {
     const a = assess(`
 on: issue_comment
 permissions: { id-token: write }
@@ -234,7 +234,28 @@ jobs:
           allowed_non_write_users: '*'
           claude_args: '--allowedTools Bash'
 `);
+    expect(a.access).toBe('missing');
+    expect(a.readable.token).toBe(false);
+  });
+
+  it('under the scrub, a key file google-github-actions/auth wrote from a secret proves that secret', () => {
+    const a = assess(`
+on: issue_comment
+jobs:
+  claude:
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: \${{ secrets.GCP_SA_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Bash'
+`);
     expect(a.access).toBe('held');
+    expect(a.readable.secrets).toEqual(['GCP_SA_KEY']);
+    expect(a.readable.token).toBe(false);
   });
 
   it('AE2: claude without the bypass → direct missing (indirect injection)', () => {
@@ -357,7 +378,7 @@ jobs:
     expect(a.direct).toBe('missing');
   });
 
-  it('gemini settings restricting shell to one command → no shell; a CLI pin below 0.39.1 restores it', () => {
+  it('gemini settings restricting shell to one command → no shell; a CLI pin below 0.39.1 makes it unknown', () => {
     const restricted = GEMINI.replace(
       '          prompt: Triage this issue.',
       `          prompt: Triage this issue.
@@ -368,7 +389,8 @@ jobs:
       '          prompt: Triage',
       "          gemini_cli_version: '0.38.0'\n          prompt: Triage",
     );
-    expect(assess(pinned).access).toBe('held');
+    // An old CLI ignores the allowlist and auto-trusts the repo's .gemini/settings.json.
+    expect(assess(pinned).access).toBe('unknown');
   });
 
   it('claude_args built from a non-literal expression → unknown recorded', () => {
@@ -496,5 +518,149 @@ ${opts.withLines.map((l) => `          ${l}`).join('\n')}
     expect(a.readable.token).toBe(true);
     expect(a.readable.secrets).toEqual([]);
     expect(assess(yaml, 'unknown').exfil).toBe('missing');
+  });
+});
+
+/** PR #39 review fixes: secret scope, step/needs guards, gemini settings, unknown workspace config. */
+describe('assessAgentStep — PR #39 review fixes', () => {
+  function assess(yaml: string, jobId?: string) {
+    const wf = parseWorkflow(yaml);
+    const job = jobId ? wf.jobs![jobId]! : Object.values(wf.jobs ?? {})[0]!;
+    const idx = (job.steps ?? []).findIndex(
+      (s) => typeof s.uses === 'string' && agentProfileFor(s.uses) !== undefined,
+    );
+    return assessAgentStep({ workflow: wf, job, stepIndex: idx, visibility: 'unknown' });
+  }
+
+  it("a secret only in another step's env is not readable by the agent", () => {
+    const a = assess(`
+on: issue_comment
+jobs:
+  claude:
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0
+        with:
+          anthropic_api_key: \${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Bash'
+      - run: ./deploy.sh
+        env:
+          DEPLOY: \${{ secrets.DEPLOY_KEY }}
+`);
+    expect(a.readable.secrets).toEqual(['ANTHROPIC_API_KEY']);
+  });
+
+  it("workflow- and job-level env secrets are in the agent step's scope", () => {
+    const a = assess(`
+on: issue_comment
+env:
+  WF_SECRET: \${{ secrets.WF_SECRET }}
+jobs:
+  codex:
+    env:
+      JOB_SECRET: \${{ secrets.JOB_SECRET }}
+    steps:
+      - run: echo hi
+        env:
+          OTHER: \${{ secrets.OTHER }}
+      - uses: openai/codex-action@v1
+        with:
+          openai-api-key: \${{ secrets.OPENAI_API_KEY }}
+          allow-users: '*'
+`);
+    expect(a.readable.secrets.sort()).toEqual(['JOB_SECRET', 'WF_SECRET']);
+  });
+
+  it('codex with only another step holding a secret → access missing', () => {
+    const a = assess(`
+on: issue_comment
+jobs:
+  codex:
+    steps:
+      - run: echo hi
+        env:
+          X: \${{ secrets.OTHER }}
+      - uses: openai/codex-action@v1
+        with:
+          openai-api-key: \${{ secrets.OPENAI_API_KEY }}
+          allow-users: '*'
+`);
+    expect(a.access).toBe('missing');
+  });
+
+  const GUARDABLE = (jobIf: string, stepIf: string, needs: string) => `
+on: issue_comment
+jobs:
+  gate:
+    if: github.event.comment.author_association == 'MEMBER'
+    steps:
+      - run: echo ok
+  claude:
+${needs}${jobIf}    steps:
+      - uses: anthropics/claude-code-action@v1
+${stepIf}        with:
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          claude_args: '--allowedTools Bash'
+`;
+
+  it('a step-level author_association guard on the agent step → direct missing', () => {
+    expect(assess(GUARDABLE('', '', ''), 'claude').direct).toBe('held');
+    const a = assess(
+      GUARDABLE('', "        if: github.event.comment.author_association == 'OWNER'\n", ''),
+      'claude',
+    );
+    expect(a.direct).toBe('missing');
+  });
+
+  it('a needs: gate job carrying an actor guard → direct missing', () => {
+    expect(assess(GUARDABLE('', '', '    needs: [gate]\n'), 'claude').direct).toBe('missing');
+  });
+
+  const GEMINI = (extra: string, env = '') => `
+on: issues
+jobs:
+  triage:
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0
+${env}        with:
+          gemini_api_key: \${{ secrets.GEMINI_API_KEY }}
+${extra}          prompt: Triage this issue.
+`;
+
+  it('gemini settings tools.exclude removing the shell → access missing', () => {
+    expect(assess(GEMINI('')).access).toBe('held');
+    const a = assess(
+      GEMINI(`          settings: '{"tools":{"exclude":["run_shell_command","web_fetch"]}}'\n`),
+    );
+    expect(a.access).toBe('missing');
+  });
+
+  it('GEMINI_TRUST_WORKSPACE loads the repo .gemini/settings.json, which Blastgate does not read → unknown', () => {
+    const a = assess(GEMINI('', "        env:\n          GEMINI_TRUST_WORKSPACE: 'true'\n"));
+    expect(a.access).toBe('unknown');
+    expect(a.unknown.join(' ')).toMatch(/\.gemini\/settings\.json/);
+  });
+
+  it('a Gemini CLI pinned below 0.39.1 auto-trusts the workspace → tool grants unknown', () => {
+    const a = assess(GEMINI("          gemini_cli_version: '0.38.0'\n"));
+    expect(a.access).toBe('unknown');
+  });
+
+  it("allowed_bots: '*' reason says any GitHub App can trigger it (claude security doc)", () => {
+    const a = assess(`
+on: issue_comment
+jobs:
+  claude:
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          allowed_bots: '*'
+`);
+    expect(a.direct).toBe('held');
+    expect(a.reasons.direct).toMatch(/GitHub App/);
   });
 });

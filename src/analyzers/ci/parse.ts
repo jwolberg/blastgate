@@ -11,6 +11,7 @@ export interface StepSpec {
 }
 
 export interface JobSpec {
+  needs?: unknown;
   permissions?: unknown;
   steps?: StepSpec[];
   env?: Record<string, unknown>;
@@ -239,6 +240,16 @@ export function untrustedCheckoutStep(job: JobSpec): number | undefined {
 const GH_AW_SETUP_RE = /^github\/gh-aw-actions\/setup@/;
 // gh-aw runtime steps operate on its own paths; PR content reaches the job only via its agent.
 const GH_AW_RUNTIME_RE = /(?:\$\{?RUNNER_TEMP\}?|\/tmp)\/gh-aw\//;
+// A command that resolves through the checked-out workspace: a relative path, or a build,
+// package, or test tool that runs the repo's own scripts or config.
+const WORKSPACE_EXEC_RE =
+  /(?:^|[\s;&|(`])(?:\.{1,2}\/|(?:make|npx|pip3?|poetry|uv|tox|pytest|cargo|bundle|rake|gradlew?|mvn|composer|dotnet|bazel|just)\b|(?:npm|pnpm|bun)\s+(?:ci|i|install|run|test|t|start|exec|rebuild|x)\b|yarn\s*(?:$|[;&|])|yarn\s+(?:install|run|test|start|exec|dlx|build)\b|go\s+(?:run|test|build|generate)\b|python[\d.]*\s+(?!-c\b)[\w-]|(?:ba)?sh\s+(?!-c\b)[\w.-])/m;
+
+/** A gh-aw runtime step: names gh-aw's own paths (outside comments) and runs no workspace code. */
+function isGhAwRuntimeStep(run: string): boolean {
+  const code = run.replace(/(^|\s)#.*$/gm, '$1');
+  return GH_AW_RUNTIME_RE.test(code) && !WORKSPACE_EXEC_RE.test(code);
+}
 
 /**
  * Index of the first step after an untrusted checkout that executes workspace code: a
@@ -256,7 +267,7 @@ export function untrustedExecutionStep(job: JobSpec): number | undefined {
   const ghAw = steps.some((s) => typeof s.uses === 'string' && GH_AW_SETUP_RE.test(s.uses));
   for (let i = checkout + 1; i < steps.length; i++) {
     const step = steps[i]!;
-    if (ghAw && typeof step.run === 'string' && GH_AW_RUNTIME_RE.test(step.run)) {
+    if (ghAw && typeof step.run === 'string' && isGhAwRuntimeStep(step.run)) {
       continue; // gh-aw's own runtime, not the PR's code (0062)
     }
     if (

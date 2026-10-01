@@ -297,7 +297,7 @@ const CHECKS: CheckSpec[] = [
     },
   },
   {
-    // PromptPwnd: issue body in the prompt, a gh-only allowlist the pinned CLI ignores.
+    // PromptPwnd: issue body in the prompt of a --yolo agent granted the shell.
     name: 'agent-promptpwnd',
     positiveVerdict: 'fail',
     assertPositive: (r) => {

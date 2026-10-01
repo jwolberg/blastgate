@@ -434,21 +434,32 @@ export function classifyUntrustedText(job: JobSpec): UntrustedTextSink | undefin
       best = { sinkClass: hit.sinkClass, path: [...prefix, ...hit.path] };
     }
   };
+  stepHits(job).forEach((hit, i) => consider(hit, ['steps', i]));
+  // Job-level keys (e.g. a reusable workflow's `with:`) — permissions/secrets hold no event text.
+  consider(unrecognizedIn(job, new Set(['steps', 'permissions', 'secrets'])), []);
+  return best;
+}
+
+/** Every step that is an `agent-ingested` sink, so each agent can be judged, not just the first. */
+export function agentIngestedSteps(job: JobSpec): number[] {
+  return stepHits(job).flatMap((hit, i) => (hit?.sinkClass === 'agent-ingested' ? [i] : []));
+}
+
+/** The sink each step is, in order, carrying untrusted text forward through step outputs. */
+function stepHits(job: JobSpec): (Hit | undefined)[] {
   const taint: Taint = { env: new Set(taintedEnvNames(job.env)), steps: new Set() };
-  (job.steps ?? []).forEach((step, i) => {
+  return (job.steps ?? []).map((step) => {
     const stepTaint: Taint = {
       env: new Set([...taint.env, ...taintedEnvNames(step.env)]),
       steps: taint.steps,
     };
-    consider(classifyStep(step, stepTaint), ['steps', i]);
+    const hit = classifyStep(step, stepTaint);
     // A later step may read this one's outputs: they carry whatever text it was given.
     if (typeof step.id === 'string' && (carriesTaint(step, stepTaint) || readsTextInScript(step))) {
       taint.steps.add(step.id);
     }
+    return hit;
   });
-  // Job-level keys (e.g. a reusable workflow's `with:`) — permissions/secrets hold no event text.
-  consider(unrecognizedIn(job, new Set(['steps', 'permissions', 'secrets'])), []);
-  return best;
 }
 
 /** Index of the `run:` step that splices a downloaded artifact into a shell (0042 evidence). */

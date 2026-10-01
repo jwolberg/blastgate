@@ -284,7 +284,7 @@ export function assessAgentStep(inputs: AssessInputs): AgentAssessment {
   }
   const { profile } = resolved;
   const unknown: string[] = resolved.unknown ? [resolved.unknown] : [];
-  const tools = toolsOf(profile, step, unknown);
+  const tools = toolsOf(profile, step, [step.env, job.env, workflow.env], unknown);
   const direct = directLeg(profile, workflow, job, step, unknown);
   const access = accessLeg(profile, workflow, job, stepIndex, tools);
   const exfil = exfilLeg(workflow, job, tools, inputs.visibility);
@@ -318,6 +318,16 @@ function directLeg(
   if (hasActorGuard(job) || isLabelGated(job) || hasScriptPermissionGuard(job)) {
     return { leg: 'missing', why: 'a job guard restricts who can trigger it' };
   }
+  if (hasActorGuard({ if: step.if }) || isLabelGated({ if: step.if })) {
+    return { leg: 'missing', why: 'a guard on the agent step restricts who can trigger it' };
+  }
+  const gate = guardedNeed(workflow, job);
+  if (gate) {
+    return {
+      leg: 'missing',
+      why: `it needs job ${gate}, whose guard restricts who can trigger it`,
+    };
+  }
   const on = events.join('/');
   if (profile.gate === 'none') {
     return { leg: 'held', why: `any ${on} author triggers it (the action has no actor check)` };
@@ -336,7 +346,13 @@ function directLeg(
     const effective =
       opened && (input !== 'allowed_non_write_users' || str(step.with?.github_token) !== '');
     if (effective) {
-      return { leg: 'held', why: `\`${input}: '*'\` lets any ${on} author trigger it` };
+      return {
+        leg: 'held',
+        why:
+          input === 'allowed_bots'
+            ? `\`allowed_bots: '*'\` lets any GitHub App, which anyone can create, trigger it on ${on} (claude-code-action security docs)`
+            : `\`${input}: '*'\` lets any ${on} author trigger it`,
+      };
     }
   }
   if (sawExpression) {
@@ -349,8 +365,33 @@ function directLeg(
   };
 }
 
+/** A job this one `needs` (transitively) whose guard restricts who can trigger the run. */
+function guardedNeed(workflow: WorkflowSpec, job: JobSpec): string | undefined {
+  const jobs = workflow.jobs ?? {};
+  const seen = new Set<string>();
+  const queue = needsOf(job);
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const dep = jobs[id];
+    if (seen.has(id) || !dep) {
+      continue;
+    }
+    seen.add(id);
+    if (hasActorGuard(dep) || isLabelGated(dep) || hasScriptPermissionGuard(dep)) {
+      return id;
+    }
+    queue.push(...needsOf(dep));
+  }
+  return undefined;
+}
+
+function needsOf(job: JobSpec): string[] {
+  const n = job.needs;
+  return typeof n === 'string' ? [n] : Array.isArray(n) ? n.map(str) : [];
+}
+
 /** The tools a step grants, from its profile's tool inputs. */
-function toolsOf(profile: AgentProfile, step: StepSpec, unknown: string[]): Tools {
+function toolsOf(profile: AgentProfile, step: StepSpec, envs: unknown[], unknown: string[]): Tools {
   const w = step.with ?? {};
   switch (profile.id) {
     case 'claude':
@@ -363,7 +404,7 @@ function toolsOf(profile: AgentProfile, step: StepSpec, unknown: string[]): Tool
         network: str(w.sandbox) === 'danger-full-access' ? 'held' : 'missing',
       };
     case 'gemini':
-      return geminiTools(w, unknown);
+      return geminiTools(w, envs, unknown);
     case 'llm-inference':
       return NO_TOOLS;
   }
@@ -414,39 +455,51 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
   return tools;
 }
 
-/** run-gemini-cli runs `--yolo`: every tool unless `settings` restricts the core set. */
-function geminiTools(w: Record<string, unknown>, unknown: string[]): Tools {
+/**
+ * run-gemini-cli runs `--yolo`: every tool unless inline `settings` restricts the core set
+ * (`tools.core` / `coreTools`) or excludes tools (`tools.exclude` / `excludeTools`). When the
+ * workspace is trusted (`GEMINI_TRUST_WORKSPACE`, or a CLI below 0.39.1 that trusts it
+ * automatically), the repo's `.gemini/settings.json` can override that, and Blastgate does not
+ * read it, so the grants are unknown (R9).
+ */
+function geminiTools(w: Record<string, unknown>, envs: unknown[], unknown: string[]): Tools {
+  const UNKNOWN: Tools = { shell: 'unknown', fileRead: 'unknown', network: 'unknown' };
+  const oldCli = geminiYoloIgnoresAllowlist(w.gemini_cli_version);
+  if (oldCli === 'unknown') {
+    unknown.push('gemini_cli_version is not a readable version');
+    return UNKNOWN;
+  }
+  const trusted = envs.some(
+    (e) =>
+      str((e as Record<string, unknown> | undefined)?.GEMINI_TRUST_WORKSPACE).toLowerCase() ===
+      'true',
+  );
+  if (oldCli || trusted) {
+    unknown.push(
+      "the repo's .gemini/settings.json may set its tools, and Blastgate does not read it",
+    );
+    return UNKNOWN;
+  }
   const settings = parseJsonInput(w.settings);
   if (settings === 'unreadable') {
     unknown.push('settings is not inline JSON');
-    return { shell: 'unknown', fileRead: 'unknown', network: 'unknown' };
+    return UNKNOWN;
   }
-  const s = settings as { tools?: { core?: unknown }; coreTools?: unknown } | undefined;
+  const s = settings as
+    | { tools?: { core?: unknown; exclude?: unknown }; coreTools?: unknown; excludeTools?: unknown }
+    | undefined;
   const core = s?.tools?.core ?? s?.coreTools;
-  if (!Array.isArray(core)) {
-    return ALL_TOOLS;
-  }
-  const list = core.map(str);
-  const bypass = geminiYoloIgnoresAllowlist(w.gemini_cli_version);
-  if (bypass === 'unknown') {
-    unknown.push('gemini_cli_version is not a readable version');
-  }
-  const restrictedShell = list.some((t) => t.startsWith('run_shell_command('));
-  const shell: Leg = list.includes('run_shell_command')
-    ? 'held'
-    : restrictedShell && bypass === true
-      ? 'held'
-      : restrictedShell && bypass === 'unknown'
-        ? 'unknown'
-        : 'missing';
+  const exclude = s?.tools?.exclude ?? s?.excludeTools;
+  const excluded = Array.isArray(exclude) ? exclude.map(str) : [];
+  const has = (name: RegExp): boolean =>
+    !excluded.some((t) => name.test(t.replace(/\(.*$/, ''))) &&
+    (!Array.isArray(core) || core.map(str).some((t) => name.test(t)));
+  // A scoped `run_shell_command(cmd)` runs only that command: not a general shell.
+  const shell: Leg = has(/^run_shell_command$/) ? 'held' : 'missing';
   return {
     shell,
-    fileRead:
-      shell === 'held' || list.some((t) => /^read_(?:many_)?files?$/.test(t)) ? 'held' : shell,
-    network:
-      shell === 'held' || list.some((t) => /^(?:web_fetch|google_web_search)$/.test(t))
-        ? 'held'
-        : shell,
+    fileRead: shell === 'held' || has(/^read_(?:many_)?files?$/) ? 'held' : 'missing',
+    network: shell === 'held' || has(/^(?:web_fetch|google_web_search)$/) ? 'held' : 'missing',
   };
 }
 
@@ -491,9 +544,13 @@ function accessLeg(
   const step = job.steps?.[stepIndex] ?? {};
   const perms = resolvePermissions(workflow, job);
   const scrubbed = profile.id === 'claude' && claudeScrubs(workflow, job, step);
+  // Only secrets in the agent step's own environment: workflow env, job env, the step.
   const secrets = scrubbed
     ? { names: [], usesAllSecrets: false }
-    : findSecretRefs(withoutHiddenKey(profile, job, stepIndex));
+    : findSecretRefs({
+        env: { ...workflow.env, ...job.env },
+        steps: [withoutHiddenKey(profile, step)],
+      });
   const envToken = !scrubbed && (perms.codeWrite || perms.mintsCredentials);
   const envCreds: string[] = [];
   if (secrets.usesAllSecrets || secrets.names.length > 0) {
@@ -504,23 +561,24 @@ function accessLeg(
       perms.codeWrite ? 'a contents:write GITHUB_TOKEN' : 'an id-token:write OIDC token',
     );
   }
-  const diskCreds = onDiskCredentials(profile, job, stepIndex, perms.codeWrite);
+  const disk = onDiskCredentials(profile, job, stepIndex, perms, scrubbed);
   const canEnv = tools.shell === 'held';
   const canDisk = canEnv || tools.fileRead === 'held';
-  const readable = [...(canEnv ? envCreds : []), ...(canDisk ? diskCreds : [])];
+  const readable = [...(canEnv ? envCreds : []), ...(canDisk ? disk.map((d) => d.why) : [])];
   if (readable.length > 0) {
+    const diskSecrets = canDisk ? disk.flatMap((d) => d.secrets) : [];
     return {
       leg: 'held',
       why: `its tools can read ${readable.join('; ')}`,
       readable: {
-        secrets: canEnv ? secrets.names : [],
+        secrets: [...new Set([...(canEnv ? secrets.names : []), ...diskSecrets])],
         allSecrets: canEnv && secrets.usesAllSecrets,
-        token: (canEnv && envToken) || (canDisk && diskCreds.length > 0),
+        token: (canEnv && envToken) || (canDisk && disk.some((d) => d.token)),
       },
     };
   }
   const missing = (why: string) => ({ leg: 'missing' as const, why, readable: NOTHING_READABLE });
-  const anyCreds = envCreds.length + diskCreds.length > 0;
+  const anyCreds = envCreds.length + disk.length > 0;
   if (anyCreds && (tools.shell === 'unknown' || tools.fileRead === 'unknown')) {
     return {
       leg: 'unknown',
@@ -528,13 +586,13 @@ function accessLeg(
       readable: NOTHING_READABLE,
     };
   }
-  if (scrubbed && diskCreds.length === 0) {
-    return missing('subprocess secret scrubbing is on and no credential is on disk');
+  if (scrubbed && disk.length === 0) {
+    return missing('subprocess secret scrubbing is on and no usable credential is on disk');
   }
   return missing(
     anyCreds
-      ? 'no granted tool can read the credentials the job holds'
-      : 'the job holds no secret, code-write token, or OIDC token',
+      ? 'no granted tool can read the credentials in its scope'
+      : 'its step holds no secret, code-write token, or OIDC token',
   );
 }
 
@@ -543,17 +601,14 @@ function accessLeg(
  * `drop-sudo` (or `unprivileged-user`), Codex cannot read it back. Only `unsafe` exposes
  * it. Drop the key input so it is not counted as a readable secret.
  */
-function withoutHiddenKey(profile: AgentProfile, job: JobSpec, stepIndex: number): JobSpec {
-  const step = job.steps?.[stepIndex];
-  if (profile.id !== 'codex' || !step || str(step.with?.['safety-strategy']) === 'unsafe') {
-    return job;
+function withoutHiddenKey(profile: AgentProfile, step: StepSpec): StepSpec {
+  if (profile.id !== 'codex' || str(step.with?.['safety-strategy']) === 'unsafe') {
+    return step;
   }
   const rest = Object.fromEntries(
     Object.entries(step.with ?? {}).filter(([k]) => !profile.credentialInputs.includes(k)),
   );
-  const steps = [...(job.steps ?? [])];
-  steps[stepIndex] = { ...step, with: rest };
-  return { ...job, steps };
+  return { ...step, with: rest };
 }
 
 /** KTD2: with `allowed_non_write_users`, claude scrubs subprocess env unless the var is 0. */
@@ -565,29 +620,69 @@ function claudeScrubs(workflow: WorkflowSpec, job: JobSpec, step: StepSpec): boo
   return !envs.some((e) => str(e?.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).trim() === '0');
 }
 
-/** Credentials on the runner's disk before the agent runs (readable despite env scrubbing). */
+/** A credential on the runner's disk, and which sink it proves (a secret or the token). */
+interface DiskCred {
+  why: string;
+  token: boolean;
+  secrets: string[];
+}
+
+/**
+ * Credentials on the runner's disk before the agent runs, readable despite env scrubbing.
+ * A checkout-persisted `contents: write` token proves the GITHUB_TOKEN sink. A key file
+ * `google-github-actions/auth` wrote from a secret proves that secret. A workload-identity
+ * credentials file is usable only with the job's OIDC request token, so it counts only when
+ * the environment is not scrubbed and the job can mint one.
+ */
 function onDiskCredentials(
   profile: AgentProfile,
   job: JobSpec,
   stepIndex: number,
-  codeWrite: boolean,
-): string[] {
-  const out: string[] = [];
+  perms: { codeWrite: boolean; mintsCredentials: boolean },
+  scrubbed: boolean,
+): DiskCred[] {
+  const out: DiskCred[] = [];
   const before = (job.steps ?? []).slice(0, stepIndex);
   const persisted = before.some(
     (s) =>
       /^actions\/checkout@/i.test(str(s.uses)) &&
       str(s.with?.['persist-credentials']).toLowerCase() !== 'false',
   );
-  if (persisted && codeWrite) {
-    out.push('the contents:write token actions/checkout persisted in .git/config');
+  if (persisted && perms.codeWrite) {
+    out.push({
+      why: 'the contents:write token actions/checkout persisted in .git/config',
+      token: true,
+      secrets: [],
+    });
   }
-  if (before.some((s) => AUTH_FILE_ACTION_RE.test(str(s.uses)))) {
-    out.push('the credentials file google-github-actions/auth wrote');
+  const oidcFile = !scrubbed && perms.mintsCredentials;
+  for (const s of before.filter((b) => AUTH_FILE_ACTION_RE.test(str(b.uses)))) {
+    const keyed = findSecretRefs({ steps: [{ with: s.with }] }).names;
+    if (keyed.length > 0) {
+      out.push({
+        why: `the key file google-github-actions/auth wrote from ${keyed.join(', ')}`,
+        token: false,
+        secrets: keyed,
+      });
+    } else if (oidcFile) {
+      out.push({
+        why: 'the workload-identity credentials file google-github-actions/auth wrote',
+        token: true,
+        secrets: [],
+      });
+    }
   }
   const step = job.steps?.[stepIndex];
-  if (profile.id === 'gemini' && str(step?.with?.gcp_workload_identity_provider) !== '') {
-    out.push('the GCP credentials file from gcp_workload_identity_provider (OIDC)');
+  if (
+    profile.id === 'gemini' &&
+    oidcFile &&
+    str(step?.with?.gcp_workload_identity_provider) !== ''
+  ) {
+    out.push({
+      why: 'the GCP credentials file from gcp_workload_identity_provider (OIDC)',
+      token: true,
+      secrets: [],
+    });
   }
   return out;
 }

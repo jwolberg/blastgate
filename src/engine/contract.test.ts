@@ -384,7 +384,8 @@ describe('agent verdict (0059)', () => {
     ]);
 
   it('PromptPwnd hardened: a patched Gemini CLI enforces the gh-only allowlist → warn', () => {
-    expect(fails(runEngine(promptPwnd('0.38.0')).findings).length).toBeGreaterThan(0);
+    // An old CLI auto-trusts the repo's .gemini/settings.json, so its tools are unknown → warn.
+    expect(fails(runEngine(promptPwnd('0.38.0')).findings)).toHaveLength(0);
     const hardened = runEngine(promptPwnd('latest'));
     expect(hardened.findings.length).toBeGreaterThan(0);
     expect(fails(hardened.findings)).toHaveLength(0);
@@ -459,8 +460,68 @@ describe('gh-aw runtime steps are not PR-code execution (0062)', () => {
     expect(fails(result.findings).length).toBeGreaterThan(0);
   });
 
+  it.each([
+    ['bash "${RUNNER_TEMP}/gh-aw/actions/x.sh" && ./scripts/build.sh'],
+    ['make test # see /tmp/gh-aw/ docs'],
+  ])("a user's step that only mentions a gh-aw path still runs PR code → fail: %s", (run) => {
+    const result = runEngine(ghAw([`      - run: '${run}'`]));
+    expect(fails(result.findings).length).toBeGreaterThan(0);
+  });
+
   it('the same gh-aw-path steps without gh-aw setup still count → fail', () => {
     const result = runEngine(ghAw([], false));
     expect(fails(result.findings).length).toBeGreaterThan(0);
+  });
+});
+
+/** PR #39 review fixes at the engine level. */
+describe('agent verdict — PR #39 review fixes', () => {
+  it('a secret held only by another step never fails on the agent path', () => {
+    const result = runEngine(
+      gh([
+        'on: issue_comment',
+        'jobs:',
+        '  claude:',
+        '    steps:',
+        '      - uses: anthropics/claude-code-action@v1',
+        '        env:',
+        '          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0',
+        '        with:',
+        '          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}',
+        '          github_token: ${{ secrets.GITHUB_TOKEN }}',
+        "          allowed_non_write_users: '*'",
+        "          claude_args: '--allowedTools Bash'",
+        '      - run: ./deploy.sh',
+        '        env:',
+        '          DEPLOY: ${{ secrets.DEPLOY_KEY }}',
+      ]),
+    );
+    expect(result.findings.find((f) => f.sink.identity === 'ANTHROPIC_API_KEY')?.tier).toBe('fail');
+    expect(result.findings.find((f) => f.sink.identity === 'DEPLOY_KEY')?.tier).toBe('warn');
+  });
+
+  it('a tool-less LLM step ahead of a fail-capable agent does not mask its fail', () => {
+    const result = runEngine(
+      gh([
+        'on: issue_comment',
+        'jobs:',
+        '  triage:',
+        '    steps:',
+        '      - uses: actions/ai-inference@v2',
+        '        with:',
+        '          prompt: ${{ github.event.comment.body }}',
+        '      - uses: anthropics/claude-code-action@v1', // 8
+        '        env:',
+        '          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0',
+        '        with:',
+        '          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}',
+        '          github_token: ${{ secrets.GITHUB_TOKEN }}',
+        "          allowed_non_write_users: '*'",
+        "          claude_args: '--allowedTools Bash'",
+      ]),
+    );
+    const f = result.findings.find((x) => x.sink.identity === 'ANTHROPIC_API_KEY');
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(8);
   });
 });

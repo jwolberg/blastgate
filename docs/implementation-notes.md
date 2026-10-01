@@ -846,3 +846,35 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Known gaps recorded there: `workflow_run` relays into an agent (pytorch ×3) are the
   deferred multi-hop scope. Agent-fail precision is untestable on this sample (no proven
   agent exploit in it); the U6 fixtures are the positive evidence.
+
+## 2026-10-01 — PR #39 review fixes (0057, 0059, 0060, 0062)
+
+- **Fixed (high) — access counted secrets the agent cannot read.** Secrets now come only from
+  the agent step's own environment (workflow `env:`, job `env:`, the step's `env:`/`with:`).
+  A secret in another step's `env:` no longer makes the agent path fail. On-disk credentials
+  are typed by the sink they prove. A checkout-persisted `contents: write` token proves the
+  GITHUB_TOKEN sink. A key file `google-github-actions/auth` wrote from `credentials_json`
+  proves that secret. A workload-identity file needs the job's OIDC request token, so it
+  counts only when the environment is not scrubbed and the job has `id-token: write`.
+- **Fixed — direct leg ignored step-level and `needs:` guards.** An actor or label guard on
+  the agent step, or on any job it `needs` (transitively), now breaks the direct leg.
+- **Fixed — gemini `tools.exclude` / `excludeTools` were ignored.** A workspace-trusted run
+  (`GEMINI_TRUST_WORKSPACE: true`, or a CLI pinned below 0.39.1 that trusts it automatically)
+  may load the repo's `.gemini/settings.json`, which Blastgate does not read, so its tools are
+  unknown (R9). Consequence: the PromptPwnd fixture moved from "old CLI ignores a gh-only
+  allowlist" to "patched CLI granted `run_shell_command`", and the old-CLI variant now warns.
+- **Kept — `allowed_bots: '*'` opens the direct leg.** claude-code-action's security doc says
+  that on a public repo, GitHub Apps "created by anyone" can trigger it with a prompt they
+  control. The reason now says so and cites it.
+- **Fixed — 0062 exempted user steps that only mentioned a gh-aw path.** Comments are
+  stripped, and a step that also invokes workspace code (a relative path, make, npm/pnpm/bun
+  run|test|install, npx, yarn, pip, python script, bash script, …) is never exempt. Checked
+  against the real home-assistant lock file: `npm root -g` (a read-only query) does not count.
+- **Fixed (suggestion) — the first agent step masked later ones.** Every agent-ingested step
+  in a job is assessed, and the one closest to a fail (most legs held, then a covered version)
+  becomes the entry, with its evidence line.
+- Re-scan after the fixes: 50 repos, 0 fails, 20 warns (unchanged).
+- **Open question for you:** PromptPwnd's leak used a *scoped* shell command
+  (`gh issue edit --body "$GEMINI_API_KEY"`): shell expansion reads env even when only
+  `gh issue edit` is allowed. The plan (AE3, user-approved) treats a scoped shell as no shell.
+  That is precise against intent but misses this vector.
