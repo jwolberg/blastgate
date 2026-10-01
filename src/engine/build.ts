@@ -26,15 +26,11 @@ import { analyzePyDeps, type PyDepsInputs } from '../analyzers/pydeps/index';
 import { analyzeRubyGems, type RubyGemsInputs } from '../analyzers/rubygems/index';
 import { type AnalyzerResult, applyResult, type Diagnostic } from '../analyzers/types';
 import { AttackGraph } from '../graph/graph';
-import type { CiJobNode, DependencyNode } from '../graph/types';
+import type { CiJobNode, DependencyNode, RepoVisibility } from '../graph/types';
 import type { Acknowledgement } from './acknowledge';
 import type { AcceptRule } from './policy';
 
-/**
- * Repository visibility (KTD5): on a public repo, Actions logs are a public exfiltration
- * channel. Supplied by the surface (Action payload, CLI `--public`), never guessed.
- */
-export type RepoVisibility = 'public' | 'private' | 'unknown';
+export type { RepoVisibility } from '../graph/types';
 
 /** Per-layer inputs; an omitted layer is simply not analyzed. */
 export interface EngineInputs {
@@ -129,7 +125,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
     inputs.jsdeps ? analyzeJsDeps(inputs.jsdeps) : undefined,
     inputs.pydeps ? analyzePyDeps(inputs.pydeps) : undefined,
     inputs.rubygems ? analyzeRubyGems(inputs.rubygems) : undefined,
-    inputs.ci ? analyzeCi(inputs.ci) : undefined,
+    inputs.ci ? analyzeCi({ visibility: inputs.visibility, ...inputs.ci }) : undefined,
     inputs.gitlabci ? analyzeGitlabCi(inputs.gitlabci) : undefined,
     inputs.circleci ? analyzeCircleCi(inputs.circleci) : undefined,
     inputs.agent ? analyzeAgents(inputs.agent) : undefined,

@@ -6,7 +6,7 @@
  * against each action's source at the pinned versions on 2026-10-01.
  */
 
-import type { RepoVisibility } from '../../engine/build';
+import type { AgentAssessment, Leg, RepoVisibility } from '../../graph/types';
 import { credentialReachableTextTriggers } from './injection';
 import {
   findSecretRefs,
@@ -119,6 +119,8 @@ export const AGENT_PROFILES: readonly AgentProfile[] = [
   },
 ];
 
+const TOOL_LESS_PROFILE = AGENT_PROFILES.find((p) => p.id === 'llm-inference')!;
+
 export interface AgentResolution {
   profile: AgentProfile;
   /** True when the ref lies inside the profile's version range. */
@@ -229,26 +231,7 @@ export function geminiYoloIgnoresAllowlist(cliVersion: unknown): boolean | 'unkn
 
 // ---- Rule-of-Two assessment (U3) ----
 
-/** One Rule-of-Two leg: held, missing, or not readable from configuration. */
-export type Leg = 'held' | 'missing' | 'unknown';
-
-export interface AgentAssessment {
-  /** The step's `uses:`. */
-  uses: string;
-  profileId?: AgentId;
-  /** The ref lies in the profile's version range (R9). */
-  covered: boolean;
-  /** R3: an outsider can trigger the agent step itself. */
-  direct: Leg;
-  /** R4: the agent has a tool that can read a credential the job holds. */
-  access: Leg;
-  /** R5: the agent has a way to get data out. */
-  exfil: Leg;
-  /** Why each leg is held, missing, or unknown (R10). */
-  reasons: { direct: string; access: string; exfil: string };
-  /** What Blastgate could not read (R9). */
-  unknown: string[];
-}
+export type { AgentAssessment, Leg } from '../../graph/types';
 
 export interface AssessInputs {
   workflow: WorkflowSpec;
@@ -280,7 +263,12 @@ export function assessAgentStep(inputs: AssessInputs): AgentAssessment {
   const { workflow, job, stepIndex } = inputs;
   const step = job.steps?.[stepIndex] ?? {};
   const uses = str(step.uses);
-  const resolved = agentProfileFor(uses);
+  // github-script calling GitHub Models (KTD7) is judged as the tool-less LLM profile.
+  const resolved =
+    agentProfileFor(uses) ??
+    (/^actions\/github-script@/i.test(uses)
+      ? { profile: TOOL_LESS_PROFILE, covered: true, unknown: undefined }
+      : undefined);
   if (!resolved) {
     const why = `no profile for ${uses}`;
     return {
@@ -291,6 +279,7 @@ export function assessAgentStep(inputs: AssessInputs): AgentAssessment {
       exfil: 'unknown',
       reasons: { direct: why, access: why, exfil: why },
       unknown: [why],
+      readable: { secrets: [], allSecrets: false, token: false },
     };
   }
   const { profile } = resolved;
@@ -308,6 +297,7 @@ export function assessAgentStep(inputs: AssessInputs): AgentAssessment {
     exfil: exfil.leg,
     reasons: { direct: direct.why, access: access.why, exfil: exfil.why },
     unknown,
+    readable: access.readable,
   };
 }
 
@@ -478,56 +468,74 @@ function parseJsonInput(v: unknown): unknown {
 const AUTH_FILE_ACTION_RE = /^google-github-actions\/auth@/i;
 
 /** R4: a tool that can read a credential the job holds (Precision Core 0047 rules). */
+const NOTHING_READABLE: AgentAssessment['readable'] = {
+  secrets: [],
+  allSecrets: false,
+  token: false,
+};
+
 function accessLeg(
   profile: AgentProfile,
   workflow: WorkflowSpec,
   job: JobSpec,
   stepIndex: number,
   tools: Tools,
-): Verdict {
+): Verdict & { readable: AgentAssessment['readable'] } {
   if (profile.toolLess) {
-    return { leg: 'missing', why: 'a tool-less LLM step cannot read credentials' };
+    return {
+      leg: 'missing',
+      why: 'a tool-less LLM step cannot read credentials',
+      readable: NOTHING_READABLE,
+    };
   }
   const step = job.steps?.[stepIndex] ?? {};
   const perms = resolvePermissions(workflow, job);
   const scrubbed = profile.id === 'claude' && claudeScrubs(workflow, job, step);
+  const secrets = scrubbed
+    ? { names: [], usesAllSecrets: false }
+    : findSecretRefs(withoutHiddenKey(profile, job, stepIndex));
+  const envToken = !scrubbed && (perms.codeWrite || perms.mintsCredentials);
   const envCreds: string[] = [];
-  if (!scrubbed) {
-    const secrets = findSecretRefs(withoutHiddenKey(profile, job, stepIndex));
-    if (secrets.usesAllSecrets || secrets.names.length > 0) {
-      envCreds.push(secrets.usesAllSecrets ? 'every repo secret' : secrets.names.join(', '));
-    }
-    if (perms.codeWrite) {
-      envCreds.push('a contents:write GITHUB_TOKEN');
-    }
-    if (perms.mintsCredentials) {
-      envCreds.push('an id-token:write OIDC token');
-    }
+  if (secrets.usesAllSecrets || secrets.names.length > 0) {
+    envCreds.push(secrets.usesAllSecrets ? 'every repo secret' : secrets.names.join(', '));
+  }
+  if (envToken) {
+    envCreds.push(
+      perms.codeWrite ? 'a contents:write GITHUB_TOKEN' : 'an id-token:write OIDC token',
+    );
   }
   const diskCreds = onDiskCredentials(profile, job, stepIndex, perms.codeWrite);
-  const readable = [
-    ...(tools.shell === 'held' ? envCreds : []),
-    ...(tools.shell === 'held' || tools.fileRead === 'held' ? diskCreds : []),
-  ];
+  const canEnv = tools.shell === 'held';
+  const canDisk = canEnv || tools.fileRead === 'held';
+  const readable = [...(canEnv ? envCreds : []), ...(canDisk ? diskCreds : [])];
   if (readable.length > 0) {
-    return { leg: 'held', why: `its tools can read ${readable.join('; ')}` };
-  }
-  const anyCreds = envCreds.length + diskCreds.length > 0;
-  if (anyCreds && (tools.shell === 'unknown' || tools.fileRead === 'unknown')) {
-    return { leg: 'unknown', why: 'the job holds credentials but the tool grants are unreadable' };
-  }
-  if (scrubbed && diskCreds.length === 0) {
     return {
-      leg: 'missing',
-      why: 'subprocess secret scrubbing is on and no credential is on disk',
+      leg: 'held',
+      why: `its tools can read ${readable.join('; ')}`,
+      readable: {
+        secrets: canEnv ? secrets.names : [],
+        allSecrets: canEnv && secrets.usesAllSecrets,
+        token: (canEnv && envToken) || (canDisk && diskCreds.length > 0),
+      },
     };
   }
-  return {
-    leg: 'missing',
-    why: anyCreds
+  const missing = (why: string) => ({ leg: 'missing' as const, why, readable: NOTHING_READABLE });
+  const anyCreds = envCreds.length + diskCreds.length > 0;
+  if (anyCreds && (tools.shell === 'unknown' || tools.fileRead === 'unknown')) {
+    return {
+      leg: 'unknown',
+      why: 'the job holds credentials but the tool grants are unreadable',
+      readable: NOTHING_READABLE,
+    };
+  }
+  if (scrubbed && diskCreds.length === 0) {
+    return missing('subprocess secret scrubbing is on and no credential is on disk');
+  }
+  return missing(
+    anyCreds
       ? 'no granted tool can read the credentials the job holds'
       : 'the job holds no secret, code-write token, or OIDC token',
-  };
+  );
 }
 
 /**

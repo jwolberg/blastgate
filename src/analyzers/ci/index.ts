@@ -1,5 +1,6 @@
-import type { AttackNode } from '../../graph/types';
+import type { AttackNode, RepoVisibility } from '../../graph/types';
 import { type AnalyzerResult, emptyResult } from '../types';
+import { assessAgentStep } from './agents';
 import {
   agentActionsUsed,
   artifactSpliceStep,
@@ -31,6 +32,8 @@ export interface WorkflowInput {
 
 export interface CiInputs {
   workflows: WorkflowInput[];
+  /** Repository visibility for the agent exfiltration leg (KTD5); absent = `unknown`. */
+  visibility?: RepoVisibility;
 }
 
 const CREDENTIAL_HINT = /(AWS|TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)/i;
@@ -184,6 +187,17 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           guarded: false,
           sinkClass: artifactWins ? 'execution' : textSink?.sinkClass,
           evidence: line === undefined ? undefined : { file: wf.path, line },
+          // 0059: judge the agent step against the Rule of Two; the engine fails it only
+          // when all three legs hold.
+          agent:
+            !artifactWins && textSink?.sinkClass === 'agent-ingested'
+              ? assessAgentStep({
+                  workflow: spec,
+                  job,
+                  stepIndex: Number(textSink.path[1]),
+                  visibility: inputs.visibility ?? 'unknown',
+                })
+              : undefined,
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'injects' } });
       }

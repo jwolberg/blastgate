@@ -769,3 +769,23 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - **Decision — the public-surface exfil leg reads `issues` / `pull-requests` / `discussions:
   write` (or `write-all`)** from the token permissions. Inherited/unknown permissions do not
   count.
+
+## 2026-10-01 — Agent-in-CI U5 (0059): agent verdict, evidence, and reasons
+
+- **Decision — an agent fail is per sink.** Besides the three held legs and a covered
+  version, the path's sink must be a credential the agent's tools can read
+  (`AgentAssessment.readable`: secret names, every secret, or the GITHUB_TOKEN). Without
+  this, claude's scrubbed `ANTHROPIC_API_KEY` would fail alongside the readable
+  `.git/config` token. Now the key path warns and the token path fails. `tierFor` is
+  unchanged (KTD6): the agent payload is simply withheld unless the path is proven.
+- **Decision — the payload is a fixed comment** asking the agent to print `env | base64` or
+  curl it to `attacker.example`. The 0049 surface tests now run over both the shell-injection
+  fixture and an AE1 agent fail, so markdown, default JSON, the Action, MCP, and run records
+  are all checked for the agent payload too.
+- **Decision — `AgentAssessment`, `Leg`, and `RepoVisibility` moved to `src/graph/types.ts`**
+  so the entry node can carry the assessment without the graph depending on an analyzer.
+  `agents.ts` and `engine/build.ts` re-export them.
+- **Decision — warn reasons list all three legs with their whys, then one cause:** a missing
+  leg first, then an uncovered version, then a privileged-capability sink (e.g.
+  `issues:write`), then a credential the tools cannot read. A sweep test checks that every
+  agent fail across 36 claude variants names all three legs held and carries a payload.

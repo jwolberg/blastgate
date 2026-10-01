@@ -50,6 +50,35 @@ export interface EntryNode {
   sinkClass?: SinkClass;
   /** Source location of the sink, for `fail` evidence (0046 / plan R7). */
   evidence?: SourceEvidence;
+  /** Rule-of-Two assessment of the agent step (`agent-ingested` entries only, 0059). */
+  agent?: AgentAssessment;
+}
+
+/** Repository visibility (KTD5): supplied by the surface, never guessed. */
+export type RepoVisibility = 'public' | 'private' | 'unknown';
+
+/** One Rule-of-Two leg: held, missing, or not readable from configuration. */
+export type Leg = 'held' | 'missing' | 'unknown';
+
+/** An agent step judged against the Agents Rule of Two (Agent-in-CI U3 / 0057). */
+export interface AgentAssessment {
+  /** The step's `uses:`. */
+  uses: string;
+  profileId?: 'claude' | 'codex' | 'gemini' | 'llm-inference';
+  /** The ref lies in the profile's version range (R9). */
+  covered: boolean;
+  /** R3: an outsider can trigger the agent step itself. */
+  direct: Leg;
+  /** R4: the agent has a tool that can read a credential the job holds. */
+  access: Leg;
+  /** R5: the agent has a way to get data out. */
+  exfil: Leg;
+  /** Why each leg is held, missing, or unknown (R10). */
+  reasons: { direct: string; access: string; exfil: string };
+  /** What Blastgate could not read (R9). */
+  unknown: string[];
+  /** The credentials the agent's tools can read: secret names, every secret, the GITHUB_TOKEN. */
+  readable: { secrets: string[]; allSecrets: boolean; token: boolean };
 }
 
 /**
