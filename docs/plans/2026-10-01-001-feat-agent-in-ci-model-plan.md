@@ -18,7 +18,7 @@ execution: code
 - **Execution profile:** TDD per repo `CLAUDE.md` §2: the failing test for each unit is written first. One commit per unit on a feature branch; merge to `main` is human-only, and a PR is not merged before its review completes.
 - **Stop conditions:** Stop and ask if a vendor's current docs contradict a profile default this plan relies on, if the re-scan (U7) produces a fail that hand review cannot confirm, or before any outbound action beyond read-only GitHub API calls.
 - **Open blockers:** None.
-- **Product Contract preservation:** R3 clarified: codex-action's `allow-users`/`allow-bots` take explicit names only, so they do not open the agent to outsiders (verified against the action's docs, 2026-10-01). No scope change.
+- **Product Contract preservation:** R3 clarified: codex-action's `allow-users`/`allow-bots` take explicit names only, so they do not open the agent to outsiders (verified against the action's docs, 2026-10-01); AE1 clarified to state scrubbing is disabled, per KTD2. No scope change.
 
 ---
 
@@ -74,7 +74,7 @@ Public incidents show that the risk depends on configuration. Comment and Contro
 
 ### Acceptance Examples
 
-- AE1. **Covers R3–R6.** **Given** an `issue_comment` workflow running `claude-code-action` with `allowed_non_write_users: "*"` and shell tools allowed, holding `ANTHROPIC_API_KEY`, **then** the finding is `fail` with evidence at the agent step.
+- AE1. **Covers R3–R6.** **Given** an `issue_comment` workflow running `claude-code-action` with `allowed_non_write_users: "*"`, shell tools allowed, and subprocess secret scrubbing disabled (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0`), holding `ANTHROPIC_API_KEY`, **then** the finding is `fail` with evidence at the agent step.
 - AE2. **Covers R7.** **Given** the same workflow without `allowed_non_write_users`, **then** the finding is `warn` naming indirect injection.
 - AE3. **Covers R4, R10.** **Given** AE1 but with tools restricted to `Bash(gh issue view:*)`, **then** the finding is `warn` naming the missing sensitive-access leg.
 - AE4. **Covers R8, R12.** **Given** an `issues` workflow passing the title and body via `env:` into github-script that calls GitHub Models, holding `issues: write`, **then** the finding is an agent-ingested `warn`.
