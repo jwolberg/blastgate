@@ -23,4 +23,5 @@ same run; these six failed silently.
   `for d in <workdir>/*/; do [ -d "$d/.github" ] || echo "broken $d"; done`
 - Compare against the previous scan: a count change at an unchanged SHA is a measurement
   fault, not a finding.
-- Ticket 0066 makes the script fail such a repo instead of scanning it.
+- Since 0066 the script checks this itself: a clone whose checkout is missing tracked files is
+  re-cloned once, and one that still cannot complete is a `clone-failed` row, never a clean 0/0.
