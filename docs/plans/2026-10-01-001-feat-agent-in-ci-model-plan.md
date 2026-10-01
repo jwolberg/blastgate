@@ -77,7 +77,7 @@ Public incidents show that the risk depends on configuration. Comment and Contro
 - AE1. **Covers R3–R6.** **Given** an `issue_comment` workflow running `claude-code-action` with `allowed_non_write_users: "*"` and `github_token` passed, shell tools allowed, and subprocess secret scrubbing disabled (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0`), holding `ANTHROPIC_API_KEY`, **then** the finding is `fail` with evidence at the agent step.
 - AE1b. **Covers R3.** **Given** AE1 but without `github_token` (GitHub App authentication, where the bypass does not apply), **then** the finding is `warn` naming the missing direct leg.
 - AE2. **Covers R7.** **Given** the same workflow without `allowed_non_write_users`, **then** the finding is `warn` naming indirect injection.
-- AE3. **Covers R4, R10.** **Given** AE1 but with tools restricted to `Bash(gh issue view:*)`, **then** the finding is `warn` naming the missing sensitive-access leg.
+- AE3. **Covers R4, R10.** **Given** AE1 but with tools restricted to `Bash(gh issue view:*)`, **then** the finding is still `fail`: the shell expands `$ANTHROPIC_API_KEY` into the allowed command's arguments (the PromptPwnd vector). (Revised 2026-10-01, user-approved; was a warn naming the missing access leg.) **Given** the same with subprocess scrubbing on, **then** it is `warn`.
 - AE4. **Covers R8, R12.** **Given** an `issues` workflow passing the title and body via `env:` into github-script that calls GitHub Models, holding `issues: write`, **then** the finding is an agent-ingested `warn`.
 - AE5. **Covers R9.** **Given** a recognized agent action pinned to a version outside every profile's range (for example `anthropics/claude-code-action@v0.0.17`), **then** the finding is `warn` naming the uncovered version.
 
@@ -257,7 +257,7 @@ U1 first. U2 and U4 depend on U1 and can proceed in parallel. U3 needs U2. U5 ne
 3. **Exfil (R5):** the granted tools include shell or network access, the token can write a public surface, or visibility is public (U4).
 4. Record which legs hold and an "unknown" reason when tool grants or inputs cannot be read (non-literal expressions, an unparseable `settings` JSON).
 5. Which tools count, by leg. Only explicitly granted tools count, plus documented defaults (codex always runs commands; gemini without a `settings` core list has every tool):
-   - Reads environment secrets (R4): an unrestricted shell — claude `Bash` / `Bash(*)`, `codex exec`, gemini `run_shell_command`. A scoped `Bash(cmd:*)` does not.
+   - Reads environment secrets (R4): any shell, including a command-scoped one — claude `Bash` / `Bash(*)` / `Bash(cmd:*)`, `codex exec`, gemini `run_shell_command` / `run_shell_command(cmd)` — because the shell expands `$SECRET` into the allowed command's arguments (revised 2026-10-01, user-approved). A scoped command is not a general shell: it does not count for on-disk reads or exfiltration.
    - Reads on-disk credentials only (R4): a file-read tool — claude `Read`, gemini `read_file`. A shell also reads them.
    - Exfiltration (R5): a shell or network tool (claude `WebFetch`, gemini `web_fetch`, codex `sandbox: danger-full-access`), a token that writes issues, PRs, or discussions, or public logs. This is where R5 decides the outcome on its own: an agent with only a file-read tool can reach an on-disk credential, and only a public-surface token or public logs get it out.
 
@@ -270,7 +270,7 @@ U1 first. U2 and U4 depend on U1 and can proceed in parallel. U3 needs U2. U5 ne
 - Claude, the same, scrub default, and checkout persisting the token with `contents: write` → access holds via `.git/config`.
 - Claude, the same, scrub default, no persisted token, no credential files → access missing.
 - Covers AE2. Claude without the bypass → direct missing.
-- Covers AE3. Claude with tools `Bash(gh issue view:*)` only → access missing.
+- Covers AE3. Claude with tools `Bash(gh issue view:*)` only → access holds via `$SECRET` expansion; with the scrub on → access missing.
 - `allowed_bots: '*'` on an `issue_comment` job → direct holds.
 - Codex with `allow-users: someone` → direct missing (KTD3).
 - Codex with `allow-users: '*'` on an `issue_comment` job → direct holds (KTD3).

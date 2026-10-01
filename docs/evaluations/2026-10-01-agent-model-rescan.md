@@ -2,7 +2,7 @@
 title: "Re-scan of the 50-repo sample under the agent-in-CI Rule-of-Two verdict"
 anchor: EVAL-2026-10-01
 date: 2026-10-01
-tool: blastgate 0.1.0 (branch feat/agent-in-ci, after 0055–0060 and 0062)
+tool: blastgate 0.1.0 (branch feat/agent-in-ci, after 0055–0060 and the PR #39 review fixes)
 ---
 
 # Re-scan under the agent-in-CI verdict (2026-10-01)
@@ -18,13 +18,13 @@ Every fail and every agent workflow was hand-reviewed against source.
 | | 2026-09-29 (Precision Core) | 2026-10-01 |
 |---|--:|--:|
 | Repos scanned | 50 | 50 |
-| Repos FAIL | 0 | **0** |
-| Fail-tier findings | 0 | **0** |
-| Warn-tier findings | 15 | 20 |
+| Repos FAIL | 0 | **1** (a known false fail, §3) |
+| Fail-tier findings | 0 | **2** (both hand-refuted, §3) |
+| Warn-tier findings | 15 | 18 |
 | Agent findings (Rule-of-Two assessed) | — | 2 (both warn) |
 
-The five new warns are both home-assistant LLM steps (§2) and three warns from a new gh-aw
-workflow (§3).
+The new findings are both home-assistant LLM-step warns (§2) and three paths from a new gh-aw
+workflow, two of them false fails (§3). **The agent model produced no fails.**
 
 ## [2] Every agent finding, with its legs
 
@@ -48,9 +48,14 @@ code. 0048 treats any `run:` after an untrusted checkout as running attacker cod
 over-reaches here. The PR tree reaches that job only through the Copilot agent, which is
 the agent class.
 
-Per the plan's stop condition this was raised. The user chose to fix it in this branch
-(ticket 0062): in a gh-aw-compiled job, a `run:` step on gh-aw runtime paths is not
-execution evidence. After 0062 the three gh-aw paths are warns, and **0 fails remain**.
+Per the plan's stop condition this was raised. A fix was attempted in this branch (ticket
+0062): an allowlist recognizing gh-aw runtime steps by parsing their shell. Four review rounds
+each found new ways a step could run PR code yet parse as runtime. The real gh-aw agent launch
+also embeds a ~1KB `bash -c` script, which would need parsing too. The user chose to drop the
+exemption rather than keep patching the parser. 0062 is iceboxed with that history.
+
+**Known exception to R12:** these 2 fails stand, with the hand verdict above (false fails from
+the 0048 approximation, not the agent model). They are the only fails in the sample.
 
 ## [4] Agent workflows with no finding (false-negative review)
 

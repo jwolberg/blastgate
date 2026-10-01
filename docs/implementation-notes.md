@@ -917,3 +917,22 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   rejected.
 - Calibrated on the real home-assistant lock file: every runtime step is still exempt.
   Re-scan: 50 repos, 0 fails, 20 warns.
+
+## 2026-10-01 — Two user decisions after the PR #39 round-4 review
+
+- **0062 dropped (user decision).** Round 4 found five more tokenizer bypasses, and gh-aw's
+  real agent launch embeds a ~1KB `bash -c` script that would also need parsing. Shell parsing
+  would not converge, so the exemption, its allowlist, and its tests are removed, and
+  `untrustedExecutionStep` is back to its `main` behavior. home-assistant's gh-aw workflow keeps
+  2 hand-refuted false fails, documented as the R12 exception in the re-scan doc. Ticket 0062 is
+  iceboxed with the history and a pointer to a structural approach (gh-aw step names).
+- **A scoped shell now reads environment secrets (user decision; revises AE3).** PromptPwnd
+  leaked `GEMINI_API_KEY` through a command-scoped shell (`gh issue edit --body "$KEY"`). The
+  shell expands `$SECRET` into the allowed command's arguments. `Bash(cmd:*)` and
+  `run_shell_command(cmd)` now count for reading env, but not as a general shell, so they do not
+  count for on-disk reads or exfiltration. AE3 flips from warn to fail when the key is in env
+  and an exfil leg holds; under claude's scrub it still warns. Unverified: whether Claude
+  Code's permission matcher refuses `$VAR` expansion inside a scoped `Bash` rule. If it does,
+  claude's scoped grants should go back to not reading env.
+- Re-scan: 50 repos, 2 fails (the known gh-aw exception), 18 warns. The agent model produces no
+  fails on this sample.

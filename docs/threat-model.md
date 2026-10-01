@@ -159,7 +159,7 @@ A check fails **only** on a proven exploit (plan
    issues, comments, or labels is a privileged capability and warns.
 2. **A fail-eligible entry.** Untrusted text reaching an *execution* sink; an agent step
    whose three Rule-of-Two legs hold (below); a fork PR whose job runs a step after
-   checking out the PR head (gh-aw's own runtime steps excepted, 0062); a new dependency
+   checking out the PR head; a new dependency
    whose install script runs in such a job; or a GitLab MR pipeline job.
 3. **Complete evidence.** The `file:line` where the input lands and the capability reached.
    A path whose evidence cannot be located warns instead.
@@ -184,7 +184,7 @@ version, and the path's sink is a credential the agent's tools can read:
 | Leg | Holds when | Examples that break it |
 |---|---|---|
 | Direct trigger (R3) | An outsider can trigger the agent step itself: an attacker-reachable event, the action's write-access gate absent (`run-gemini-cli`) or opened by `'*'` (`allowed_non_write_users` with `github_token`, `allowed_bots`, codex `allow-users`), and no guard on the job, the agent step, or a job it `needs` (unless it runs `always()`). `allowed_bots: '*'` counts only on a public repo | No bypass, or named users only → indirect injection (warn) |
-| Sensitive access (R4) | An explicitly granted tool can read a credential in the agent step's own scope (workflow, job, or step env; not another step's): unrestricted `Bash` / `Read` (claude), `codex exec`, gemini's tools unless `settings` restricts or excludes them. The path's sink must be the credential read | Scoped `Bash(cmd:*)`; claude's subprocess env scrub (on by default with the bypass) leaves only on-disk credentials (a checkout-persisted `contents: write` token, or a `google-github-actions/auth` key file proving its secret); codex's proxied OpenAI key |
+| Sensitive access (R4) | An explicitly granted tool can read a credential in the agent step's own scope (workflow, job, or step env; not another step's): unrestricted `Bash` / `Read` (claude), `codex exec`, gemini's tools unless `settings` restricts or excludes them. A command-scoped shell (`Bash(cmd:*)`, `run_shell_command(cmd)`) still reads environment secrets, since the shell expands `$SECRET` into its arguments (PromptPwnd), but it is not a general shell for disk reads or exfiltration. The path's sink must be the credential read | No shell or file-read tool; claude's subprocess env scrub (on by default with the bypass) leaves only on-disk credentials (a checkout-persisted `contents: write` token, or a `google-github-actions/auth` key file proving its secret); codex's proxied OpenAI key |
 | Exfiltration (R5) | A shell or network tool, a token that writes issues/PRs/discussions, or a public repo (`--public` / the Action's event payload), whose Actions logs are readable | Private or unknown visibility with no shell, network, or public-write grant |
 
 Everything else warns, and the reason names each leg as held, missing, or unknown.

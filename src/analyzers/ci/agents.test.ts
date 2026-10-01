@@ -269,12 +269,26 @@ jobs:
     expect(a.direct).toBe('missing');
   });
 
-  it('AE3: tools restricted to Bash(gh issue view:*) → access missing', () => {
-    const a = assess(
-      AE1.replace("'--allowedTools Bash'", `'--allowedTools "Bash(gh issue view:*)"'`),
-    );
-    expect(a.access).toBe('missing');
+  it('AE3 (revised): a scoped Bash(gh issue view:*) still expands $SECRET → access holds', () => {
+    // PromptPwnd: `gh issue edit --body "$GEMINI_API_KEY"` passes a command-scoped allowlist.
+    const scoped = AE1.replace("'--allowedTools Bash'", `'--allowedTools "Bash(gh issue view:*)"'`);
+    const a = assess(scoped);
     expect(a.direct).toBe('held');
+    expect(a.access).toBe('held');
+    expect(a.readable.secrets).toContain('ANTHROPIC_API_KEY');
+    expect(a.reasons.access).toMatch(/expan/);
+    // A scoped command is not a general shell: it reads no disk credential and is no exfil tool.
+    expect(assess(scoped.replace('permissions: { issues: write }', ''), 'unknown').exfil).toBe(
+      'missing',
+    );
+  });
+
+  it('a scoped shell under the claude scrub still reads nothing from env', () => {
+    const scrubbed = AE1.replace(
+      "'--allowedTools Bash'",
+      `'--allowedTools "Bash(gh issue view:*)"'`,
+    ).replace('        env:\n          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0\n', '');
+    expect(assess(scrubbed).access).toBe('missing');
   });
 
   it("allowed_bots: '*' on an issue_comment job → direct holds only on a public repo", () => {
@@ -381,13 +395,13 @@ jobs:
     expect(a.direct).toBe('missing');
   });
 
-  it('gemini settings restricting shell to one command → no shell; a CLI pin below 0.39.1 makes it unknown', () => {
+  it('gemini settings scoping the shell to one command → env still readable; a CLI pin below 0.39.1 makes it unknown', () => {
     const restricted = GEMINI.replace(
       '          prompt: Triage this issue.',
       `          prompt: Triage this issue.
           settings: '{"tools":{"core":["run_shell_command(gh issue edit)"]}}'`,
     );
-    expect(assess(restricted).access).toBe('missing');
+    expect(assess(restricted).access).toBe('held');
     const pinned = restricted.replace(
       '          prompt: Triage',
       "          gemini_cli_version: '0.38.0'\n          prompt: Triage",

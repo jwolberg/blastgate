@@ -277,10 +277,10 @@ describe('agent verdict (0059)', () => {
     expect(f?.evidence?.payload).toBeUndefined();
   });
 
-  it('AE3: tools restricted to Bash(gh issue view:*) → warn naming the missing access leg', () => {
+  it('AE3 (revised): a scoped Bash(gh issue view:*) can expand the API key into its arguments → fail', () => {
     const f = onKey(runEngine(claude({ args: '--allowedTools "Bash(gh issue view:*)"' })));
-    expect(f?.tier).toBe('warn');
-    expect(f?.reason).toMatch(/sensitive access: missing/i);
+    expect(f?.tier).toBe('fail');
+    expect(f?.reason).toMatch(/sensitive access: held/i);
   });
 
   it('AE5: a pinned version outside every profile → warn naming the version', () => {
@@ -418,62 +418,6 @@ describe('agent verdict (0059)', () => {
     const f = acked.findings.find((x) => x.id === id);
     expect(f?.tier).toBe('warn');
     expect(f?.evidence?.line).toBe(7);
-  });
-});
-
-/**
- * 0062: a gh-aw-compiled job (github/gh-aw-actions/setup) runs its own runtime from
- * `${RUNNER_TEMP}/gh-aw` and `/tmp/gh-aw` after checking out the PR head. Those steps never
- * run PR code, so they are not 0048 execution evidence. A user's own step in that job is.
- */
-describe('gh-aw runtime steps are not PR-code execution (0062)', () => {
-  const ghAw = (extra: string[] = [], setup = true) =>
-    gh([
-      'on:',
-      '  workflow_run:',
-      "    workflows: ['trigger']",
-      '    types: [completed]',
-      'jobs:',
-      '  agent:',
-      '    steps:',
-      ...(setup ? ['      - uses: github/gh-aw-actions/setup@v0.88.2'] : []),
-      '      - uses: actions/checkout@v4',
-      '        with:',
-      '          persist-credentials: false',
-      '      - run: git fetch origin "refs/pull/${PR_NUMBER}/head" && git checkout FETCH_HEAD',
-      '      - run: bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"',
-      '        env:',
-      '          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}',
-      '      - run: |',
-      '          mkdir -p /tmp/gh-aw/safeoutputs',
-      '          bash "${RUNNER_TEMP}/gh-aw/actions/run_awf.sh" -- awf -- copilot --prompt-file /tmp/gh-aw/prompt.txt',
-      ...extra,
-    ]);
-
-  it('only gh-aw runtime steps after the PR checkout → no fail', () => {
-    const result = runEngine(ghAw());
-    expect(fails(result.findings)).toHaveLength(0);
-  });
-
-  it("a user's own step in the gh-aw job still runs PR code → fail", () => {
-    const result = runEngine(ghAw(['      - run: npm ci']));
-    expect(fails(result.findings).length).toBeGreaterThan(0);
-  });
-
-  it.each([
-    ['bash "${RUNNER_TEMP}/gh-aw/actions/x.sh" && ./scripts/build.sh'],
-    ['make test # see /tmp/gh-aw/ docs'],
-    // PR #39 round-3 review: tokenizer bypasses fail closed at the engine level too.
-    ['bash /tmp/gh-aw/r.sh; "./scripts/build.sh"'],
-    ['bash /tmp/gh-aw/r.sh; echo `./scripts/build.sh`'],
-  ])("a user's step that only mentions a gh-aw path still runs PR code → fail: %s", (run) => {
-    const result = runEngine(ghAw([`      - run: '${run}'`]));
-    expect(fails(result.findings).length).toBeGreaterThan(0);
-  });
-
-  it('the same gh-aw-path steps without gh-aw setup still count → fail', () => {
-    const result = runEngine(ghAw([], false));
-    expect(fails(result.findings).length).toBeGreaterThan(0);
   });
 });
 

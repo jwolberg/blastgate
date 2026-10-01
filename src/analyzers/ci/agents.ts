@@ -243,12 +243,29 @@ export interface AssessInputs {
 /** What the agent's granted tools can do. */
 interface Tools {
   shell: Leg;
+  /**
+   * Reads environment secrets. A general shell does; so does a command-scoped one, since the
+   * shell expands `$SECRET` into the allowed command's arguments (PromptPwnd's
+   * `gh issue edit --body "$GEMINI_API_KEY"`). A scoped command is not a general shell.
+   */
+  envRead: Leg;
   fileRead: Leg;
   network: Leg;
 }
 
-const NO_TOOLS: Tools = { shell: 'missing', fileRead: 'missing', network: 'missing' };
-const ALL_TOOLS: Tools = { shell: 'held', fileRead: 'held', network: 'held' };
+const NO_TOOLS: Tools = {
+  shell: 'missing',
+  envRead: 'missing',
+  fileRead: 'missing',
+  network: 'missing',
+};
+const ALL_TOOLS: Tools = { shell: 'held', envRead: 'held', fileRead: 'held', network: 'held' };
+const UNKNOWN_TOOLS: Tools = {
+  shell: 'unknown',
+  envRead: 'unknown',
+  fileRead: 'unknown',
+  network: 'unknown',
+};
 
 const isExpression = (v: unknown): boolean => typeof v === 'string' && v.includes('${{');
 const str = (v: unknown): string => (typeof v === 'string' ? v : v === undefined ? '' : String(v));
@@ -421,6 +438,7 @@ function toolsOf(profile: AgentProfile, step: StepSpec, envs: unknown[], unknown
       // `codex exec` always runs commands; only `danger-full-access` opens the network.
       return {
         shell: 'held',
+        envRead: 'held',
         fileRead: 'held',
         network: str(w.sandbox) === 'danger-full-access' ? 'held' : 'missing',
       };
@@ -440,7 +458,7 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
   const args = w.claude_args;
   if (isExpression(args)) {
     unknown.push('claude_args is a non-literal expression');
-    return { shell: 'unknown', fileRead: 'unknown', network: 'unknown' };
+    return UNKNOWN_TOOLS;
   }
   if (CLAUDE_BYPASS_RE.test(str(args))) {
     return ALL_TOOLS;
@@ -463,7 +481,9 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
   for (const m of granted.join(' ').matchAll(TOOL_TOKEN_RE)) {
     const [, name, spec] = m;
     if (name === 'Bash' && (spec === undefined || /^\s*\*?\s*(?::\s*\*)?\s*$/.test(spec))) {
-      tools.shell = tools.fileRead = tools.network = 'held';
+      tools.shell = tools.envRead = tools.fileRead = tools.network = 'held';
+    } else if (name === 'Bash') {
+      tools.envRead = 'held';
     } else if (name === 'Read') {
       tools.fileRead = 'held';
     } else if (name === 'WebFetch') {
@@ -471,7 +491,7 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
     }
   }
   if (settings === 'unreadable' && tools.shell !== 'held') {
-    return { shell: 'unknown', fileRead: 'unknown', network: 'unknown' };
+    return UNKNOWN_TOOLS;
   }
   return tools;
 }
@@ -484,11 +504,10 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
  * read it, so the grants are unknown (R9).
  */
 function geminiTools(w: Record<string, unknown>, envs: unknown[], unknown: string[]): Tools {
-  const UNKNOWN: Tools = { shell: 'unknown', fileRead: 'unknown', network: 'unknown' };
   const oldCli = geminiYoloIgnoresAllowlist(w.gemini_cli_version);
   if (oldCli === 'unknown') {
     unknown.push('gemini_cli_version is not a readable version');
-    return UNKNOWN;
+    return UNKNOWN_TOOLS;
   }
   const trusted = envs.some(
     (e) =>
@@ -499,12 +518,12 @@ function geminiTools(w: Record<string, unknown>, envs: unknown[], unknown: strin
     unknown.push(
       "the repo's .gemini/settings.json may set its tools, and Blastgate does not read it",
     );
-    return UNKNOWN;
+    return UNKNOWN_TOOLS;
   }
   const settings = parseJsonInput(w.settings);
   if (settings === 'unreadable') {
     unknown.push('settings is not inline JSON');
-    return UNKNOWN;
+    return UNKNOWN_TOOLS;
   }
   const s = settings as
     | { tools?: { core?: unknown; exclude?: unknown }; coreTools?: unknown; excludeTools?: unknown }
@@ -517,8 +536,13 @@ function geminiTools(w: Record<string, unknown>, envs: unknown[], unknown: strin
     (!Array.isArray(core) || core.map(str).some((t) => name.test(t)));
   // A scoped `run_shell_command(cmd)` runs only that command: not a general shell.
   const shell: Leg = has(/^run_shell_command$/) ? 'held' : 'missing';
+  const scopedShell =
+    !excluded.some((t) => /^run_shell_command$/.test(t.replace(/\(.*$/, ''))) &&
+    Array.isArray(core) &&
+    core.map(str).some((t) => t.startsWith('run_shell_command('));
   return {
     shell,
+    envRead: shell === 'held' || scopedShell ? 'held' : 'missing',
     fileRead: shell === 'held' || has(/^read_(?:many_)?files?$/) ? 'held' : 'missing',
     network: shell === 'held' || has(/^(?:web_fetch|google_web_search)$/) ? 'held' : 'missing',
   };
@@ -583,14 +607,17 @@ function accessLeg(
     );
   }
   const disk = onDiskCredentials(profile, job, stepIndex, perms, scrubbed);
-  const canEnv = tools.shell === 'held';
-  const canDisk = canEnv || tools.fileRead === 'held';
+  const canEnv = tools.envRead === 'held';
+  const canDisk = tools.shell === 'held' || tools.fileRead === 'held';
   const readable = [...(canEnv ? envCreds : []), ...(canDisk ? disk.map((d) => d.why) : [])];
   if (readable.length > 0) {
     const diskSecrets = canDisk ? disk.flatMap((d) => d.secrets) : [];
     return {
       leg: 'held',
-      why: `its tools can read ${readable.join('; ')}`,
+      why:
+        tools.shell !== 'held' && canEnv && envCreds.length > 0
+          ? `its scoped shell command can expand ${readable.join('; ')} into its arguments`
+          : `its tools can read ${readable.join('; ')}`,
       readable: {
         secrets: [...new Set([...(canEnv ? secrets.names : []), ...diskSecrets])],
         allSecrets: canEnv && secrets.usesAllSecrets,
@@ -600,7 +627,7 @@ function accessLeg(
   }
   const missing = (why: string) => ({ leg: 'missing' as const, why, readable: NOTHING_READABLE });
   const anyCreds = envCreds.length + disk.length > 0;
-  if (anyCreds && (tools.shell === 'unknown' || tools.fileRead === 'unknown')) {
+  if (anyCreds && (tools.envRead === 'unknown' || tools.fileRead === 'unknown')) {
     return {
       leg: 'unknown',
       why: 'the job holds credentials but the tool grants are unreadable',
