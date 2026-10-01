@@ -1150,3 +1150,21 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   EVAL_REMOTE_BASE JOBS SCAN_FLAGS SCAN_TIMEOUT CLONE_TIMEOUT`) plus caller overrides, with
   credential-looking names (`GITHUB_*`, `GH_*`, `ACTIONS_*`, `RUNNER_*`, `*TOKEN*`, `*SECRET*`, ...)
   stripped from both. Applies to `scanRepos`, `reverify`, and the CLI version probe.
+
+## 2026-10-01 — 0070: claude's default read-only commands as tools
+
+- Verified at source and empirically rather than from docs alone: claude-code-action v1.0.239
+  tag mode pre-approves `Glob, Grep, LS, Read` under `--permission-mode acceptEdits`; Claude Code
+  2.1.287 (the pinned CLI) ran `cat .git/config` with no grant, denied `echo $VAR`, and denied
+  `cat` outside the working directory. Model refusals in the experiment were ignored: Blastgate
+  models capability, not the model's willingness.
+- Change: `claudeTools` starts from `fileRead: held` (workspace-scoped in effect: every on-disk
+  credential Blastgate models lives in the workspace). Env read, shell, and network still need a
+  grant. ADR-0002 amended ([5]); threat-model R4 row updated.
+- Re-scan: the 50-repo sample scanned with main's and this branch's engine on the same clones
+  gives identical findings (2 known gh-aw false fails, 21 warns). pytorch's outsider-triggerable
+  claude step has `contents: read`, so nothing on disk to reach. A first attempt silently
+  produced 0/0 because the copied CLI could not resolve `node_modules`; caught by the 0-warn
+  sanity check, not trusted.
+- Open: `permissions.deny`/`disallowedTools` that remove `Read` and the read-only commands are not
+  modelled as removing the leg (rare; would only lower recall, never cause a false fail).

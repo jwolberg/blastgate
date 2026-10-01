@@ -591,6 +591,40 @@ ${opts.withLines.map((l) => `          ${l}`).join('\n')}
     expect(a.readable.secrets).toEqual([]);
     expect(assess(yaml, 'unknown').exfil).toBe('missing');
   });
+
+  // 0070: Claude Code runs its built-in read-only commands (`cat`, `ls`, ...) and workspace file
+  // reads with no grant in every mode, so a step with no claude_args can still read
+  // .git/config. `$VAR` expansion is not read-only (verified headless on CLI 2.1.287, the
+  // version claude-code-action v1.0.239 pins), so env secrets still need a grant.
+  it('no tool grants, a checkout-persisted contents:write token, public repo → access via workspace file read', () => {
+    const yaml = claude({
+      top: 'permissions:\n  contents: write',
+      pre: '      - uses: actions/checkout@v4',
+      withLines: [KEY, TOKEN, "allowed_non_write_users: '*'"],
+    });
+    const a = assess(yaml, 'public');
+    expect([a.direct, a.access, a.exfil]).toEqual(['held', 'held', 'held']);
+    expect(a.readable.token).toBe(true);
+    expect(a.reasons.access).toMatch(/\.git\/config/);
+  });
+
+  it('no tool grants and only env secrets (nothing on disk) → access stays missing', () => {
+    const yaml = claude({
+      withLines: [KEY, TOKEN, "allowed_non_write_users: '*'"],
+    });
+    const a = assess(yaml, 'public');
+    expect(a.access).toBe('missing');
+    expect(a.readable.secrets).toEqual([]);
+  });
+
+  it('no tool grants with checkout persist-credentials: false → nothing on disk, access missing', () => {
+    const yaml = claude({
+      top: 'permissions:\n  contents: write',
+      pre: '      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false',
+      withLines: [KEY, TOKEN, "allowed_non_write_users: '*'"],
+    });
+    expect(assess(yaml, 'public').access).toBe('missing');
+  });
 });
 
 /** PR #39 review fixes: secret scope, step/needs guards, gemini settings, unknown workspace config. */
