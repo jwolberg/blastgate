@@ -688,3 +688,27 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   command-substitution file-read sink (`$(<`/`$(cat`); other artifact-exec shapes and a sharper
   event-text→`run:` taint model are future work. The artifact-injection finding reuses the
   `untrusted-text-injection` entry kind (ASI01/MCP10) to avoid taxonomy surgery.
+
+## 2026-10-01 — Agent-in-CI U1 (0055): vendor re-verification changed two defaults
+
+- **Deviation — codex-action `allow-users: '*'` opens the gate (KTD3 revised, user-approved).**
+  The plan said codex's bypass inputs take explicit names only. The action's source
+  (`src/checkActorPermissions.ts`, every tag v1.0–v1.12) admits all users when
+  `allow-users` is `'*'`; only `allow-bot-users` rejects `'*'`. The codex profile now lists
+  `allow-users` as an outsider input, so a wildcard can make the direct leg hold. Named users
+  stay indirect warns.
+- **Deviation — the gemini `--yolo` allowlist bypass keys on `gemini_cli_version`, not the
+  action version (KTD4 revised, user-approved).** GHSA-wpqr-6v78-jr5g fixes it in Gemini CLI
+  0.39.1 / 0.40.0-preview.3. run-gemini-cli 0.1.21 and 0.1.22 both default
+  `gemini_cli_version: latest` and differ in nothing security-relevant (diffed action.yml).
+  `geminiYoloIgnoresAllowlist` flags only a literal pin below the fix; unset/`latest`/
+  `preview`/`nightly` are patched; an expression or branch is `unknown`.
+- **Decision — ranges are major lines; branch and SHA refs are unknown.** claude v1, codex v1,
+  run-gemini-cli 0.x, ai-inference v1–v3. A partial tag (`v1`) is covered only when its whole
+  line lies in range. `@main`/`@beta` and every SHA pin resolve to `unknown` (warn, never fail)
+  since no SHAs are recorded yet. Tradeoff: SHA-pinned agents — the hardened ones — cannot
+  fail until we record release SHAs. Follow-up candidate: resolve SHAs from a recorded table.
+- **Decision — `actions/ai-inference` stays tool-less even though it has tool inputs.** Its
+  `enable-github-mcp` (GitHub MCP tools, needs a PAT) and `provider: copilot` (Copilot CLI) are
+  off by default. They are recorded as `toolInputs` but the step still only warns (R8), which
+  errs toward warn. Follow-up candidate: model them as tool grants.

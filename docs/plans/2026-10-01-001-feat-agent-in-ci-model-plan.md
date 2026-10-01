@@ -18,7 +18,7 @@ execution: code
 - **Execution profile:** TDD per repo `CLAUDE.md` §2: the failing test for each unit is written first. One commit per unit on a feature branch; merge to `main` is human-only, and a PR is not merged before its review completes.
 - **Stop conditions:** Stop and ask if a vendor's current docs contradict a profile default this plan relies on, if the re-scan (U7) produces a fail that hand review cannot confirm, or before any outbound action beyond read-only GitHub API calls.
 - **Open blockers:** None.
-- **Product Contract preservation:** R3 clarified: codex-action's `allow-users`/`allow-bots` take explicit names only, so they do not open the agent to outsiders (verified against the action's docs, 2026-10-01); AE1 clarified to state scrubbing is disabled, per KTD2. No scope change.
+- **Product Contract preservation:** R3 clarified: codex-action's `allow-users: '*'` opens the agent to every user, like claude's wildcard bypass; named users and `allow-bot-users` (which rejects `'*'`) do not (U1 re-verification against `src/checkActorPermissions.ts` at v1.0–v1.12, 2026-10-01, superseding the earlier docs-page reading); AE1 clarified to state scrubbing is disabled, per KTD2. No scope change.
 
 ---
 
@@ -111,7 +111,7 @@ This plan owns the agent verdict. The broader breakdown is the current understan
 ### Outstanding Questions
 
 - Profile fields and defaults per action: resolved in KTD1–KTD4 and the profile table; U1 re-verifies at the pinned versions.
-- `issues: opened` with an action's own gate: claude-code-action checks issue events (the opener needs write access); run-gemini-cli has no gate (KTD4); codex-action's gate cannot be opened to outsiders (KTD3).
+- `issues: opened` with an action's own gate: claude-code-action checks issue events (the opener needs write access); run-gemini-cli has no gate (KTD4); codex-action's gate opens to outsiders only with `allow-users: '*'` (KTD3).
 - Which tool grants can read secrets: resolved in KTD2 (claude scrubbing), KTD4 (gemini OIDC), and U3's access rules.
 
 ### Sources / Research
@@ -134,8 +134,8 @@ This plan owns the agent verdict. The broader breakdown is the current understan
 
 - KTD1. **Profiles live in one data module, keyed by action and version range.** Each profile records the trigger gate, the inputs that open it to outsiders, how tools are granted, the defaults, and a citation URL. Unknown versions fall through to R9. Governs R2, R9.
 - KTD2. **claude-code-action: environment secrets count as reachable only when scrubbing is off.** With `allowed_non_write_users`, the action scrubs Anthropic, cloud, and Actions secrets from subprocess environments by default (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). Sensitive access then comes only from credentials on disk: the `GITHUB_TOKEN` that `actions/checkout` persists in `.git/config` unless `persist-credentials: false`, or a credentials file written by an auth action such as `google-github-actions/auth`. Setting the scrub variable to `0` restores environment secrets. Governs R4. (session-settled: user-approved — chosen over "any shell tool reaches every job secret": keeps fails demonstrable against the action's documented default.)
-- KTD3. **codex-action is never directly triggerable from configuration.** Its bypass inputs take explicit account names, which the maintainer chose to trust. Its findings are indirect warns unless the job has some other unguarded outsider trigger. Governs R3, R7. (session-settled: user-approved.)
-- KTD4. **run-gemini-cli has no trigger gate.** Any attacker-reachable trigger is direct unless the job carries a recognized guard (0017/0044 detectors). Tools come from the `settings` JSON input; `gcp_workload_identity_provider` counts as sensitive access (OIDC). Versions before 0.1.22 also ignore tool allowlists under `--yolo`. Governs R3, R4, R9.
+- KTD3. **codex-action is directly triggerable only through `allow-users: '*'`.** Named `allow-users` entries, `allow-bots` (github-actions[bot] only), and `allow-bot-users` (rejects `'*'`) admit accounts the maintainer chose to trust, so those stay indirect warns. Governs R3, R7. (session-settled: user-approved; revised 2026-10-01 in U1 after the action's source showed `'*'` admits all users.)
+- KTD4. **run-gemini-cli has no trigger gate.** Any attacker-reachable trigger is direct unless the job carries a recognized guard (0017/0044 detectors). Tools come from the `settings` JSON input; `gcp_workload_identity_provider` counts as sensitive access (OIDC). Gemini CLI below 0.39.1 (and 0.40.0 previews before preview.3) ignores tool allowlists under `--yolo`; this keys on the step's `gemini_cli_version` input (default `latest`, patched), not the action version — run-gemini-cli 0.1.21 and 0.1.22 differ in nothing security-relevant. A non-literal `gemini_cli_version` is unknown. Governs R3, R4, R9. (revised 2026-10-01 in U1, user-approved.)
 - KTD5. **Repository visibility is an engine input, never a guess.** The Action reads `repository.private` from its event payload, the CLI takes `--public`, and the crawler supplies it. When unknown, public logs are not counted as an exfiltration channel, while shell and network tools still are. Governs R5. (session-settled: user-approved.)
 - KTD6. **The verdict reuses Precision Core's seams.** The `agent-ingested` sink class keeps its name. An agent entry carries its assessment (which legs hold, what is unknown). `proof` in `src/engine/checks.ts` gives a payload only when all three legs hold, so `tierFor` fails it with no new tier logic. Governs R6, R7, R10.
 - KTD7. **Tool-less LLM steps are recognized by what they call.** That means `uses: actions/ai-inference`, or an `actions/github-script` step whose script calls the GitHub Models endpoint. Untrusted text reaching them via `env:`, `with:`, or the script counts as ingestion. Governs R1, R8.
@@ -163,8 +163,8 @@ Profile summary (verified 2026-10-01; implementation re-verifies at the pinned v
 | Action | Trigger gate | Opens to outsiders | Tools granted by | Sensitive-access notes |
 |---|---|---|---|---|
 | claude-code-action | write access for issue, PR, comment, review, workflow_run | `allowed_non_write_users: '*'`, `allowed_bots: '*'` | `claude_args --allowedTools` | env scrub on by default when bypassed (KTD2) |
-| codex-action | write access | none (names only) | `sandbox`, `safety-strategy` | `read-only` blocks network; `drop-sudo` default |
-| run-gemini-cli | none | any untrusted trigger | `settings` JSON | OIDC via `gcp_workload_identity_provider`; < 0.1.22 ignores allowlists under `--yolo` |
+| codex-action | write access | `allow-users: '*'` | `sandbox`, `safety-strategy` | `read-only` blocks network; `drop-sudo` default |
+| run-gemini-cli | none | any untrusted trigger | `settings` JSON | OIDC via `gcp_workload_identity_provider`; CLI < 0.39.1 (`gemini_cli_version` pin) ignores allowlists under `--yolo` |
 | ai-inference / github-script → Models | n/a | n/a | none (tool-less) | warn only (R8) |
 
 ### Sequencing
@@ -198,7 +198,7 @@ U1 first. U2 and U4 depend on U1 and can proceed in parallel. U3 needs U2. U5 ne
 
 **Test scenarios:**
 - `anthropics/claude-code-action@v1` resolves to the claude profile.
-- `google-github-actions/run-gemini-cli@v0.1.21` resolves with the pre-0.1.22 flag set.
+- `google-github-actions/run-gemini-cli@v0.1.21` resolves to the gemini profile; a `gemini_cli_version` pin below 0.39.1 sets the `--yolo` allowlist-bypass flag (revised from "pre-0.1.22 flag", KTD4).
 - `openai/codex-action@v1` resolves to the codex profile.
 - A version outside every range resolves to unknown.
 - An unrecognized action resolves to undefined (not an agent).
@@ -267,6 +267,7 @@ U1 first. U2 and U4 depend on U1 and can proceed in parallel. U3 needs U2. U5 ne
 - Covers AE3. Claude with tools `Bash(gh issue view:*)` only → access missing.
 - `allowed_bots: '*'` on an `issue_comment` job → direct holds.
 - Codex with `allow-users: someone` → direct missing (KTD3).
+- Codex with `allow-users: '*'` on an `issue_comment` job → direct holds (KTD3).
 - Gemini on `issues` with no guard and `gcp_workload_identity_provider` set → direct and access hold.
 - Gemini with an `author_association` actor guard → direct missing.
 - `claude_args` built from a non-literal expression → unknown reason recorded.

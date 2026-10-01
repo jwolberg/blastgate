@@ -1,0 +1,133 @@
+import { describe, expect, it } from 'vitest';
+import { AGENT_PROFILES, agentProfileFor, geminiYoloIgnoresAllowlist } from './agents';
+
+/**
+ * Agent-in-CI U1 (0055): each recognized agent action resolves to a cited,
+ * versioned profile of its trigger gate and tool defaults (R2, R9; KTD1). A ref
+ * the profile does not cover is `unknown` (it warns, never fails); an action no
+ * profile names is not an agent at all.
+ */
+describe('agentProfileFor — action + ref → profile', () => {
+  it('resolves anthropics/claude-code-action@v1 to the claude profile', () => {
+    const r = agentProfileFor('anthropics/claude-code-action@v1');
+    expect(r?.profile.id).toBe('claude');
+    expect(r?.covered).toBe(true);
+  });
+
+  it('resolves a full claude release tag inside the v1 line', () => {
+    expect(agentProfileFor('anthropics/claude-code-action@v1.0.238')?.covered).toBe(true);
+  });
+
+  it('resolves openai/codex-action@v1 to the codex profile', () => {
+    const r = agentProfileFor('openai/codex-action@v1');
+    expect(r?.profile.id).toBe('codex');
+    expect(r?.covered).toBe(true);
+  });
+
+  it('resolves run-gemini-cli@v0.1.21 to the gemini profile, gate absent', () => {
+    const r = agentProfileFor('google-github-actions/run-gemini-cli@v0.1.21');
+    expect(r?.profile.id).toBe('gemini');
+    expect(r?.covered).toBe(true);
+    expect(r?.profile.gate).toBe('none');
+  });
+
+  it('resolves actions/ai-inference to the tool-less LLM profile', () => {
+    const r = agentProfileFor('actions/ai-inference@v2');
+    expect(r?.profile.id).toBe('llm-inference');
+    expect(r?.profile.toolLess).toBe(true);
+  });
+
+  it('matches the action name case-insensitively', () => {
+    expect(agentProfileFor('Anthropics/Claude-Code-Action@v1')?.profile.id).toBe('claude');
+  });
+
+  it('marks a version outside every range unknown, naming the ref (AE5)', () => {
+    const r = agentProfileFor('anthropics/claude-code-action@v0.0.17');
+    expect(r?.profile.id).toBe('claude');
+    expect(r?.covered).toBe(false);
+    expect(r?.unknown).toMatch(/v0\.0\.17/);
+  });
+
+  it('marks a branch ref unknown: a moving branch has no version to check', () => {
+    expect(agentProfileFor('anthropics/claude-code-action@main')?.covered).toBe(false);
+    expect(agentProfileFor('anthropics/claude-code-action@beta')?.covered).toBe(false);
+  });
+
+  it('marks an unrecorded SHA pin unknown (R9)', () => {
+    const r = agentProfileFor('openai/codex-action@0123456789abcdef0123456789abcdef01234567');
+    expect(r?.covered).toBe(false);
+    expect(r?.unknown).toMatch(/SHA/);
+  });
+
+  it('marks a missing ref unknown', () => {
+    expect(agentProfileFor('openai/codex-action')?.covered).toBe(false);
+  });
+
+  it('returns undefined for an unrecognized action (not an agent)', () => {
+    expect(agentProfileFor('actions/checkout@v4')).toBeUndefined();
+    expect(agentProfileFor('actions/github-script@v7')).toBeUndefined();
+    expect(agentProfileFor('./local-action')).toBeUndefined();
+  });
+
+  it('does not match a look-alike owner or repo', () => {
+    expect(agentProfileFor('evil/claude-code-action@v1')).toBeUndefined();
+    expect(agentProfileFor('anthropics/claude-code-action-fork@v1')).toBeUndefined();
+  });
+});
+
+describe('AGENT_PROFILES — every profile is cited and gated as its docs say', () => {
+  it('every profile has at least one non-empty https citation', () => {
+    for (const p of AGENT_PROFILES) {
+      expect(p.citations.length, p.id).toBeGreaterThan(0);
+      for (const c of p.citations) {
+        expect(c, p.id).toMatch(/^https:\/\/\S+$/);
+      }
+    }
+  });
+
+  it('claude and codex gate on write access, opened to all by a wildcard input', () => {
+    const claude = AGENT_PROFILES.find((p) => p.id === 'claude');
+    const codex = AGENT_PROFILES.find((p) => p.id === 'codex');
+    expect(claude?.gate).toBe('write-access');
+    expect(claude?.outsiderInputs).toEqual(['allowed_non_write_users', 'allowed_bots']);
+    expect(codex?.gate).toBe('write-access');
+    // allow-users: '*' admits every user (checkActorPermissions.ts); allow-bot-users rejects '*'.
+    expect(codex?.outsiderInputs).toEqual(['allow-users']);
+  });
+});
+
+/**
+ * The --yolo allowlist bypass is a Gemini CLI property (fixed in 0.39.1 and
+ * 0.40.0-preview.3, GHSA-wpqr-6v78-jr5g), set by the step's `gemini_cli_version`
+ * input — not by the run-gemini-cli action version, which installs `latest`.
+ */
+describe('geminiYoloIgnoresAllowlist — gemini_cli_version → bypass', () => {
+  it('is false when unset or a moving channel (installs a patched CLI)', () => {
+    expect(geminiYoloIgnoresAllowlist(undefined)).toBe(false);
+    expect(geminiYoloIgnoresAllowlist('')).toBe(false);
+    expect(geminiYoloIgnoresAllowlist('latest')).toBe(false);
+    expect(geminiYoloIgnoresAllowlist('preview')).toBe(false);
+    expect(geminiYoloIgnoresAllowlist('nightly')).toBe(false);
+  });
+
+  it('is true for a pin below 0.39.1', () => {
+    expect(geminiYoloIgnoresAllowlist('0.39.0')).toBe(true);
+    expect(geminiYoloIgnoresAllowlist('v0.12.3')).toBe(true);
+  });
+
+  it('is false for a pin at or above the fix', () => {
+    expect(geminiYoloIgnoresAllowlist('0.39.1')).toBe(false);
+    expect(geminiYoloIgnoresAllowlist('0.41.0')).toBe(false);
+  });
+
+  it('treats 0.40.0 previews before preview.3 as vulnerable', () => {
+    expect(geminiYoloIgnoresAllowlist('0.40.0-preview.2')).toBe(true);
+    expect(geminiYoloIgnoresAllowlist('0.40.0-preview.3')).toBe(false);
+  });
+
+  it('is unknown for an expression, branch, or commit', () => {
+    expect(geminiYoloIgnoresAllowlist('${{ vars.GEMINI_VERSION }}')).toBe('unknown');
+    expect(geminiYoloIgnoresAllowlist('my-branch')).toBe('unknown');
+    expect(geminiYoloIgnoresAllowlist(42)).toBe('unknown');
+  });
+});
