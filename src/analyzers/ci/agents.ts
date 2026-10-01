@@ -483,7 +483,8 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
     const [, name, spec] = m;
     if (name === 'Bash' && (spec === undefined || /^\s*\*?\s*(?::\s*\*)?\s*$/.test(spec))) {
       tools.shell = tools.envRead = tools.fileRead = tools.network = 'held';
-    } else if (name === 'Bash') {
+    } else if (name === 'Bash' && spec !== undefined && spec.includes('*')) {
+      // A wildcard admits any argument text, so `$SECRET` can ride in; an exact rule cannot.
       tools.envRead = 'held';
     } else if (name === 'Read') {
       tools.fileRead = 'held';

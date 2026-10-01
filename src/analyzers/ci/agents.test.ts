@@ -283,6 +283,22 @@ jobs:
     );
   });
 
+  it.each([['Bash(npm test)'], ['Bash(gh issue view 1)']])(
+    '0064: an exact-match %s admits no injected argument → no env read',
+    (rule) => {
+      const exact = AE1.replace("'--allowedTools Bash'", `'--allowedTools "${rule}"'`);
+      expect(assess(exact).access).toBe('missing');
+    },
+  );
+
+  it.each([['Bash(npm test:*)'], ['Bash(npm test *)'], ['Bash(git log * main)']])(
+    '0064: a wildcard %s still admits $SECRET expansion → env read',
+    (rule) => {
+      const scoped = AE1.replace("'--allowedTools Bash'", `'--allowedTools "${rule}"'`);
+      expect(assess(scoped).access).toBe('held');
+    },
+  );
+
   it('a scoped shell under the claude scrub still reads nothing from env', () => {
     const scrubbed = AE1.replace(
       "'--allowedTools Bash'",

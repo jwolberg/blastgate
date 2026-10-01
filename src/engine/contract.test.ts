@@ -283,6 +283,12 @@ describe('agent verdict (0059)', () => {
     expect(f?.reason).toMatch(/sensitive access: held/i);
   });
 
+  it('0064: an exact-match Bash(npm test) with the scrub off and a key in env → no fail', () => {
+    const f = onKey(runEngine(claude({ args: '--allowedTools "Bash(npm test)"' })));
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).toMatch(/sensitive access: missing/i);
+  });
+
   it('AE5: a pinned version outside every profile → warn naming the version', () => {
     const f = onKey(runEngine(claude({ ref: 'v0.0.17' })));
     expect(f?.tier).toBe('warn');
