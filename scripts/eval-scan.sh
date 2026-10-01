@@ -8,6 +8,7 @@
 # Usage: scripts/eval-scan.sh <workdir> <outdir> [repo-list]
 #   outdir gets one <owner>__<repo>.json per repo (findings, payloads included — local
 #   evaluation only, do not publish) plus index.tsv: repo, sha, exit code, fail, warn.
+#   SCAN_FLAGS adds CLI flags to every scan, e.g. SCAN_FLAGS=--public for a public sample.
 set -euo pipefail
 
 WORKDIR=${1:?usage: eval-scan.sh <workdir> <outdir> [repo-list]}
@@ -33,7 +34,8 @@ scan_one() {
   local sha code
   sha=$(git -C "$dir" rev-parse --short HEAD)
   set +e
-  node "$CLI" "$dir" --json --include-payloads >"$OUTDIR/$name.json" 2>"$OUTDIR/$name.err"
+  # shellcheck disable=SC2086 # SCAN_FLAGS is a deliberately word-split flag list
+  node "$CLI" "$dir" --json --include-payloads ${SCAN_FLAGS:-} >"$OUTDIR/$name.json" 2>"$OUTDIR/$name.err"
   code=$?
   set -e
   node -e '
@@ -43,7 +45,7 @@ scan_one() {
   ' "$OUTDIR/$name.json" "$repo" "$sha" "$code"
 }
 export -f scan_one
-export WORKDIR OUTDIR CLI
+export WORKDIR OUTDIR CLI SCAN_FLAGS
 export SPARSE_DECL; SPARSE_DECL=$(declare -p SPARSE)
 
 grep -v '^\s*\(#\|$\)' "$LIST" \

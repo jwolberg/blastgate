@@ -343,6 +343,47 @@ describe('classifyUntrustedText — agent and tool-less LLM steps (0056)', () =>
     });
   });
 
+  it('ai-inference fed by a github-script step that reads the issue in-script (home-assistant duplicates) → agent-ingested', () => {
+    const job: JobSpec = {
+      steps: [
+        {
+          id: 'extract',
+          uses: 'actions/github-script@v7',
+          with: {
+            script: [
+              'const { data: issue } = await github.rest.issues.get({',
+              '  issue_number: context.payload.issue.number, owner, repo });',
+              "core.setOutput('current_title', issue.title);",
+              "core.setOutput('current_body', issue.body);",
+            ].join('\n'),
+          },
+        } as StepSpec,
+        {
+          uses: 'actions/ai-inference@v2',
+          with: { prompt: 'Body: ${{ steps.extract.outputs.current_body }}' },
+        },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'agent-ingested',
+      path: ['steps', 1, 'uses'],
+    });
+  });
+
+  it('a github-script step reading only the issue number does not taint its outputs', () => {
+    const job: JobSpec = {
+      steps: [
+        {
+          id: 'n',
+          uses: 'actions/github-script@v7',
+          with: { script: "core.setOutput('num', context.payload.issue.number);" },
+        } as StepSpec,
+        { uses: 'actions/ai-inference@v2', with: { prompt: '#${{ steps.n.outputs.num }}' } },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
   it('actions/ai-inference fed via ${{ env.X }} holding the body → agent-ingested', () => {
     const job: JobSpec = {
       env: { ISSUE_BODY: BODY },

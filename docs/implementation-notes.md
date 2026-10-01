@@ -803,3 +803,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Hardened variants as engine tests: claude gate intact (AE2), tools restricted (AE3), and
   scrub default (U5); gemini with an `author_association` guard and PromptPwnd with a patched
   CLI (U6).
+
+## 2026-10-01 — Agent-in-CI U7 (0061) re-scan findings fed back into U2 (0056)
+
+- **Deviation — U2 also taints outputs of github-script steps that read text in-script.**
+  The re-scan found home-assistant `detect-duplicate-issues.yml` had no finding. Its
+  `extract` step reads the issue through `context.payload` / `github.rest.issues.get`
+  and `setOutput`s the title and body, which `actions/ai-inference` then reads. A
+  github-script step whose script names `context.payload` or `github.rest.issues|pulls` and
+  reads `.body`/`.title` now taints its outputs. This affects only LLM-step classification
+  (warn-only).
+- **Eval hygiene — six clones were silently empty.** Network timeouts left sparse checkouts
+  with no `.github/`, and they scanned as clean 0/0 (free-programming-books dropped from
+  1 warn to 0 at the same SHA). They were re-cloned. `eval-scan.sh` gained `SCAN_FLAGS` (used
+  with `--public`). Follow-up candidate: have the script fail a repo whose checkout lacks the
+  sparse paths instead of scanning it.

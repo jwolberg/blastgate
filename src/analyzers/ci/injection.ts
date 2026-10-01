@@ -353,6 +353,21 @@ function carriesTaint(value: unknown, taint: Taint): boolean {
   );
 }
 
+// A github-script body that reads issue/PR/comment text itself, from the event payload or
+// the REST API, rather than through a `${{ github.event.* }}` expression.
+const SCRIPT_TEXT_SOURCE_RE = /context\.payload\b|github\.rest\.(?:issues|pulls)\./;
+const SCRIPT_TEXT_FIELD_RE = /\.(?:body|title)\b/;
+
+/** A github-script step that reads attacker-authored text in-script; its outputs carry it. */
+function readsTextInScript(step: StepSpec): boolean {
+  const script = typeof step.with?.script === 'string' ? step.with.script : '';
+  return (
+    GITHUB_SCRIPT_RE.test(typeof step.uses === 'string' ? step.uses : '') &&
+    SCRIPT_TEXT_SOURCE_RE.test(script) &&
+    SCRIPT_TEXT_FIELD_RE.test(script)
+  );
+}
+
 /**
  * A tool-less LLM step (actions/ai-inference, or github-script calling GitHub Models) that
  * untrusted text reaches. github-script reads `process.env`, so job and step env count.
@@ -427,7 +442,7 @@ export function classifyUntrustedText(job: JobSpec): UntrustedTextSink | undefin
     };
     consider(classifyStep(step, stepTaint), ['steps', i]);
     // A later step may read this one's outputs: they carry whatever text it was given.
-    if (typeof step.id === 'string' && carriesTaint(step, stepTaint)) {
+    if (typeof step.id === 'string' && (carriesTaint(step, stepTaint) || readsTextInScript(step))) {
       taint.steps.add(step.id);
     }
   });
