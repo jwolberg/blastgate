@@ -241,28 +241,44 @@ const GH_AW_SETUP_RE = /^github\/gh-aw-actions\/setup@/;
 // gh-aw runtime: scripts under its own paths, or its compiler's `$GH_AW_*` variables.
 const GH_AW_PATH_RE = /^["']?(?:\$\{?RUNNER_TEMP\}?|\/tmp)\/gh-aw\//;
 const GH_AW_VAR_RE = /^["']?\$\{?GH_AW_\w+\}?["']?$/;
-// Commands that never run the checked-out workspace's code (shell plumbing, gh-aw's `awf`).
+const isGhAwWord = (w: string): boolean => GH_AW_PATH_RE.test(w) || GH_AW_VAR_RE.test(w);
+// Commands that never run the checked-out workspace's code.
 const INERT_COMMANDS = new Set([
   ...['set', 'export', 'echo', 'printf', 'mkdir', 'cp', 'mv', 'rm', 'touch', 'chmod', 'cat'],
-  ...['test', '[', '[[', 'true', 'false', 'exit', 'return', 'trap', 'umask', 'cd', 'local'],
-  ...['read', 'shift', 'wait', 'sleep', 'date', 'id', 'openssl', 'tr', 'head', 'tail', 'grep'],
-  ...['tee', 'sort', 'uniq', 'wc', 'base64', 'command', 'type', 'which', 'unset', 'declare'],
-  ...['readonly', 'mktemp', 'ln', 'ls', 'basename', 'dirname', 'realpath', ':', 'curl', 'kill'],
-  ...['awf', 'gh', 'break', 'continue', 'for', 'in'],
-  ...['if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'case', 'esac'],
+  ...['test', '[', '[[', 'true', 'false', 'exit', 'return', 'cd', 'local', 'read', 'shift'],
+  ...['wait', 'sleep', 'date', 'id', 'openssl', 'tr', 'head', 'tail', 'grep', 'tee', 'sort'],
+  ...['uniq', 'wc', 'base64', 'type', 'which', 'unset', 'declare', 'readonly', 'mktemp', 'ln'],
+  ...['ls', 'basename', 'dirname', 'realpath', ':', 'curl', 'kill', 'umask', 'gh', 'jq'],
+  ...['break', 'continue', 'for', 'in', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done'],
+  ...['while', 'until', 'case', 'esac'],
 ]);
-// Inert unless told to run a program from a file or to execute a command.
-const CONDITIONAL_COMMANDS: Record<string, RegExp> = {
-  sed: /^-f$|^--file/,
-  awk: /^-f$|^--file/,
-  jq: /^-f$|^--from-file/,
-  find: /^-(?:exec|execdir|ok|okdir)$/,
-  git: /hooksPath|^-c$/,
+// Inert unless an argument makes them run something.
+const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
+  command: (args) => args[0] === '-v' || args[0] === '-V',
+  // Only a single-quoted body, which shellSegments checks as commands of its own.
+  trap: (args) => args[0] === "''",
+  find: (args) => !args.some((a) => /^-(?:exec|execdir|ok|okdir)$/.test(a)),
+  git: (args) => !args.some((a) => /hooksPath/.test(a) || a === '-c'),
+  jq: (args) => !args.some((a) => /^-f$|^--from-file/.test(a)),
+  npm: (args) => /^(?:root|config|view|ls|-v|--version)$/.test(args[0] ?? ''),
 };
 const SCRIPT_RUNNERS = new Set(['bash', 'sh', 'node', 'source', '.']);
+// What may follow `--` in a gh-aw runtime call: gh-aw's firewall launcher or an agent CLI.
+const AGENT_LAUNCH_RE = /^(?:awf|copilot|claude|codex|gemini)$/;
+// Shell syntax this tokenizer does not model: backticks, process substitution, arithmetic,
+// here-strings. A step using any of them is not provably gh-aw runtime.
+const UNMODELED_RE = /`|[<>]\(|\$\(\(|<<</;
+// A single-quoted string, including gh-aw's '\'' escapes for a quote inside one.
+const SINGLE_QUOTED_RE = /'(?:[^']|'\\'')*'/g;
+// A workspace path handed to a runtime script as an argument.
+const WORKSPACE_ARG_RE = /^["']?(?:\.{1,2}\/|\$\{?GITHUB_WORKSPACE)/;
 
-/** A `run:` script's simple commands: comments, heredoc bodies, and quoted text removed. */
-function shellSegments(run: string): string[] {
+/**
+ * Simple commands of a `run:` script, or undefined when it uses syntax the tokenizer cannot
+ * model. Comments and heredoc bodies are dropped, single-quoted text is literal (a `trap`
+ * body is returned for checking instead), and `$(…)` contents become commands of their own.
+ */
+function shellSegments(run: string): string[] | undefined {
   const out: string[] = [];
   let heredoc: string | undefined;
   for (const line of run.replace(/\\\n/g, ' ').split('\n')) {
@@ -270,12 +286,23 @@ function shellSegments(run: string): string[] {
       heredoc = line.trim() === heredoc ? undefined : heredoc;
       continue;
     }
-    heredoc = /<<-?\s*['"]?(\w+)['"]?/.exec(line)?.[1];
     const code = line.replace(/(^|\s)#.*$/, '$1');
-    const subs = [...code.matchAll(/\$\(([^()]*)\)/g)].map((m) => m[1] ?? '');
-    const masked = code
-      .replace(/"(?:[^"\\]|\\.)*"/g, (q) => (q.startsWith('"$') ? q : '""'))
-      .replace(/'[^']*'/g, "''")
+    // A trap body runs later; check it like any other command.
+    for (const m of code.matchAll(/\btrap\s+'([^']*)'/g)) {
+      const body = shellSegments(m[1] ?? '');
+      if (body === undefined) {
+        return undefined;
+      }
+      out.push(...body);
+    }
+    const unquoted = code.replace(SINGLE_QUOTED_RE, "''");
+    if (UNMODELED_RE.test(unquoted)) {
+      return undefined;
+    }
+    heredoc = /<<-?\s*(['"]?)(\w+)\1/.exec(unquoted)?.[2];
+    const subs = [...unquoted.matchAll(/\$\(([^()]*)\)/g)].map((m) => m[1] ?? '');
+    const masked = unquoted
+      .replace(/"(?:[^"\\]|\\.)*"/g, (q) => (q.startsWith('"$') || isGhAwWord(q) ? q : '""'))
       .replace(/\$\(([^()]*)\)/g, '$X');
     for (const c of [masked, ...subs]) {
       out.push(...c.split(/&&|\|\||;|\|/));
@@ -297,45 +324,67 @@ function commandWords(segment: string): string[] {
   return s.split(/\s+/).filter(Boolean);
 }
 
+/** A gh-aw runtime call's arguments: no workspace path of its own, and only an agent launch after `--`. */
+function runtimeArgsSafe(args: string[]): boolean {
+  // Before `--` the arguments are the runtime's own; after it, an agent launch and its flags.
+  const dash = args.indexOf('--');
+  const own = dash < 0 ? args : args.slice(0, dash);
+  if (own.some((a) => WORKSPACE_ARG_RE.test(a))) {
+    return false;
+  }
+  const launched = args[dash + 1] ?? '';
+  return dash < 0 || AGENT_LAUNCH_RE.test(launched) || isGhAwWord(launched);
+}
+
 /**
  * A gh-aw runtime step (0062): every command in it is a gh-aw runtime script, a compiler
- * `$GH_AW_*` invocation, or inert shell plumbing, so it cannot run the PR's code. An allowlist, so any command it does not
- * recognize — `node x.js`, `docker build .`, `$GITHUB_WORKSPACE/x.sh`, `eval` — counts as
- * running the PR's code.
+ * `$GH_AW_*` invocation, gh-aw's `awf` firewall launching its agent, or inert shell plumbing,
+ * so it cannot run the PR's code. An allowlist that fails closed: an unrecognized command, a
+ * quoted command word, or shell syntax the tokenizer cannot model all count as running the
+ * PR's code. What `awf` runs after `--` is the sandboxed agent (the agent class, judged by its
+ * own Rule-of-Two verdict), not direct PR-code execution.
  */
 export function isGhAwRuntimeStep(run: string): boolean {
-  for (const segment of shellSegments(run)) {
+  const segments = shellSegments(run);
+  if (segments === undefined) {
+    return false;
+  }
+  for (const segment of segments) {
     const [cmd, ...args] = commandWords(segment);
-    if (cmd === undefined || /^[)}\]]/.test(cmd) || cmd === '""' || cmd === "''") {
+    if (cmd === undefined || /^[)}\]]/.test(cmd)) {
       continue;
     }
-    if (GH_AW_PATH_RE.test(cmd) || GH_AW_VAR_RE.test(cmd)) {
-      continue;
-    }
-    if (SCRIPT_RUNNERS.has(cmd)) {
-      // The script is the first non-option word; `-c` before it runs an inline command instead.
-      const at = args.findIndex((a) => !a.startsWith('-'));
-      const target = args[at];
-      if (
-        target !== undefined &&
-        (GH_AW_PATH_RE.test(target) || GH_AW_VAR_RE.test(target)) &&
-        !args.slice(0, at).includes('-c')
-      ) {
-        continue;
-      }
-      return false;
-    }
-    const risky = CONDITIONAL_COMMANDS[cmd];
-    if (risky) {
-      if (args.some((a) => risky.test(a))) {
+    // gh-aw's firewall, launched with its own generated config: what it runs is the agent.
+    if (cmd === 'awf') {
+      if (!isGhAwWord(args[args.indexOf('--config') + 1] ?? '')) {
         return false;
       }
       continue;
     }
-    if (cmd === 'npm' && /^(?:root|config|view|ls|-v|--version)$/.test(args[0] ?? '')) {
+    if (isGhAwWord(cmd)) {
+      const target = args.find((a) => !a.startsWith('-'));
+      if (target !== undefined && !isGhAwWord(target)) {
+        return false;
+      }
+      if (!runtimeArgsSafe(args)) {
+        return false;
+      }
       continue;
     }
-    if (!INERT_COMMANDS.has(cmd)) {
+    if (SCRIPT_RUNNERS.has(cmd)) {
+      // The script is the first non-option word; `-c` before it runs an inline command.
+      const at = args.findIndex((a) => !a.startsWith('-'));
+      const target = args[at];
+      if (target === undefined || !isGhAwWord(target) || args.slice(0, at).includes('-c')) {
+        return false;
+      }
+      if (!runtimeArgsSafe(args.slice(at + 1))) {
+        return false;
+      }
+      continue;
+    }
+    const conditional = CONDITIONAL_COMMANDS[cmd];
+    if (conditional ? !conditional(args) : !INERT_COMMANDS.has(cmd)) {
       return false;
     }
   }

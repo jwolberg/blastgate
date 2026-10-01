@@ -896,3 +896,24 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   `always()`, `!cancelled()`, or `failure()`.**
 - Plan R4 and the flowchart now scope access to the agent step (the PR #38 low, applied here so
   #38's approved head does not move).
+
+## 2026-10-01 — PR #39 round-3 review fix (0062): the gh-aw allowlist fails closed
+
+- **Fixed — the tokenizer could be fooled.** Quoted command words, `$((…))`/`<<<`/comments read
+  as heredocs, backticks, process substitution, `command ./x`, `trap ./x`, `awk system()`,
+  `sed e`, and runtime scripts handed a workspace path or a non-agent command after `--` were
+  all classified as gh-aw runtime. Now:
+  - shell syntax the tokenizer does not model (backticks, `<(`/`>(`, `$((`, `<<<` outside single
+    quotes) makes the step not-runtime;
+  - heredocs are found after comment stripping;
+  - a quoted command word must be a gh-aw path or `$GH_AW_*` variable;
+  - `command` only with `-v`; `trap` only with a single-quoted body, which is itself checked;
+  - `awk`/`sed` are not allowlisted;
+  - gh-aw scripts and `$GH_AW_*` commands may not take a workspace path before `--`, and only
+    an agent launch (`awf`, `copilot`, `claude`, `codex`, `gemini`) after it.
+- **Judgment — `awf` is the agent boundary.** gh-aw's firewall launched with its own generated
+  config (`--config` under a gh-aw path) runs the agent. What it runs is the agent class, judged
+  by the Rule-of-Two verdict, not direct PR-code execution. A bare `awf -- node build.js` is
+  rejected.
+- Calibrated on the real home-assistant lock file: every runtime step is still exempt.
+  Re-scan: 50 repos, 0 fails, 20 warns.

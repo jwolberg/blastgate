@@ -463,6 +463,9 @@ describe('gh-aw runtime steps are not PR-code execution (0062)', () => {
   it.each([
     ['bash "${RUNNER_TEMP}/gh-aw/actions/x.sh" && ./scripts/build.sh'],
     ['make test # see /tmp/gh-aw/ docs'],
+    // PR #39 round-3 review: tokenizer bypasses fail closed at the engine level too.
+    ['bash /tmp/gh-aw/r.sh; "./scripts/build.sh"'],
+    ['bash /tmp/gh-aw/r.sh; echo `./scripts/build.sh`'],
   ])("a user's step that only mentions a gh-aw path still runs PR code → fail: %s", (run) => {
     const result = runEngine(ghAw([`      - run: '${run}'`]));
     expect(fails(result.findings).length).toBeGreaterThan(0);
