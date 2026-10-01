@@ -235,10 +235,17 @@ export function untrustedCheckoutStep(job: JobSpec): number | undefined {
   return i >= 0 ? i : undefined;
 }
 
+// A job compiled by GitHub Agentic Workflows (gh-aw) installs its runtime with this action.
+const GH_AW_SETUP_RE = /^github\/gh-aw-actions\/setup@/;
+// gh-aw runtime steps operate on its own paths; PR content reaches the job only via its agent.
+const GH_AW_RUNTIME_RE = /(?:\$\{?RUNNER_TEMP\}?|\/tmp)\/gh-aw\//;
+
 /**
  * Index of the first step after an untrusted checkout that executes workspace code: a
  * `run:` step or a local `./` action (0048). Approximation: any `run:` after the checkout
  * is treated as able to run attacker-controlled repo code (scripts, Makefiles, configs).
+ * Exception (0062): in a gh-aw-compiled job, a step on gh-aw's runtime paths runs gh-aw,
+ * not the PR; the PR tree reaches that job only through its agent (agent class, warn).
  */
 export function untrustedExecutionStep(job: JobSpec): number | undefined {
   const checkout = untrustedCheckoutStep(job);
@@ -246,8 +253,12 @@ export function untrustedExecutionStep(job: JobSpec): number | undefined {
     return undefined;
   }
   const steps = job.steps ?? [];
+  const ghAw = steps.some((s) => typeof s.uses === 'string' && GH_AW_SETUP_RE.test(s.uses));
   for (let i = checkout + 1; i < steps.length; i++) {
     const step = steps[i]!;
+    if (ghAw && typeof step.run === 'string' && GH_AW_RUNTIME_RE.test(step.run)) {
+      continue; // gh-aw's own runtime, not the PR's code (0062)
+    }
     if (
       typeof step.run === 'string' ||
       (typeof step.uses === 'string' && step.uses.startsWith('./'))

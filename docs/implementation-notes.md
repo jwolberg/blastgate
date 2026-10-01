@@ -818,3 +818,19 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   1 warn to 0 at the same SHA). They were re-cloned. `eval-scan.sh` gained `SCAN_FLAGS` (used
   with `--public`). Follow-up candidate: have the script fail a repo whose checkout lacks the
   sparse paths instead of scanning it.
+
+## 2026-10-01 — 0062: gh-aw runtime steps are not PR-code execution (user-directed fix)
+
+- **Why it's in this branch:** the 0061 re-scan produced 2 fails on home-assistant's
+  `quality-scale-reviewer.lock.yml` that hand review refuted. Every `run:` after the PR-head
+  checkout runs gh-aw's own runtime (`${RUNNER_TEMP}/gh-aw/actions/*.sh`, the MCP gateway,
+  the Copilot launch). None runs PR code. Per the plan's stop condition I asked; you chose to
+  fix 0048 here rather than ticket it.
+- **Deviation from the option as worded:** exempting only `${RUNNER_TEMP}`-script steps would
+  not clear it, because gh-aw also emits long inline runtime steps. The rule instead: in a job
+  that uses `github/gh-aw-actions/setup`, a `run:` step referencing gh-aw runtime paths
+  (`${RUNNER_TEMP}/gh-aw/`, `/tmp/gh-aw/`) is not execution evidence. A custom step in the
+  same job (`npm ci`) and gh-aw-path steps without gh-aw setup still count (tests).
+- **Result:** both home-assistant fails become warns. Follow-up candidates: the fork-PR warn
+  reason still says "exfiltratable from an untrusted run" when there is no execution
+  evidence (pre-existing wording), and gh-aw's Copilot engine is not yet a profiled agent.
