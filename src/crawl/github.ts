@@ -7,6 +7,14 @@
  * tracker can reuse it.
  */
 
+/** Plain `owner/repo` only: no traversal ('.'/'..' segments), extra segments, or whitespace. */
+const REPO_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
+
+/** The one strict repo-name check, shared by every entry point that takes a name from outside. */
+export function isPlainRepoName(name: string): boolean {
+  return REPO_NAME_RE.test(name);
+}
+
 export interface HttpRequest {
   method: 'GET' | 'POST';
   url: string;
@@ -38,6 +46,10 @@ export interface GitHubClientOptions {
   baseUrl?: string;
   /** Rate-limit retries per request before giving up. */
   maxRetries?: number;
+  /** Extra tries for a GET that got a 5xx or a thrown transport error (POSTs are never retried). */
+  transientRetries?: number;
+  /** First backoff for a transient retry; doubles each time. */
+  backoffMs?: number;
   /** Search requests allowed per window (kept under GitHub's 10/min). */
   searchPerWindow?: number;
   searchWindowMs?: number;
@@ -56,20 +68,42 @@ export class GitHubRateLimitError extends Error {
 
 const DEFAULT_BASE = 'https://api.github.com';
 
-export const fetchTransport: Transport = async (req) => {
-  const res = await fetch(req.url, { method: req.method, headers: req.headers, body: req.body });
-  const headers: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    headers[k.toLowerCase()] = v;
-  });
-  let json: unknown = null;
-  try {
-    json = await res.json();
-  } catch {
-    json = null;
-  }
-  return { status: res.status, headers, json };
-};
+export interface FetchTransportOptions {
+  /** Whole-request bound, response body included. Defaults to 30s. */
+  timeoutMs?: number;
+  /** Defaults to global `fetch` (tests inject a fake). */
+  fetchImpl?: typeof fetch;
+}
+
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/** A fetch-backed transport whose every request is aborted after `timeoutMs`. */
+export function createFetchTransport(opts: FetchTransportOptions = {}): Transport {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const doFetch = opts.fetchImpl ?? fetch;
+  return async (req) => {
+    const signal = AbortSignal.timeout(timeoutMs);
+    const res = await doFetch(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.body,
+      signal,
+    });
+    const headers: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      headers[k.toLowerCase()] = v;
+    });
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    return { status: res.status, headers, json };
+  };
+}
+
+export const fetchTransport: Transport = createFetchTransport();
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -93,6 +127,8 @@ export function createGitHubClient(opts: GitHubClientOptions = {}): GitHubClient
   const sleep = opts.sleep ?? realSleep;
   const base = opts.baseUrl ?? DEFAULT_BASE;
   const maxRetries = opts.maxRetries ?? 5;
+  const transientRetries = opts.transientRetries ?? 2;
+  const backoffMs = opts.backoffMs ?? 1000;
   const searchPerWindow = opts.searchPerWindow ?? 9;
   const searchWindowMs = opts.searchWindowMs ?? 60_000;
   const searchTimes: number[] = [];
@@ -112,10 +148,28 @@ export function createGitHubClient(opts: GitHubClientOptions = {}): GitHubClient
     }
   }
 
+  /**
+   * GETs are idempotent, so a 5xx or a thrown transport error is retried with exponential
+   * backoff; after the last try the 5xx response is returned and a thrown error rethrown. A POST
+   * is sent exactly once: repeating one could file a second report.
+   */
+  async function transportWithRetry(req: HttpRequest): Promise<HttpResponse> {
+    const tries = req.method === 'GET' ? transientRetries : 0;
+    for (let n = 0; ; n++) {
+      try {
+        const res = await transport(req);
+        if (res.status < 500 || n >= tries) return res;
+      } catch (e) {
+        if (n >= tries) throw e;
+      }
+      await sleep(backoffMs * 2 ** n);
+    }
+  }
+
   async function send(req: HttpRequest, isSearch: boolean): Promise<HttpResponse> {
     for (let attempt = 0; ; attempt++) {
       if (isSearch) await throttleSearch();
-      const res = await transport(req);
+      const res = await transportWithRetry(req);
       const wait = rateLimitWait(res, now());
       if (wait === undefined) return res;
       if (attempt >= maxRetries) {

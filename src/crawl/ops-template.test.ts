@@ -17,12 +17,26 @@ const wf = parse(raw) as {
       needs?: string | string[];
       environment?: string;
       permissions?: Record<string, string>;
-      steps: Array<{ uses?: string; run?: string; env?: Record<string, string> }>;
+      steps: Array<{
+        uses?: string;
+        run?: string;
+        env?: Record<string, string>;
+        with?: Record<string, unknown>;
+      }>;
     }
   >;
 };
 
 const jobText = (name: string): string => JSON.stringify(wf.jobs[name]);
+
+/** Any mention of the `secrets` context: `secrets.X`, `secrets['X']`, `toJSON(secrets)`, `secrets: inherit`. */
+const MENTIONS_SECRETS = /\bsecrets\b/;
+/** The raw workflow text before the submit job starts. */
+const beforeSubmit = (text: string): string => {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => /^ {2}submit:/.test(l));
+  return start < 0 ? text : lines.slice(0, start).join('\n');
+};
 
 describe('ops/crawl.yml template', () => {
   it('has a schedule and a manual trigger', () => {
@@ -44,16 +58,49 @@ describe('ops/crawl.yml template', () => {
   });
 
   it('references no secrets in the scan job', () => {
-    expect(jobText('scan')).not.toMatch(/secrets\./);
+    expect(jobText('scan')).not.toMatch(MENTIONS_SECRETS);
+    expect(beforeSubmit(raw)).not.toMatch(MENTIONS_SECRETS);
     expect(raw).not.toMatch(/secrets\.GITHUB_TOKEN/);
   });
 
+  it('negative control: the no-secrets predicate catches every way to reach the secrets context', () => {
+    const mutate = (insert: string): string =>
+      raw.replace(/^( {2}scan:\n)/m, `$1    x-injected: ${JSON.stringify(insert)}\n`);
+    for (const form of [
+      "${{ secrets['PVR_TOKEN'] }}",
+      '${{ toJSON(secrets) }}',
+      '${{ secrets.PVR_TOKEN }}',
+    ]) {
+      const mutated = mutate(form);
+      expect(mutated, form).not.toBe(raw);
+      expect(beforeSubmit(mutated), form).toMatch(MENTIONS_SECRETS);
+      const job = (parse(mutated) as typeof wf).jobs.scan;
+      expect(JSON.stringify(job), form).toMatch(MENTIONS_SECRETS);
+    }
+    // and a job-level `secrets: inherit` on a reusable-workflow call
+    const inherit = raw.replace(/^( {2}scan:\n)/m, '$1    secrets: inherit\n');
+    expect(JSON.stringify((parse(inherit) as typeof wf).jobs.scan)).toMatch(MENTIONS_SECRETS);
+  });
+
+  it('checks out the crawler code at the pinned commit in both jobs', () => {
+    for (const j of ['scan', 'submit']) {
+      const code = wf.jobs[j]?.steps.filter((s) => s.with?.repository === 'jwolberg/blastgate');
+      expect(code, j).toHaveLength(1);
+      expect(code?.[0]?.with?.ref, j).toBe('${{ vars.BLASTGATE_SHA }}');
+    }
+  });
+
+  it('never persists credentials in any scan-job checkout', () => {
+    const checkouts = (wf.jobs.scan?.steps ?? []).filter((s) =>
+      s.uses?.includes('actions/checkout'),
+    );
+    expect(checkouts.length).toBeGreaterThanOrEqual(2);
+    for (const c of checkouts) expect(c.with?.['persist-credentials']).toBe(false);
+  });
+
   it('uses secrets only in the submit job, and each one only where it is needed', () => {
-    const lines = raw.split('\n');
-    const start = lines.findIndex((l) => /^ {2}submit:/.test(l));
-    expect(start).toBeGreaterThan(-1);
-    const before = lines.slice(0, start).join('\n');
-    expect(before).not.toMatch(/secrets\./);
+    expect(raw).toMatch(/^ {2}submit:/m);
+    expect(beforeSubmit(raw)).not.toMatch(MENTIONS_SECRETS);
     const used = [...raw.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]).sort();
     expect(used).toEqual(['PVR_TOKEN', 'REGISTRY_DEPLOY_KEY']);
 

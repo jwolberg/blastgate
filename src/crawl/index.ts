@@ -20,14 +20,22 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { Finding } from '../findings/finding';
 import { type CrawlConfig, parseCrawlConfig } from './config';
-import { composeReport } from './disclose';
-import { type DiscoverResult, discover } from './discover';
-import { type GitHubClient, createGitHubClient } from './github';
+import {
+  DESCRIPTION_MAX,
+  SUMMARY_MAX,
+  composeReport,
+  reportFooter,
+  reportHeader,
+  reportSummaryPrefix,
+} from './disclose';
+import { type DiscoverResult, type Eligibility, checkEligible, discover } from './discover';
+import { type GitHubClient, createGitHubClient, isPlainRepoName } from './github';
 import {
   type Ledger,
   type RepoScan,
   applyScan,
   delta,
+  SCAN_VERDICTS,
   emptyLedger,
   lsRemoteHeads,
   parseLedger,
@@ -35,13 +43,14 @@ import {
   serializeLedger,
 } from './ledger';
 import { publishSite } from './publish';
-import { type Runner, archetypeOf, defaultRunner, reverify, scanRepos } from './scan';
+import { type Runner, archetypeOf, childEnv, defaultRunner, reverify, scanRepos } from './scan';
 import { renderSite } from './site';
 import { type SubmitCandidate, submitAll } from './submit';
 import { trackAll } from './track';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEFAULT_CAP = 100;
+const MAX_CHECK_FACTOR = 3;
 const REVERIFY_STATUSES = ['still-fails', 'resolved', 'head-mismatch', 'unknown'] as const;
 
 // ---------------------------------------------------------------- result file
@@ -64,8 +73,88 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 const isStrArr = (v: unknown): v is string[] =>
   Array.isArray(v) && v.every((x) => typeof x === 'string');
 
-/** Validate a scan-result file produced by another job. Throws on anything unexpected. */
-export function parseScanResult(text: string): ScanResultFile {
+const SHA_RE = /^[0-9a-f]{40}$/;
+const MAX_ENGINE_VERSION = 200;
+const MAX_ID = 1000;
+const MAX_ARCHETYPE = 200;
+
+export interface ParsedScanResult extends ScanResultFile {
+  /** Entries refused by validation (counts only; never written back). */
+  dropped: { scans: number; candidates: number };
+}
+
+/** A scan row the scan job may legitimately produce; anything else is forged or corrupt. */
+function validScan(v: unknown): v is RepoScan {
+  if (!isObj(v)) return false;
+  const { fullSha, engineVersion, verdict, scannedAt, failFindings } = v;
+  if (typeof fullSha !== 'string' || !SHA_RE.test(fullSha)) return false;
+  if (
+    typeof engineVersion !== 'string' ||
+    engineVersion === '' ||
+    engineVersion.length > MAX_ENGINE_VERSION
+  ) {
+    return false;
+  }
+  if (typeof verdict !== 'string' || !(SCAN_VERDICTS as readonly string[]).includes(verdict)) {
+    return false;
+  }
+  if (typeof scannedAt !== 'string' || Number.isNaN(Date.parse(scannedAt))) return false;
+  if (new Date(scannedAt).toISOString() !== scannedAt) return false;
+  if (!Array.isArray(failFindings)) return false;
+  // fail <=> at least one failing finding (the KTD3 verdict table).
+  if ((verdict === 'fail') !== failFindings.length > 0) return false;
+  return failFindings.every(
+    (f) =>
+      isObj(f) &&
+      typeof f.id === 'string' &&
+      f.id !== '' &&
+      f.id.length <= MAX_ID &&
+      typeof f.archetype === 'string' &&
+      f.archetype !== '' &&
+      f.archetype.length <= MAX_ARCHETYPE,
+  );
+}
+
+/**
+ * Is this candidate something composeReport could have produced for a scan we also hold? The
+ * scan job is untrusted (KTD1): its text is posted under Jay's name, so the repo, the finding
+ * ids, the archetype, and the report's fixed header/footer must all agree with the scan rows.
+ */
+function validCandidate(
+  c: unknown,
+  scans: Record<string, RepoScan>,
+  discovered: ReadonlySet<string>,
+  engineVersion: string,
+): c is SubmitCandidate {
+  if (!isObj(c)) return false;
+  const { repo, archetype, findingIds, report, reverify } = c;
+  if (typeof repo !== 'string' || !isPlainRepoName(repo) || !discovered.has(repo)) return false;
+  const scan = scans[repo];
+  if (scan?.verdict !== 'fail') return false;
+  if (typeof archetype !== 'string' || !isStrArr(findingIds) || findingIds.length === 0) {
+    return false;
+  }
+  if (new Set(findingIds).size !== findingIds.length) return false;
+  const stored = new Map(scan.failFindings.map((f) => [f.id, f.archetype]));
+  if (!findingIds.every((id) => stored.get(id) === archetype)) return false;
+  if (!(REVERIFY_STATUSES as readonly unknown[]).includes(reverify)) return false;
+  if (!isObj(report)) return false;
+  const { summary, description } = report;
+  if (typeof summary !== 'string' || typeof description !== 'string') return false;
+  if (summary.length > SUMMARY_MAX || !summary.startsWith(reportSummaryPrefix(repo))) return false;
+  return (
+    description.length <= DESCRIPTION_MAX &&
+    description.startsWith(reportHeader(repo, findingIds.length)) &&
+    description.endsWith(reportFooter(engineVersion, scan.fullSha))
+  );
+}
+
+/**
+ * Validate a scan-result file produced by another job. Throws on a wrong shape; entries that
+ * are well-shaped but invalid (bad repo name, undiscovered repo, ids the scan never failed,
+ * report text that is not composeReport's) are dropped and counted.
+ */
+export function parseScanResult(text: string): ParsedScanResult {
   const bad = (why: string): never => {
     throw new Error(`invalid scan result: ${why}`);
   };
@@ -86,19 +175,36 @@ export function parseScanResult(text: string): ScanResultFile {
     if (!isStrArr(v)) bad('currentFails');
   }
   if (!Array.isArray(raw.candidates)) bad('candidates');
-  for (const c of raw.candidates as unknown[]) {
-    const ok =
-      isObj(c) &&
-      typeof c.repo === 'string' &&
-      typeof c.archetype === 'string' &&
-      isStrArr(c.findingIds) &&
-      isObj(c.report) &&
-      typeof c.report.summary === 'string' &&
-      typeof c.report.description === 'string' &&
-      (REVERIFY_STATUSES as readonly unknown[]).includes(c.reverify);
-    if (!ok) bad('candidate');
+
+  const engineVersion = raw.engineVersion as string;
+  const discovered = (raw.discovered as string[]).filter(isPlainRepoName);
+  const known = new Set(discovered);
+  const dropped = { scans: 0, candidates: 0 };
+
+  const scans: Record<string, RepoScan> = {};
+  for (const [repo, scan] of Object.entries(raw.scans as Record<string, unknown>)) {
+    if (isPlainRepoName(repo) && known.has(repo) && validScan(scan)) scans[repo] = scan;
+    else dropped.scans++;
   }
-  return raw as unknown as ScanResultFile;
+  const currentFails: Record<string, string[]> = {};
+  for (const [repo, ids] of Object.entries(raw.currentFails as Record<string, string[]>)) {
+    if (isPlainRepoName(repo) && known.has(repo)) currentFails[repo] = ids;
+  }
+  const candidates: SubmitCandidate[] = [];
+  for (const c of raw.candidates as unknown[]) {
+    if (validCandidate(c, scans, known, engineVersion)) candidates.push(c);
+    else dropped.candidates++;
+  }
+  return {
+    engineVersion,
+    discovered,
+    truncated: raw.truncated as string[],
+    partial: raw.partial as string[],
+    scans,
+    candidates,
+    currentFails,
+    dropped,
+  };
 }
 
 // ---------------------------------------------------------------- files
@@ -129,6 +235,8 @@ export interface ScanDeps {
   lsRemoteHeads: (repos: readonly string[]) => Promise<Map<string, string | null>>;
   scanRepos: typeof scanRepos;
   reverify: typeof reverify;
+  /** Authoritative public/non-fork/non-archived check; runs only for the capped selection. */
+  isEligible: (client: GitHubClient, repo: string) => Promise<Eligibility>;
   /** Extra env for eval-scan.sh (tests point it at local remotes and a stub CLI). */
   scanEnv?: NodeJS.ProcessEnv;
   cliVersion: () => Promise<string>;
@@ -137,9 +245,23 @@ export interface ScanDeps {
   log: (line: string) => void;
 }
 
-function execOut(cmd: string, args: string[], cwd: string): Promise<string> {
+/** Bound for git subprocesses (push/pull/rev-parse). */
+const EXEC_TIMEOUT_MS = 120_000;
+
+/** Run a subprocess for its trimmed stdout; kills it and rejects after `timeoutMs`. Never prompts. */
+export function execOut(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  timeoutMs = EXEC_TIMEOUT_MS,
+): Promise<string> {
   return new Promise((res, rej) => {
-    execFile(cmd, args, { cwd }, (err, stdout) => (err ? rej(err) : res(stdout.trim())));
+    execFile(
+      cmd,
+      args,
+      { cwd, timeout: timeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      (err, stdout) => (err ? rej(err) : res(stdout.trim())),
+    );
   });
 }
 
@@ -151,9 +273,10 @@ export function defaultScanDeps(env: NodeJS.ProcessEnv): ScanDeps {
     lsRemoteHeads: (repos) => lsRemoteHeads(repos),
     scanRepos,
     reverify,
+    isEligible: checkEligible,
     cliVersion: async () => {
       const cli = env.BLASTGATE_CLI ?? join(ROOT, 'dist', 'cli', 'index.js');
-      const r = await runner('node', [cli, '--version'], { ...process.env, ...env });
+      const r = await runner('node', [cli, '--version'], childEnv(env), 30_000);
       const m = /(\d+\.\d+\.\d+[^\s]*)/.exec(r.stdout);
       if (r.code !== 0 || !m?.[1]) throw new Error('could not read the blastgate CLI version');
       return m[1];
@@ -188,8 +311,23 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
   const found = await deps.discover(deps.client);
   const heads = await deps.lsRemoteHeads(found.repos);
   const engineVersion = `${await deps.cliVersion()}+${await deps.blastgateSha()}`;
-  const plan = delta(ledger, heads, engineVersion, args.cap ?? DEFAULT_CAP);
-  const selected = plan.selected.map((e) => e.repo);
+  const cap = args.cap ?? DEFAULT_CAP;
+  // Full priority order first; metadata is then fetched only while the cap is unfilled (and at
+  // most MAX_CHECK_FACTOR x cap times), so the cost follows the cap, not the discovery size.
+  const plan = delta(ledger, heads, engineVersion, Number.POSITIVE_INFINITY);
+  const selected: string[] = [];
+  let checks = 0;
+  let ineligible = 0;
+  let eligibilityErrors = 0;
+  for (const entry of plan.selected) {
+    if (selected.length >= cap || checks >= cap * MAX_CHECK_FACTOR) break;
+    checks++;
+    const verdict = await deps.isEligible(deps.client, entry.repo);
+    if (verdict === 'eligible') selected.push(entry.repo);
+    else if (verdict === 'ineligible') ineligible++;
+    else eligibilityErrors++;
+  }
+  const deferred = plan.selected.length - checks;
 
   const evalDir = join(out, 'eval');
   const scans = await deps.scanRepos(selected, {
@@ -278,7 +416,8 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
   for (const s of Object.values(scans)) verdicts[s.verdict] = (verdicts[s.verdict] ?? 0) + 1;
   deps.log(
     `scan: discovered ${found.repos.length}, truncated shards ${found.truncated.length}, partial shards ${found.partial.length}, ` +
-      `selected ${selected.length}, deferred ${plan.deferred}, head-unresolved ${plan.skipped.length}`,
+      `selected ${selected.length}, deferred ${deferred}, head-unresolved ${plan.skipped.length}, ` +
+      `ineligible ${ineligible}, eligibility errors ${eligibilityErrors}`,
   );
   deps.log(
     `scan: verdict counts ${
@@ -400,6 +539,11 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
   if (recovered !== ledger) {
     ledger = recovered;
     await deps.persist(ledger);
+  }
+  if (result.dropped.scans > 0 || result.dropped.candidates > 0) {
+    deps.log(
+      `submit: dropped ${result.dropped.scans} scan(s) and ${result.dropped.candidates} candidate(s) failing validation`,
+    );
   }
   for (const [repo, scan] of Object.entries(result.scans)) ledger = applyScan(ledger, repo, scan);
 

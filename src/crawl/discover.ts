@@ -8,7 +8,9 @@
  */
 
 import { AGENT_PROFILES } from '../analyzers/ci/agents';
-import type { GitHubClient } from './github';
+import { GitHubRateLimitError, isPlainRepoName, type GitHubClient } from './github';
+
+export { isPlainRepoName };
 
 /** Code search returns at most this many hits per query. */
 const SEARCH_CAP = 1000;
@@ -51,7 +53,7 @@ export interface DiscoverOptions {
 }
 
 export interface DiscoverResult {
-  /** Sorted, deduplicated `owner/repo` of public, non-fork, non-archived repos. */
+  /** Sorted, deduplicated `owner/repo`; items flagged private/fork/archived are dropped (see checkEligible). */
   repos: string[];
   /** Shard queries with more than the search cap that could not be split further. */
   truncated: string[];
@@ -72,13 +74,6 @@ interface Page {
   names: string[];
 }
 
-/** Plain `owner/repo` only: no traversal, extra segments, or whitespace. */
-const REPO_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
-
-export function isPlainRepoName(name: string): boolean {
-  return REPO_NAME_RE.test(name);
-}
-
 export function shardQuery(s: Shard): string {
   const size = s.size
     ? s.size[0] === s.size[1]
@@ -97,22 +92,44 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
   const found = new Set<string>();
   const truncated: string[] = [];
   const partial = new Set<string>();
+  /** Repos a search item already says are private, forks, or archived. */
+  const excluded = new Set<string>();
 
-  async function fetchPage(shard: Shard, page: number): Promise<Page> {
+  /** A failed page (after the client's retries) marks the shard partial and yields nothing. */
+  async function fetchPage(shard: Shard, page: number): Promise<Page & { failed?: true }> {
     const query = shardQuery(shard);
     for (let attempt = 0; ; attempt++) {
-      const res = await client.get('/search/code', { q: query, per_page: PER_PAGE, page });
+      let res;
+      try {
+        res = await client.get('/search/code', { q: query, per_page: PER_PAGE, page });
+      } catch (e) {
+        if (e instanceof GitHubRateLimitError) throw e;
+        partial.add(query);
+        return { total: 0, incomplete: true, names: [], failed: true };
+      }
       if (res.status !== 200) {
-        throw new Error(`code search failed (${res.status}) for ${query}`);
+        partial.add(query);
+        return { total: 0, incomplete: true, names: [], failed: true };
       }
       const body = res.json as {
         total_count?: number;
         incomplete_results?: boolean;
-        items?: { repository?: { full_name?: unknown } }[];
+        items?: {
+          repository?: {
+            full_name?: unknown;
+            private?: unknown;
+            fork?: unknown;
+            archived?: unknown;
+          };
+        }[];
       };
-      const names = (body.items ?? [])
-        .map((i) => i.repository?.full_name)
-        .filter((n): n is string => typeof n === 'string');
+      const names: string[] = [];
+      for (const i of body.items ?? []) {
+        const r = i.repository;
+        if (typeof r?.full_name !== 'string') continue;
+        names.push(r.full_name);
+        if (r.private === true || r.fork === true || r.archived === true) excluded.add(r.full_name);
+      }
       const incomplete = body.incomplete_results === true;
       if (incomplete && attempt === 0) continue;
       if (incomplete) partial.add(query);
@@ -124,7 +141,9 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
     for (const n of first.names) found.add(n);
     const pages = Math.min(MAX_PAGES, Math.ceil(first.total / PER_PAGE));
     for (let p = 2; p <= pages; p++) {
-      for (const n of (await fetchPage(shard, p)).names) found.add(n);
+      const next = await fetchPage(shard, p);
+      for (const n of next.names) found.add(n);
+      if (next.failed) return;
     }
   }
 
@@ -177,20 +196,31 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
     await run({ action, depth: 0 });
   }
 
-  const repos: string[] = [];
-  for (const name of [...found].filter(isPlainRepoName).sort()) {
-    if (await isEligible(client, name)) repos.push(name);
-  }
+  // Metadata is NOT fetched here: that would cost one request per discovered repo. The search
+  // items already carry private/fork/archived (GitHub's minimal-repository schema); the
+  // authoritative `checkEligible` runs later, only for the repos the delta selects.
+  const repos = [...found].filter((n) => isPlainRepoName(n) && !excluded.has(n)).sort();
   return { repos, truncated, partial: [...partial] };
 }
 
-/** Public, non-fork, non-archived; a repo gone since indexing is not eligible. */
-async function isEligible(client: GitHubClient, name: string): Promise<boolean> {
-  const res = await client.get(`/repos/${name}`);
-  if (res.status === 404 || res.status === 410 || res.status === 451) return false;
-  if (res.status !== 200) {
-    throw new Error(`repo metadata failed (${res.status}) for ${name}`);
+export type Eligibility = 'eligible' | 'ineligible' | 'error';
+
+/**
+ * Public, non-fork, non-archived; a repo gone since indexing is ineligible. A metadata failure
+ * that outlasts the client's retries is `error` (skip this repo this run), never a throw.
+ */
+export async function checkEligible(client: GitHubClient, name: string): Promise<Eligibility> {
+  if (!isPlainRepoName(name)) return 'ineligible';
+  let res;
+  try {
+    res = await client.get(`/repos/${name}`);
+  } catch {
+    return 'error';
   }
-  const meta = res.json as { private?: boolean; fork?: boolean; archived?: boolean };
-  return meta.private === false && meta.fork === false && meta.archived === false;
+  if (res.status === 404 || res.status === 410 || res.status === 451) return 'ineligible';
+  if (res.status !== 200) return 'error';
+  const meta = res.json as { private?: boolean; fork?: boolean; archived?: boolean } | null;
+  return meta?.private === false && meta.fork === false && meta.archived === false
+    ? 'eligible'
+    : 'ineligible';
 }

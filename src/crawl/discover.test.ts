@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AGENT_PROFILES } from '../analyzers/ci/agents';
-import { discover } from './discover';
+import { checkEligible, discover } from './discover';
 import {
+  createFetchTransport,
   createGitHubClient,
   GitHubRateLimitError,
   type HttpRequest,
@@ -343,37 +344,224 @@ describe('discover', () => {
     expect(out.repos).toEqual(['acme/widgets']);
   });
 
-  it('drops forks, archived, private repos, and malformed names (without fetching metadata for bad names)', async () => {
-    const page = fixture('page-basic.json');
-    const meta = fixture<Record<string, unknown>>('repos.json');
+  it('drops forks, archived, private repos (by the search item) and malformed names, with no metadata calls', async () => {
+    const page = fixture('page-basic.json') as { items: { repository: Record<string, unknown> }[] };
+    const flags: Record<string, Record<string, boolean>> = {
+      'acme/widgets': { private: false, fork: false, archived: false },
+      'acme/forked': { private: false, fork: true, archived: false },
+      'oldco/archived-thing': { private: false, fork: false, archived: true },
+      'someone/private-repo': { private: true, fork: false, archived: false },
+    };
+    for (const i of page.items) Object.assign(i.repository, flags[String(i.repository.full_name)]);
     const env = makeEnv({
       data: () => [],
-      meta,
       intercept: (req, n) => (req.url.includes('/search/code') && n === 0 ? json(page) : undefined),
     });
     const out = await discover({ client: clientFor(env), actions: [CLAUDE] });
     expect(out.repos).toEqual(['acme/widgets']);
-    const fetched = env.calls
-      .map((c) => new URL(c.req.url).pathname)
-      .filter((p) => p.startsWith('/repos/'));
-    expect(fetched.sort()).toEqual([
-      '/repos/acme/forked',
-      '/repos/acme/widgets',
-      '/repos/oldco/archived-thing',
-      '/repos/someone/private-repo',
+    expect(env.calls.filter((c) => c.req.url.includes('/repos/'))).toHaveLength(0);
+  });
+
+  it('does not call repo metadata at all, however many repos it discovers', async () => {
+    const env = makeEnv({ data: (a) => (a === CLAUDE ? uniform(250) : []) });
+    const out = await discover({ client: clientFor(env), actions: [CLAUDE] });
+    expect(out.repos).toHaveLength(250);
+    expect(env.calls.filter((c) => new URL(c.req.url).pathname.startsWith('/repos/'))).toHaveLength(
+      0,
+    );
+  });
+
+  it('rejects dot-dot repo segments from search results', async () => {
+    const page = {
+      total_count: 3,
+      incomplete_results: false,
+      items: ['own/..', 'own/.', 'own/ok'].map((n) => ({ repository: { full_name: n } })),
+    };
+    const env = makeEnv({
+      data: () => [],
+      intercept: (req, n) => (req.url.includes('/search/code') && n === 0 ? json(page) : undefined),
+    });
+    expect((await discover({ client: clientFor(env), actions: [CLAUDE] })).repos).toEqual([
+      'own/ok',
     ]);
   });
 
-  it('drops a repo whose metadata is 404 (deleted since indexing)', async () => {
+  it('marks a shard partial (not a throw) when search keeps answering 5xx', async () => {
+    const OTHER = 'google-github-actions/run-gemini-cli';
     const env = makeEnv({
-      data: (a) => (a === CLAUDE ? [{ repo: 'gone/repo', size: 10, filename: 'c.yml' }] : []),
+      data: (a) => (a === OTHER ? [{ repo: 'acme/widgets', size: 10, filename: 'c.yml' }] : []),
       intercept: (req) =>
-        req.url.includes('/repos/gone/repo') ? json({ message: 'Not Found' }, 404) : undefined,
+        req.url.includes('/search/code') && decodeURIComponent(req.url).includes(CLAUDE)
+          ? json({ message: 'boom' }, 502)
+          : undefined,
+    });
+    const out = await discover({ client: clientFor(env), actions: [CLAUDE, OTHER] });
+    expect(out.repos).toEqual(['acme/widgets']);
+    expect(out.partial).toHaveLength(1);
+    expect(out.partial[0]).toContain(CLAUDE);
+  });
+
+  it('marks a shard partial when the transport throws on every try', async () => {
+    const env = makeEnv({
+      data: () => [],
+      intercept: (req) => {
+        if (req.url.includes('/search/code')) throw new Error('ECONNRESET');
+        return undefined;
+      },
     });
     const out = await discover({ client: clientFor(env), actions: [CLAUDE] });
     expect(out.repos).toEqual([]);
+    expect(out.partial).toHaveLength(1);
   });
 
+  it('keeps page 1 hits and reports partial when a later page fails', async () => {
+    const env = makeEnv({
+      data: (a) => (a === CLAUDE ? uniform(250) : []),
+      intercept: (req) =>
+        req.url.includes('/search/code') && new URL(req.url).searchParams.get('page') === '2'
+          ? json({ message: 'boom' }, 500)
+          : undefined,
+    });
+    const out = await discover({ client: clientFor(env), actions: [CLAUDE] });
+    expect(out.repos).toHaveLength(100);
+    expect(out.partial).toHaveLength(1);
+  });
+
+  it('still propagates a persistent rate limit', async () => {
+    const env = makeEnv({
+      data: () => [],
+      intercept: (req) =>
+        req.url.includes('/search/code') ? json(null, 429, { 'retry-after': '1' }) : undefined,
+    });
+    await expect(discover({ client: clientFor(env), actions: [CLAUDE] })).rejects.toBeInstanceOf(
+      GitHubRateLimitError,
+    );
+  });
+});
+
+describe('checkEligible (review #3, #4)', () => {
+  const metaEnv = (res: HttpResponse | (() => never)) =>
+    makeEnv({
+      data: () => [],
+      intercept: (req) => {
+        if (!req.url.includes('/repos/')) return undefined;
+        return typeof res === 'function' ? res() : res;
+      },
+    });
+  const check = (e: Env) => checkEligible(clientFor(e), 'acme/widgets');
+
+  it('is eligible for a public, non-fork, non-archived repo', async () => {
+    const e = metaEnv(json({ private: false, fork: false, archived: false }));
+    expect(await check(e)).toBe('eligible');
+  });
+
+  it.each([
+    [{ private: true, fork: false, archived: false }],
+    [{ private: false, fork: true, archived: false }],
+    [{ private: false, fork: false, archived: true }],
+  ])('is ineligible for %j', async (meta) => {
+    expect(await check(metaEnv(json(meta)))).toBe('ineligible');
+  });
+
+  it.each([404, 410, 451])('is ineligible on HTTP %i', async (status) => {
+    expect(await check(metaEnv(json({}, status)))).toBe('ineligible');
+  });
+
+  it('reports an error (no throw) on persistent 5xx and on transport failure', async () => {
+    expect(await check(metaEnv(json({}, 503)))).toBe('error');
+    expect(
+      await check(
+        metaEnv(() => {
+          throw new Error('ECONNRESET');
+        }),
+      ),
+    ).toBe('error');
+  });
+});
+
+describe('GitHubClient resilience (review #3, #5)', () => {
+  const ok = (): HttpResponse => json({ ok: true });
+  function seq(steps: Array<HttpResponse | Error>) {
+    const calls: HttpRequest[] = [];
+    const sleeps: number[] = [];
+    const client = createGitHubClient({
+      transport: async (req) => {
+        calls.push(req);
+        const step = steps[Math.min(calls.length - 1, steps.length - 1)] as HttpResponse | Error;
+        if (step instanceof Error) throw step;
+        return step;
+      },
+      now: () => 0,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    return { client, calls, sleeps };
+  }
+
+  it('retries a GET 5xx with exponential backoff and then succeeds', async () => {
+    const t = seq([json({}, 502), json({}, 503), ok()]);
+    expect((await t.client.get('/x')).status).toBe(200);
+    expect(t.calls).toHaveLength(3);
+    expect(t.sleeps).toEqual([1000, 2000]);
+  });
+
+  it('returns the last 5xx after three tries', async () => {
+    const t = seq([json({}, 500)]);
+    expect((await t.client.get('/x')).status).toBe(500);
+    expect(t.calls).toHaveLength(3);
+  });
+
+  it('retries a thrown transport error, then rethrows after three tries', async () => {
+    const t = seq([new Error('ECONNRESET'), ok()]);
+    expect((await t.client.get('/x')).status).toBe(200);
+    const u = seq([new Error('ECONNRESET')]);
+    await expect(u.client.get('/x')).rejects.toThrow('ECONNRESET');
+    expect(u.calls).toHaveLength(3);
+  });
+
+  it('never retries a POST (a repeated report could be filed twice)', async () => {
+    const t = seq([json({}, 502)]);
+    expect((await t.client.post('/x', {})).status).toBe(502);
+    expect(t.calls).toHaveLength(1);
+    const u = seq([new Error('ECONNRESET')]);
+    await expect(u.client.post('/x', {})).rejects.toThrow('ECONNRESET');
+    expect(u.calls).toHaveLength(1);
+  });
+});
+
+describe('createFetchTransport timeout (review #5)', () => {
+  const req: HttpRequest = { method: 'GET', url: 'https://api.github.com/x', headers: {} };
+
+  it('aborts a request that never answers and surfaces an error', async () => {
+    let seen: AbortSignal | undefined;
+    const hang = ((_url: string, init: RequestInit) => {
+      seen = init.signal ?? undefined;
+      return new Promise((_res, rej) => {
+        init.signal?.addEventListener('abort', () => rej(init.signal?.reason));
+      });
+    }) as unknown as typeof fetch;
+    const t = createFetchTransport({ timeoutMs: 20, fetchImpl: hang });
+    await expect(t(req)).rejects.toBeDefined();
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('passes a response through when it arrives in time', async () => {
+    const fast = (async () =>
+      new Response('{"a":1}', {
+        status: 200,
+        headers: { 'X-Foo': 'bar' },
+      })) as unknown as typeof fetch;
+    const r = await createFetchTransport({ timeoutMs: 1000, fetchImpl: fast })(req);
+    expect(r).toEqual({
+      status: 200,
+      headers: { 'x-foo': 'bar', 'content-type': 'text/plain;charset=UTF-8' },
+      json: { a: 1 },
+    });
+  });
+});
+
+describe('discover (cont.)', () => {
   it('pages through a shard of more than 100 hits', async () => {
     const env = makeEnv({ data: (a) => (a === CLAUDE ? uniform(250) : []) });
     const out = await discover({ client: clientFor(env), actions: [CLAUDE] });

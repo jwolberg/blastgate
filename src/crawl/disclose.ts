@@ -157,6 +157,23 @@ export interface Report {
 }
 
 export const SUMMARY_MAX = 1024;
+/** PVR description limit (GitHub caps the body at 65,535 characters). */
+export const DESCRIPTION_MAX = 65_535;
+
+/** Start of every composed summary; the submit job requires it (see `index.ts` validation). */
+export function reportSummaryPrefix(repo: string): string {
+  return `Blastgate: reachable attacker-controlled path to a secret in ${inert(repo, CAPS.repo)}`;
+}
+
+/** The exact header composeReport puts first, for `n` findings. */
+export function reportHeader(repo: string, n: number): string {
+  return header(inert(repo, CAPS.repo), n);
+}
+
+/** The exact footer composeReport puts last. */
+export function reportFooter(version: string, sha: string): string {
+  return footer(version, sha);
+}
 
 function header(repo: string, n: number): string {
   return [
@@ -193,9 +210,7 @@ export function composeReport(input: ReportInput): Report {
   const where = first?.evidence ? ` at ${first.evidence.file}:${first.evidence.line}` : '';
   const sinkText = first ? ` reaches ${first.sink.identity}` : '';
   const more = findings.length > 1 ? ` (+${findings.length - 1} more)` : '';
-  const summary = capSummary(
-    `Blastgate: reachable attacker-controlled path to a secret in ${repo}${sinkText}${where}${more}`,
-  );
+  const summary = capSummary(`${reportSummaryPrefix(input.repo)}${sinkText}${where}${more}`);
   const blocks = findings.map((f) => markdownFinding(f).join('\n'));
   const description = [
     header(repo, findings.length),

@@ -15,6 +15,7 @@ import {
   serializeLedger,
   transition,
   tripArchetype,
+  UNCERTAIN_REASON,
 } from './ledger';
 
 const sha = (c: string): string => c.repeat(40);
@@ -416,9 +417,14 @@ describe('lsRemoteHeads', () => {
       called++;
       return '';
     };
-    const heads = await lsRemoteHeads(['--upload-pack=x/y', '../x'], { exec, concurrency: 1 });
+    const heads = await lsRemoteHeads(['--upload-pack=x/y', '../x', 'owner/..', 'owner/.'], {
+      exec,
+      concurrency: 1,
+    });
     expect(called).toBe(0);
     expect(heads.get('--upload-pack=x/y')).toBeNull();
+    expect(heads.get('owner/..')).toBeNull();
+    expect(heads.get('owner/.')).toBeNull();
   });
 });
 
@@ -470,5 +476,127 @@ describe('wouldSend (dry-run record)', () => {
     const bad = JSON.parse(serializeLedger(q));
     bad.disclosures[0].wouldSend = 'nope';
     expect(() => parseLedger(JSON.stringify(bad))).toThrow(/wouldSend/);
+  });
+});
+
+describe('re-detected finding after resolved-before-report (review #1)', () => {
+  const key = { repo: 'a/one', findingIds: ['f1'] };
+
+  function resolvedThenRedetected(): Ledger {
+    let l = createDisclosure(emptyLedger(), base('a/one', ['f1'], 'queued'));
+    l = transition(l, key, 'resolved-before-report', { now: T0 });
+    return createDisclosure(l, { ...base('a/one', ['f1'], 'queued'), now: T1 });
+  }
+
+  it('transition works on the live entry, not the earlier terminal one', () => {
+    let l = resolvedThenRedetected();
+    l = transition(l, key, 'submitting', { now: T1 });
+    l = transition(l, key, 'submitted', { now: T1, reportUrl: 'https://example.test/r' });
+    expect(l.disclosures.map((d) => d.state)).toEqual(['resolved-before-report', 'submitted']);
+  });
+
+  it('recordWouldSend works on the live entry', () => {
+    const l = recordWouldSend(resolvedThenRedetected(), key, { summary: 's' }, T1);
+    expect(l.disclosures.map((d) => d.state)).toEqual(['resolved-before-report', 'queued']);
+    expect(l.disclosures[1]?.wouldSend).toEqual({ summary: 's' });
+    expect(l.disclosures[0]?.wouldSend).toBeUndefined();
+  });
+
+  it('with only the terminal entry left, a move is still refused', () => {
+    let l = createDisclosure(emptyLedger(), base('a/one', ['f1'], 'queued'));
+    l = transition(l, key, 'resolved-before-report', { now: T0 });
+    expect(() => transition(l, key, 'submitting', { now: T1 })).toThrow(/illegal move/);
+  });
+});
+
+describe('delta: pending disclosures (review #2)', () => {
+  const failScan = (l: Ledger, repo: string, ids: string[], s = sha('a')): Ledger =>
+    applyScan(l, repo, {
+      fullSha: s,
+      engineVersion: V,
+      verdict: 'fail',
+      scannedAt: T0,
+      failFindings: ids.map((id) => ({ id, archetype: 'k' })),
+    });
+  const heads = (repo: string, s = sha('a')) => new Map([[repo, s]]);
+  const withDisclosure = (state: DisclosureState, reason?: string, ids = ['f1']): Ledger => {
+    let l = failScan(emptyLedger(), 'a/one', ids);
+    l = createDisclosure(l, { ...base('a/one', ids, 'held') });
+    const key = { repo: 'a/one', findingIds: ids };
+    const to = (s: DisclosureState, o: Partial<{ reason: string; reportUrl: string }> = {}) => {
+      l = transition(l, key, s, { now: T1, ...o });
+    };
+    if (state === 'held') {
+      if (reason) l = { ...l, disclosures: l.disclosures.map((d) => ({ ...d, reason })) };
+    } else if (state === 'queued') to('queued');
+    else if (state === 'resolved-before-report') to('resolved-before-report');
+    else {
+      to('queued');
+      to('submitting');
+      if (state === 'submitted' || state === 'fixed' || state === 'declined') {
+        to('submitted', { reportUrl: 'https://example.test/r' });
+        if (state !== 'submitted') to(state);
+      }
+    }
+    return l;
+  };
+  const sel = (l: Ledger) => delta(l, heads('a/one'), V, 100).selected;
+
+  it('re-queues an unchanged fail repo whose disclosure is queued', () => {
+    expect(sel(withDisclosure('queued'))).toEqual([
+      { repo: 'a/one', reason: 'pending-disclosure' },
+    ]);
+  });
+
+  it.each(['no PVR', 'no PVR (HTTP 403)', 'archetype not allowlisted', 'rate limited (HTTP 429)'])(
+    're-queues a fail repo held for the retryable reason "%s"',
+    (reason) => {
+      expect(sel(withDisclosure('held', reason))).toEqual([
+        { repo: 'a/one', reason: 'pending-disclosure' },
+      ]);
+    },
+  );
+
+  it.each([UNCERTAIN_REASON, 'submission failed (HTTP 500)', 'duplicate'])(
+    'does not re-queue a fail repo held for the non-retryable reason "%s"',
+    (reason) => {
+      expect(sel(withDisclosure('held', reason))).toEqual([]);
+    },
+  );
+
+  it.each(['submitted', 'fixed', 'declined', 'resolved-before-report'] as const)(
+    'does not re-queue a fail repo whose disclosure is %s',
+    (state) => {
+      expect(sel(withDisclosure(state))).toEqual([]);
+    },
+  );
+
+  it('re-queues a fail repo with finding ids no disclosure covers yet', () => {
+    expect(sel(failScan(emptyLedger(), 'a/one', ['f1']))).toEqual([
+      { repo: 'a/one', reason: 'pending-disclosure' },
+    ]);
+    // one id covered by a final disclosure, the other not
+    const partial = withDisclosure('held', UNCERTAIN_REASON, ['f1']);
+    const l = failScan(partial, 'a/one', ['f1', 'f2']);
+    expect(sel(l)).toEqual([{ repo: 'a/one', reason: 'pending-disclosure' }]);
+  });
+
+  it('never re-queues an unchanged non-fail repo', () => {
+    expect(sel(scanned(emptyLedger(), 'a/one', sha('a'), V, 'warn'))).toEqual([]);
+  });
+
+  it('ranks after listed passes and before new repos', () => {
+    let l = withDisclosure('queued');
+    l = scanned(l, 'a/listed', sha('c'), '0.1.0');
+    const hs = new Map([
+      ['a/new', sha('d')],
+      ['a/one', sha('a')],
+      ['a/listed', sha('c')],
+    ]);
+    expect(delta(l, hs, V, 100).selected.map((s) => s.repo)).toEqual([
+      'a/listed',
+      'a/one',
+      'a/new',
+    ]);
   });
 });

@@ -197,11 +197,62 @@ describe('submitAll (U5)', () => {
     ]);
   });
 
-  it('a 403 stops the run too', async () => {
+  it('a plain 403 on the POST holds that repo non-retryably and the run continues', async () => {
     const e = env(onPost(res(403, { message: 'forbidden' })));
     const r = await run(e, [cand('a/one'), cand('b/two')]);
+    expect(e.posts()).toHaveLength(2);
+    expect(r.summary.stoppedReason).toBeUndefined();
+    expect(r.ledger.disclosures.map((d) => [d.state, d.reason])).toEqual([
+      ['held', 'submission failed (HTTP 403)'],
+      ['held', 'submission failed (HTTP 403)'],
+    ]);
+    // never retried automatically
+    const later = env();
+    const r2 = await run(later, [cand('a/one')], { ledger: r.ledger });
+    expect(later.calls).toHaveLength(0);
+    expect(r2.outcomes[0]?.outcome).toBe('duplicate');
+  });
+
+  it('a 403 carrying retry-after is a rate limit and stops the run', async () => {
+    const e = env(onPost(res(403, null, { 'retry-after': '1' })));
+    const r = await run(e, [cand('a/one'), cand('b/two')]);
+    expect(r.summary.stoppedReason).toMatch(/rate limit/);
+    expect(r.outcomes.find((o) => o.repo === 'b/two')?.outcome).toBe('stopped');
+  });
+
+  it('a plain 403 on the PVR pre-check holds that repo as retryable and the run continues', async () => {
+    const e = env((req) =>
+      req.method === 'GET' && req.url.includes('/a/one/') ? res(403, { message: 'no' }) : undefined,
+    );
+    const r = await run(e, [cand('a/one'), cand('b/two')]);
+    expect(r.summary.stoppedReason).toBeUndefined();
     expect(e.posts()).toHaveLength(1);
-    expect(r.summary.stoppedReason).toBeDefined();
+    expect(r.outcomes.map((o) => o.outcome)).toEqual(['held', 'submitted']);
+    const held = r.ledger.disclosures.find((d) => d.repo === 'a/one');
+    expect(held).toMatchObject({ state: 'held', reason: 'no PVR (HTTP 403)' });
+
+    // retryable: a later run with PVR enabled files it
+    const later = env();
+    const r2 = await run(later, [cand('a/one')], { ledger: r.ledger });
+    expect(later.posts()).toHaveLength(1);
+    expect(r2.ledger.disclosures.find((d) => d.repo === 'a/one')?.state).toBe('submitted');
+  });
+
+  it('a retried hold whose reason changes is re-held, not an illegal move', async () => {
+    const e1 = env((req) => (req.method === 'GET' ? res(403, { message: 'no' }) : undefined));
+    const r1 = await run(e1, [cand('a/one')]);
+    expect(r1.ledger.disclosures[0]?.reason).toBe('no PVR (HTTP 403)');
+    const e2 = env((req) => (req.method === 'GET' ? res(404, { message: 'nope' }) : undefined));
+    const r2 = await run(e2, [cand('a/one')], { ledger: r1.ledger });
+    expect(r2.ledger.disclosures[0]).toMatchObject({ state: 'held', reason: 'no PVR' });
+  });
+
+  it('rejects a repo name with a dot-dot segment', async () => {
+    const e = env();
+    const r = await run(e, [cand('owner/..'), cand('owner/.')]);
+    expect(e.calls).toHaveLength(0);
+    expect(r.outcomes.map((o) => o.outcome)).toEqual(['held', 'held']);
+    expect(r.ledger.disclosures).toHaveLength(0);
   });
 
   it('a rate limit that outlasts the client retries (GitHubRateLimitError) stops the run', async () => {

@@ -9,13 +9,20 @@
 
 import { execFile } from 'node:child_process';
 import type { Verdict } from '../findings/finding';
+import { isPlainRepoName } from './github';
 
 export const LEDGER_SCHEMA_VERSION = 1 as const;
 
 /** A scan outcome. `clone-failed` is crawler-only: a clone that could not complete is never a pass. */
 export type ScanVerdict = Verdict | 'clone-failed';
 
-const SCAN_VERDICTS: readonly ScanVerdict[] = ['pass', 'warn', 'fail', 'unknown', 'clone-failed'];
+export const SCAN_VERDICTS: readonly ScanVerdict[] = [
+  'pass',
+  'warn',
+  'fail',
+  'unknown',
+  'clone-failed',
+];
 
 export const DISCLOSURE_STATES = [
   'held',
@@ -67,9 +74,26 @@ export interface Ledger {
 }
 
 export const UNCERTAIN_REASON = 'submission state uncertain';
+export const REASON_NO_PVR = 'no PVR';
+export const REASON_NOT_ALLOWLISTED = 'archetype not allowlisted';
+export const REASON_RATE_LIMITED = 'rate limited (HTTP';
+
+/**
+ * Held reasons a later run may re-evaluate: no PVR (optionally with the HTTP status that caused
+ * it), a non-allowlisted archetype (config may have changed), and a rate-limit hold. Everything
+ * else (uncertain state, send failed, duplicate, tripped archetype) is final.
+ */
+export function isRetryableHold(d: Pick<Disclosure, 'reason'>): boolean {
+  const r = d.reason ?? '';
+  return (
+    r === REASON_NO_PVR ||
+    r.startsWith(`${REASON_NO_PVR} (HTTP `) ||
+    r === REASON_NOT_ALLOWLISTED ||
+    r.startsWith(REASON_RATE_LIMITED)
+  );
+}
 
 const SHA_RE = /^[0-9a-f]{40}$/;
-const REPO_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 
 export function emptyLedger(): Ledger {
   return { schemaVersion: LEDGER_SCHEMA_VERSION, repos: {}, disclosures: [] };
@@ -317,6 +341,23 @@ export interface TransitionOpts {
   reason?: string;
 }
 
+/**
+ * Index of the disclosure for a key. A finding set can have several entries over time (a
+ * `resolved-before-report` one, then a fresh one when it is re-detected): prefer the latest
+ * live entry, and fall back to the latest terminal one so callers get a clear "illegal move".
+ */
+function findDisclosure(ledger: Ledger, key: DisclosureKey): number {
+  const k = idsKey(key.findingIds);
+  let terminal = -1;
+  for (let i = ledger.disclosures.length - 1; i >= 0; i--) {
+    const d = ledger.disclosures[i] as Disclosure;
+    if (d.repo !== key.repo || idsKey(d.findingIds) !== k) continue;
+    if (d.state !== 'resolved-before-report') return i;
+    if (terminal < 0) terminal = i;
+  }
+  return terminal;
+}
+
 /** Move a disclosure to a new state, throwing on an illegal move. `submitted` requires `reportUrl`. */
 export function transition(
   ledger: Ledger,
@@ -324,10 +365,7 @@ export function transition(
   to: DisclosureState,
   opts: TransitionOpts,
 ): Ledger {
-  const k = idsKey(key.findingIds);
-  const idx = ledger.disclosures.findIndex(
-    (d) => d.repo === key.repo && idsKey(d.findingIds) === k,
-  );
+  const idx = findDisclosure(ledger, key);
   const cur = ledger.disclosures[idx];
   if (!cur)
     throw new Error(`transition: no disclosure for ${key.repo} [${key.findingIds.join(', ')}]`);
@@ -355,10 +393,7 @@ export function recordWouldSend(
   wouldSend: Record<string, unknown>,
   now: string,
 ): Ledger {
-  const k = idsKey(key.findingIds);
-  const idx = ledger.disclosures.findIndex(
-    (d) => d.repo === key.repo && idsKey(d.findingIds) === k,
-  );
+  const idx = findDisclosure(ledger, key);
   const cur = ledger.disclosures[idx];
   if (!cur) throw new Error(`recordWouldSend: no disclosure for ${key.repo}`);
   if (cur.state !== 'queued') {
@@ -387,7 +422,12 @@ export function recoverSubmitting(ledger: Ledger, now: string): Ledger {
 // ---------------------------------------------------------------- delta
 
 export type DeltaReason =
-  'listed-pass-old-engine' | 'listed-pass-changed' | 'new' | 'changed' | 'old-engine';
+  | 'listed-pass-old-engine'
+  | 'listed-pass-changed'
+  | 'pending-disclosure'
+  | 'new'
+  | 'changed'
+  | 'old-engine';
 
 export interface DeltaEntry {
   repo: string;
@@ -404,10 +444,26 @@ export interface DeltaResult {
 }
 
 /**
- * Which repos to scan (R2). Eligible: new, head SHA changed, or last scanned by a different
- * engine version ("older" = not equal; versions are opaque strings here). Priority: listed
- * passes whose engine or SHA changed (so the public list is re-vouched first, AE6), then new
- * repos, then the rest oldest-scanned first; ties break by repo name for determinism.
+ * A `fail` repo still owes a disclosure: one is queued or held for a retryable reason, or some
+ * of its failing finding ids are covered by no disclosure at all (deferred by the throttle,
+ * re-verify inconclusive, ...). It must be rescanned even when nothing upstream changed, or the
+ * report would never be retried.
+ */
+function hasPendingDisclosure(ledger: Ledger, repo: string, scan: RepoScan): boolean {
+  const mine = ledger.disclosures.filter((d) => d.repo === repo);
+  if (mine.some((d) => d.state === 'queued' || (d.state === 'held' && isRetryableHold(d)))) {
+    return true;
+  }
+  const covered = new Set(mine.flatMap((d) => d.findingIds));
+  return scan.failFindings.some((f) => !covered.has(f.id));
+}
+
+/**
+ * Which repos to scan (R2). Eligible: new, head SHA changed, last scanned by a different
+ * engine version ("older" = not equal; versions are opaque strings here), or a `fail` with a
+ * disclosure still pending. Priority: listed passes whose engine or SHA changed (so the public
+ * list is re-vouched first, AE6), then pending disclosures, then new repos, then the rest
+ * oldest-scanned first; ties break by repo name for determinism.
  */
 export function delta(
   ledger: Ledger,
@@ -424,7 +480,7 @@ export function delta(
     }
     const prev = ledger.repos[repo];
     if (!prev) {
-      eligible.push({ repo, reason: 'new', rank: 1, at: '' });
+      eligible.push({ repo, reason: 'new', rank: 2, at: '' });
       continue;
     }
     const oldEngine = prev.engineVersion !== engineVersion;
@@ -432,10 +488,12 @@ export function delta(
     if (prev.verdict === 'pass' && (oldEngine || changed)) {
       const reason = oldEngine ? 'listed-pass-old-engine' : 'listed-pass-changed';
       eligible.push({ repo, reason, rank: 0, at: prev.scannedAt });
+    } else if (prev.verdict === 'fail' && hasPendingDisclosure(ledger, repo, prev)) {
+      eligible.push({ repo, reason: 'pending-disclosure', rank: 1, at: prev.scannedAt });
     } else if (changed) {
-      eligible.push({ repo, reason: 'changed', rank: 2, at: prev.scannedAt });
+      eligible.push({ repo, reason: 'changed', rank: 3, at: prev.scannedAt });
     } else if (oldEngine) {
-      eligible.push({ repo, reason: 'old-engine', rank: 2, at: prev.scannedAt });
+      eligible.push({ repo, reason: 'old-engine', rank: 3, at: prev.scannedAt });
     }
   }
   eligible.sort(
@@ -477,7 +535,7 @@ export async function lsRemoteHeads(
   const out = new Map<string, string | null>();
   let next = 0;
   const one = async (repo: string): Promise<string | null> => {
-    if (!REPO_RE.test(repo)) return null;
+    if (!isPlainRepoName(repo)) return null;
     try {
       const stdout = await exec(['ls-remote', `https://github.com/${repo}.git`, 'HEAD']);
       const m = /^([0-9a-f]{40})\s+HEAD\s*$/m.exec(stdout);

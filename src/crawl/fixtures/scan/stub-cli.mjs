@@ -45,6 +45,9 @@ switch (mode) {
   case 'exit2':
     process.exit(2);
     break;
+  case 'hang':
+    setTimeout(() => {}, 60_000);
+    break;
   case 'garbage':
     process.stdout.write('{not json');
     break;

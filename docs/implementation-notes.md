@@ -1100,3 +1100,53 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   checked structurally only (pins, secret placement, concurrency, permissions). `gitPersist`'s
   rebase-and-retry path is untested. The ops repo must allow `github-actions` to push to its
   default branch.
+
+## 2026-10-01 — code-review fixes (public-crawler)
+
+- #1 Ledger lookups (`transition`, `recordWouldSend`) prefer the latest live entry and skip
+  `resolved-before-report` ones, so a re-detected finding with the same ids no longer wedges the run.
+- #2 `delta` re-queues an unchanged `fail` repo with a pending disclosure (reason
+  `pending-disclosure`, ranked after listed-pass re-vouching, before new repos): a `queued` entry, a
+  `held` entry with a retryable reason, or fail ids no disclosure covers. Retryable-hold rules moved
+  from `submit.ts` into `ledger.ts` (`isRetryableHold`) so both share them. Cost: in dry-run mode
+  `queued` entries never leave `queued`, so those repos are rescanned every run (bounded by `--cap`).
+- #3 `createGitHubClient` retries GETs on 5xx and thrown transport errors (3 tries, 1s/2s backoff,
+  injectable sleep). POSTs are never retried: a repeated PVR POST could file a second report.
+  `discover` marks a failing shard (or a later page of it) `partial` instead of throwing; a
+  persistent `GitHubRateLimitError` still propagates. A metadata failure now skips that repo and is
+  counted in the log (`eligibility errors N`).
+- #4 Decision: both halves. Code-search items carry `repository.private/fork/archived` (GitHub docs,
+  minimal-repository schema: `private`, `fork`, `archived` all required), so `discover` drops flagged
+  repos with zero metadata calls. The authoritative `checkEligible` (one `/repos` call) now runs in
+  `runScan` after `delta`, walking the priority order until the cap is filled, with at most 3x cap
+  checks. Known limit: if more than 2x cap ineligible repos rank first, later ones wait for a later
+  run (only reachable for repos the search items did not flag, e.g. deleted since indexing).
+  `discovered` (site filter) is therefore no longer metadata-verified, only item-flag-filtered.
+- #5 Timeouts: `fetchTransport` aborts after 30s (`createFetchTransport({timeoutMs})`); the scan
+  runner bounds `eval-scan.sh` at 2h and `--version` at 30s; `execOut` (git) at 120s with
+  `GIT_TERMINAL_PROMPT=0`. `eval-scan.sh` wraps each clone (`CLONE_TIMEOUT`, 120s) and scan
+  (`SCAN_TIMEOUT`, 300s) in `timeout`/`gtimeout` when present (unbounded otherwise, e.g. stock
+  macOS), discards a timed-out scan's output, and reports any failed or timed-out clone as
+  `clone-failed`. Tests use a stand-in `timeout` binary, so GNU `timeout` itself is unexercised here.
+- #6 `parseScanResult` validates the scan-job artifact: strict repo names that appear in
+  `discovered`; scan rows well-formed (40-hex sha, ISO time, bounded strings, fail iff fail ids);
+  candidate ids a non-empty subset of the stored fail ids with the stored archetype; summary
+  <= 1024 and description <= 65535 whose text begins with the exact `reportSummaryPrefix` /
+  `reportHeader` and ends with the exact `reportFooter` (version + scanned sha) from `disclose.ts`.
+  Invalid entries are dropped and counted (`submit: dropped N scan(s) and M candidate(s)`).
+  Tradeoff: the middle of the description (per-finding blocks) cannot be re-derived in the submit
+  job, so it stays scan-job-controlled text between a verified header and footer.
+- #7 Ops-template test now matches `\bsecrets\b` on the scan job and everything before `submit:`,
+  has a mutation-style negative control (`secrets['X']`, `toJSON(secrets)`, `secrets.X`,
+  `secrets: inherit`), and asserts both crawler checkouts use `vars.BLASTGATE_SHA` and every
+  scan-job checkout sets `persist-credentials: false`.
+- #9 One `isPlainRepoName` in `github.ts` (rejects `.`/`..` segments), used by `discover`,
+  `ledger` (`lsRemoteHeads`), `submit`, and the submit-job validation.
+- #10 Only a 429 or a `GitHubRateLimitError` (header-signalled 403) stops a submit run. A plain 403
+  on the PVR pre-check holds the repo as `no PVR (HTTP 403)` (retryable); on the POST it holds
+  `submission failed (HTTP 403)` (final). Also fixed a latent `held -> held` illegal move when a
+  retried hold's reason changes (now goes through `queued`).
+- #14 The scan child env is an allowlist (`PATH HOME LANG LC_ALL TMPDIR TERM BLASTGATE_CLI
+  EVAL_REMOTE_BASE JOBS SCAN_FLAGS SCAN_TIMEOUT CLONE_TIMEOUT`) plus caller overrides, with
+  credential-looking names (`GITHUB_*`, `GH_*`, `ACTIONS_*`, `RUNNER_*`, `*TOKEN*`, `*SECRET*`, ...)
+  stripped from both. Applies to `scanRepos`, `reverify`, and the CLI version probe.

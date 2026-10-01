@@ -11,9 +11,12 @@
 
 import { gate } from './disclose';
 import type { CrawlConfig } from './config';
-import { GitHubRateLimitError, type GitHubClient } from './github';
+import { GitHubRateLimitError, isPlainRepoName, type GitHubClient } from './github';
 import {
+  REASON_NO_PVR,
+  REASON_RATE_LIMITED,
   UNCERTAIN_REASON,
+  isRetryableHold,
   createDisclosure,
   recordWouldSend,
   transition,
@@ -63,13 +66,10 @@ export interface SubmitResult {
   outcomes: SubmitOutcome[];
 }
 
-export const REASON_NO_PVR = 'no PVR';
-const REASON_RATE_LIMITED = 'rate limited (HTTP';
-const REASON_NOT_ALLOWLISTED = 'archetype not allowlisted';
+export { REASON_NO_PVR };
 const REASON_SEND_FAILED = 'submission failed';
 const STOP_KILL = 'kill switch';
 
-const REPO_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -81,12 +81,6 @@ export function buildRequestBody(report: SubmitCandidate['report']): Record<stri
     severity: 'high',
     vulnerabilities: [],
   };
-}
-
-/** Held reasons a later run may re-evaluate. Everything else (uncertain, send failed) is final. */
-function isRetryableHold(d: Disclosure): boolean {
-  const r = d.reason ?? '';
-  return r === REASON_NO_PVR || r === REASON_NOT_ALLOWLISTED || r.startsWith(REASON_RATE_LIMITED);
 }
 
 const sameIds = (a: readonly string[], b: readonly string[]): boolean =>
@@ -105,8 +99,12 @@ function budgetUsed(ledger: Ledger, now: number): { hour: number; day: number } 
   return { hour, day };
 }
 
+/**
+ * Only a 429 stops the run. A header-signalled 403 never reaches here: the client waits it out
+ * and throws GitHubRateLimitError. A plain 403 is a permission answer for that one repo.
+ */
 function isRateLimit(status: number): boolean {
-  return status === 403 || status === 429;
+  return status === 429;
 }
 
 export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
@@ -135,7 +133,7 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       push(c.repo, 'stopped', stoppedReason);
       continue;
     }
-    if (!REPO_RE.test(c.repo) || c.findingIds.length === 0) {
+    if (!isPlainRepoName(c.repo) || c.findingIds.length === 0) {
       push(c.repo, 'held', 'invalid repo or empty finding ids');
       continue;
     }
@@ -195,6 +193,8 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
     const hold = (reason: string): void => {
       const d = current();
       if (d.state === 'held' && d.reason === reason) return;
+      // held -> held is not a legal edge: a changed reason goes through queued.
+      if (d.state === 'held') apply(transition(ledger, key, 'queued', { now: iso() }));
       apply(transition(ledger, key, 'held', { now: iso(), reason }));
     };
     /** Held -> queued just before an attempt, so a failed attempt does not churn the ledger. */
@@ -232,6 +232,7 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
 
     // PVR pre-check.
     let pvrEnabled = false;
+    let noPvrReason = REASON_NO_PVR;
     try {
       const pvr = await client.get(`/repos/${c.repo}/private-vulnerability-reporting`);
       if (isRateLimit(pvr.status)) {
@@ -241,6 +242,7 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       }
       const body = pvr.json as { enabled?: unknown } | null;
       pvrEnabled = pvr.status === 200 && body?.enabled === true;
+      if (pvr.status === 403) noPvrReason = `${REASON_NO_PVR} (HTTP 403)`;
     } catch (e) {
       if (e instanceof GitHubRateLimitError) {
         stoppedReason = `GitHub rate limit (HTTP ${e.status}) on PVR pre-check`;
@@ -251,8 +253,8 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       continue;
     }
     if (!pvrEnabled) {
-      hold(REASON_NO_PVR);
-      push(c.repo, 'held', REASON_NO_PVR);
+      hold(noPvrReason);
+      push(c.repo, 'held', noPvrReason);
       continue;
     }
 

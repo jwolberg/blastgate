@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Finding } from '../findings/finding';
+import { composeReport } from './disclose';
 import type { HttpRequest, HttpResponse } from './github';
 import { createGitHubClient } from './github';
 import {
@@ -10,7 +12,9 @@ import {
   type ScanResultFile,
   type SubmitDeps,
   defaultScanDeps,
+  execOut,
   gitPersist,
+  parseScanResult,
   runScan,
   runSubmit,
 } from './index';
@@ -24,6 +28,7 @@ import {
   transition,
 } from './ledger';
 import { reverify, scanRepos } from './scan';
+import { fileURLToPath } from 'node:url';
 import { submitAll } from './submit';
 
 const STUB = join(__dirname, 'fixtures', 'orchestrator', 'stub-cli.mjs');
@@ -66,9 +71,30 @@ const stubEnv = (): NodeJS.ProcessEnv => ({
   JOBS: '1',
 });
 
+/** A client whose repo-metadata answers are scripted; counts every /repos request. */
+function metaClient(meta: (repo: string) => HttpResponse = () => publicRepo()) {
+  const asked: string[] = [];
+  const client = createGitHubClient({
+    sleep: async () => {},
+    transport: async (r) => {
+      const m = /\/repos\/([^/]+\/[^/?]+)$/.exec(r.url);
+      if (!m) return { status: 404, headers: {}, json: null };
+      asked.push(m[1] ?? '');
+      return meta(m[1] ?? '');
+    },
+  });
+  return { client, asked };
+}
+const publicRepo = (): HttpResponse => ({
+  status: 200,
+  headers: {},
+  json: { private: false, fork: false, archived: false },
+});
+
 function localScanDeps(over: Partial<ScanDeps> = {}): ScanDeps {
   return {
     ...defaultScanDeps({}),
+    client: metaClient().client,
     discover: async () => ({ repos: ['acme/fail', 'acme/pass'], truncated: ['q1'], partial: [] }),
     lsRemoteHeads: (repos) =>
       lsRemoteHeads(repos, {
@@ -195,6 +221,83 @@ describe('runScan', () => {
     expect(raw).not.toContain('attacker.example');
   });
 
+  it('checks eligibility only for the capped selection, not for every discovered repo (review #4)', async () => {
+    const repos = Array.from({ length: 50 }, (_, i) => `acme/r${String(i).padStart(2, '0')}`);
+    const m = metaClient();
+    const scanned: string[][] = [];
+    await runScan(
+      { ...scanArgs(), cap: 3 },
+      localScanDeps({
+        client: m.client,
+        discover: async () => ({ repos, truncated: [], partial: [] }),
+        lsRemoteHeads: async (rs) => new Map(rs.map((r) => [r, SHA])),
+        scanRepos: async (rs) => {
+          scanned.push([...rs]);
+          return {};
+        },
+      }),
+    );
+    expect(m.asked).toHaveLength(3);
+    expect(scanned.flat()).toEqual(m.asked);
+  });
+
+  it('skips ineligible repos and backfills the cap, with a bounded number of checks (review #4)', async () => {
+    const repos = Array.from({ length: 50 }, (_, i) => `acme/r${String(i).padStart(2, '0')}`);
+    const m = metaClient((r) =>
+      r <= 'acme/r03' ? { status: 200, headers: {}, json: { private: true } } : publicRepo(),
+    );
+    const scanned: string[][] = [];
+    await runScan(
+      { ...scanArgs(), cap: 3 },
+      localScanDeps({
+        client: m.client,
+        discover: async () => ({ repos, truncated: [], partial: [] }),
+        lsRemoteHeads: async (rs) => new Map(rs.map((r) => [r, SHA])),
+        scanRepos: async (rs) => {
+          scanned.push([...rs]);
+          return {};
+        },
+      }),
+    );
+    expect(scanned.flat()).toEqual(['acme/r04', 'acme/r05', 'acme/r06']);
+    expect(m.asked).toHaveLength(7);
+    // never more than 3x the cap, however many are ineligible
+    const all = metaClient(() => ({ status: 200, headers: {}, json: { private: true } }));
+    await runScan(
+      { ...scanArgs(), cap: 3 },
+      localScanDeps({
+        client: all.client,
+        discover: async () => ({ repos, truncated: [], partial: [] }),
+        lsRemoteHeads: async (rs) => new Map(rs.map((r) => [r, SHA])),
+        scanRepos: async () => ({}),
+      }),
+    );
+    expect(all.asked).toHaveLength(9);
+  });
+
+  it('skips and reports a repo whose metadata call fails instead of throwing (review #3)', async () => {
+    const m = metaClient((r) =>
+      r === 'acme/a' ? { status: 503, headers: {}, json: null } : publicRepo(),
+    );
+    const scanned: string[][] = [];
+    const lines: string[] = [];
+    await runScan(
+      scanArgs(),
+      localScanDeps({
+        client: m.client,
+        discover: async () => ({ repos: ['acme/a', 'acme/b'], truncated: [], partial: [] }),
+        lsRemoteHeads: async (rs) => new Map(rs.map((r) => [r, SHA])),
+        scanRepos: async (rs) => {
+          scanned.push([...rs]);
+          return {};
+        },
+        log: (l) => lines.push(l),
+      }),
+    );
+    expect(scanned.flat()).toEqual(['acme/b']);
+    expect(lines.join('\n')).toMatch(/eligibility errors 1/);
+  });
+
   it('logs counts only: no repo name, no repo/verdict pair', async () => {
     makeRemote('acme/fail', 'fail');
     makeRemote('acme/pass', 'pass');
@@ -237,6 +340,21 @@ function fakeNet(opts: { pvrEnabled?: boolean } = {}): Net {
   };
 }
 
+const REAL = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL('./fixtures/disclose/real-fails.json', import.meta.url)),
+    'utf8',
+  ),
+) as Record<string, Finding[]>;
+const REAL_FINDING = Object.values(REAL)[0]?.[0] as Finding;
+const ENGINE = '9.9.9+abc';
+const REPORT = composeReport({
+  repo: 'acme/fail',
+  sha: SHA,
+  findings: [REAL_FINDING],
+  blastgateVersion: ENGINE,
+});
+
 function scanResult(over: Partial<ScanResultFile> = {}): ScanResultFile {
   return {
     engineVersion: '9.9.9+abc',
@@ -264,7 +382,7 @@ function scanResult(over: Partial<ScanResultFile> = {}): ScanResultFile {
         repo: 'acme/fail',
         archetype: ARCH,
         findingIds: ['f1'],
-        report: { summary: 'S', description: 'D' },
+        report: REPORT,
         reverify: 'still-fails',
       },
     ],
@@ -388,7 +506,7 @@ describe('runSubmit', () => {
     expect(h.net.reqs.some((r) => r.method === 'GET')).toBe(true);
     const d = h.persisted[h.persisted.length - 1]?.disclosures[0];
     expect(d?.state).toBe('queued');
-    expect(d?.wouldSend).toMatchObject({ summary: 'S', description: 'D' });
+    expect(d?.wouldSend).toMatchObject(REPORT);
   });
 
   it('submitMode on: persists `submitting` before the POST, then the URL', async () => {
@@ -463,6 +581,96 @@ describe('runSubmit', () => {
     await expect(runSubmit(submitArgs(), h.deps)).rejects.toThrow(/scan result/);
     expect(h.net.reqs).toEqual([]);
     expect(existsSync(p('site'))).toBe(false);
+  });
+});
+
+describe('forged scan-job artifacts (review #6)', () => {
+  const valid = (): ScanResultFile => scanResult();
+  const cand = (r: ScanResultFile) => r.candidates[0] as ScanResultFile['candidates'][number];
+  const scan = (r: ScanResultFile) => r.scans['acme/fail'] as ScanResultFile['scans'][string];
+
+  it('keeps a well-formed artifact intact', () => {
+    const r = parseScanResult(JSON.stringify(valid()));
+    expect(r.candidates).toHaveLength(1);
+    expect(r.dropped).toEqual({ scans: 0, candidates: 0 });
+  });
+
+  const forgeries: Array<[string, (r: ScanResultFile) => void]> = [
+    ['dot-dot repo segment', (r) => (cand(r).repo = 'acme/..')],
+    ['traversal repo', (r) => (cand(r).repo = '../etc/passwd')],
+    ['repo not discovered', (r) => (r.discovered = ['acme/pass'])],
+    ['repo without a scan', (r) => delete r.scans['acme/fail']],
+    ['empty finding ids', (r) => (cand(r).findingIds = [])],
+    ['finding id the scan never failed', (r) => (cand(r).findingIds = ['f1', 'invented'])],
+    ['archetype that differs from the scan', (r) => (cand(r).archetype = 'other->thing')],
+    ['scan verdict that is not fail', (r) => (scan(r).verdict = 'warn')],
+    [
+      'summary over 1024',
+      (r) => (cand(r).report.summary = `${REPORT.summary.slice(0, 80)}${'x'.repeat(1100)}`),
+    ],
+    ['summary without the disclosure prefix', (r) => (cand(r).report.summary = 'Click here')],
+    [
+      'description without the header',
+      (r) => (cand(r).report.description = `hi\n${REPORT.description}`),
+    ],
+    [
+      'description without the footer',
+      (r) => (cand(r).report.description = `${REPORT.description}\nextra`),
+    ],
+    [
+      'description over 65535',
+      (r) => {
+        const d = REPORT.description;
+        const cut = d.lastIndexOf('\n\n---\n\n');
+        cand(r).report.description = `${d.slice(0, cut)}${'x'.repeat(66000)}${d.slice(cut)}`;
+      },
+    ],
+    ['non-hex sha', (r) => (scan(r).fullSha = 'z'.repeat(40))],
+    ['non-ISO scannedAt', (r) => (scan(r).scannedAt = 'yesterday')],
+    ['oversized engineVersion', (r) => (scan(r).engineVersion = 'v'.repeat(300))],
+  ];
+
+  it.each(forgeries)('drops a candidate with %s', (_name, mutate) => {
+    const r = valid();
+    mutate(r);
+    const parsed = parseScanResult(JSON.stringify(r));
+    expect(parsed.candidates).toHaveLength(0);
+    expect(parsed.dropped.candidates + parsed.dropped.scans).toBeGreaterThan(0);
+  });
+
+  it('drops scans keyed by an invalid or undiscovered repo name', () => {
+    const r = valid();
+    r.scans['x/..'] = scan(r);
+    r.scans['evil/undiscovered'] = scan(r);
+    r.currentFails['x/..'] = ['f1'];
+    const parsed = parseScanResult(JSON.stringify(r));
+    expect(Object.keys(parsed.scans).sort()).toEqual(['acme/fail', 'acme/pass']);
+    expect(parsed.currentFails['x/..']).toBeUndefined();
+    expect(parsed.dropped.scans).toBe(2);
+  });
+
+  it('a forged artifact reaches no network and writes no forged ledger entry', async () => {
+    const r = valid();
+    cand(r).repo = 'acme/..';
+    cand(r).report.description = 'FORGED: click http://evil.example';
+    setup({ allowlist: [ARCH], submitMode: true }, r);
+    const h = harness();
+    await runSubmit(submitArgs(), h.deps);
+    expect(h.net.reqs.filter((q) => q.method === 'POST')).toEqual([]);
+    expect(h.net.reqs).toEqual([]);
+    expect(h.persisted.at(-1)?.disclosures).toEqual([]);
+    expect(h.logs.join('\n')).toMatch(/dropped 0 scan\(s\) and 1 candidate/);
+  });
+});
+
+describe('execOut timeout (review #5)', () => {
+  it('rejects a git-style subprocess that outlives its bound', async () => {
+    const t0 = Date.now();
+    await expect(execOut('sleep', ['5'], base, 50)).rejects.toBeDefined();
+    expect(Date.now() - t0).toBeLessThan(3000);
+  });
+  it('returns trimmed stdout otherwise', async () => {
+    expect(await execOut('echo', ['hi'], base, 5000)).toBe('hi');
   });
 });
 

@@ -27,18 +27,82 @@ export interface RunResult {
   /** Process exit code; non-zero for any failure to run. */
   code: number;
 }
-/** Injectable process runner so tests (and callers) control how scripts execute. */
-export type Runner = (cmd: string, args: string[], env: NodeJS.ProcessEnv) => Promise<RunResult>;
+/**
+ * Injectable process runner so tests (and callers) control how scripts execute. `timeoutMs`
+ * bounds the whole process; on expiry it is killed and the result carries a non-zero code.
+ */
+export type Runner = (
+  cmd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs?: number,
+) => Promise<RunResult>;
 
-export const defaultRunner: Runner = (cmd, args, env) =>
-  new Promise((res) => {
-    execFile(cmd, args, { env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) =>
-      res({
-        stdout,
-        code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
-      }),
-    );
-  });
+/** Generous bound for one whole eval-scan.sh run (it also bounds each clone and scan itself). */
+export const SCAN_RUN_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+/** Bound for the CLI's `--version`. */
+const VERSION_TIMEOUT_MS = 30_000;
+
+export function createRunner(defaultTimeoutMs?: number): Runner {
+  return (cmd, args, env, timeoutMs) =>
+    new Promise((res) => {
+      execFile(
+        cmd,
+        args,
+        {
+          env,
+          maxBuffer: 64 * 1024 * 1024,
+          ...((timeoutMs ?? defaultTimeoutMs) !== undefined
+            ? { timeout: (timeoutMs ?? defaultTimeoutMs) as number }
+            : {}),
+        },
+        (err, stdout) =>
+          res({
+            stdout,
+            code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+          }),
+      );
+    });
+}
+
+export const defaultRunner: Runner = createRunner();
+
+/** Variables the scan child process may inherit from the parent. Credentials are never among them. */
+const ENV_ALLOWLIST = [
+  'PATH',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'TMPDIR',
+  'TERM',
+  'BLASTGATE_CLI',
+  'EVAL_REMOTE_BASE',
+  'JOBS',
+  'SCAN_FLAGS',
+  'SCAN_TIMEOUT',
+  'CLONE_TIMEOUT',
+] as const;
+
+/** Names that look like credentials or CI plumbing; stripped even from caller-supplied env. */
+const SECRET_NAME_RE =
+  /^(GITHUB_|GH_|ACTIONS_|RUNNER_|SSH_AUTH_SOCK)|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY/i;
+
+/**
+ * Environment for the scan child (it clones and scans attacker-controlled repos): an allowlist
+ * of the parent's variables, plus caller overrides (tests point it at local remotes) minus
+ * anything that looks like a credential.
+ */
+export function childEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const k of ENV_ALLOWLIST) {
+    const v = process.env[k];
+    if (v !== undefined) env[k] = v;
+  }
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v !== undefined && !SECRET_NAME_RE.test(k)) env[k] = v;
+  }
+  return env;
+}
 
 export interface ScanOptions {
   /** Clone cache. Reused across runs for the bulk scan. */
@@ -52,6 +116,8 @@ export interface ScanOptions {
   scriptPath?: string;
   /** Clock for `scannedAt`. */
   now?: () => Date;
+  /** Bound for the whole eval-scan.sh run; defaults to SCAN_RUN_TIMEOUT_MS. */
+  timeoutMs?: number;
   /** Skip reading the version from the CLI. */
   engineVersion?: string;
 }
@@ -112,7 +178,12 @@ const fileName = (repo: string): string => `${repo.replace('/', '__')}.json`;
 async function engineVersionOf(opts: ScanOptions, env: NodeJS.ProcessEnv): Promise<string> {
   if (opts.engineVersion) return opts.engineVersion;
   const cli = env.BLASTGATE_CLI ?? join(ROOT, 'dist', 'cli', 'index.js');
-  const r = await (opts.runner ?? defaultRunner)('node', [cli, '--version'], env);
+  const r = await (opts.runner ?? defaultRunner)(
+    'node',
+    [cli, '--version'],
+    env,
+    VERSION_TIMEOUT_MS,
+  );
   const m = /(\d+\.\d+\.\d+[^\s]*)/.exec(r.stdout);
   if (r.code !== 0 || !m?.[1]) throw new Error(`could not read engine version from ${cli}`);
   return m[1];
@@ -127,7 +198,7 @@ export async function scanRepos(
   opts: ScanOptions,
 ): Promise<Record<string, RepoScan>> {
   if (repos.length === 0) return {};
-  const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env, SCAN_FLAGS: '--public' };
+  const env: NodeJS.ProcessEnv = { ...childEnv(opts.env), SCAN_FLAGS: '--public' };
   const runner = opts.runner ?? defaultRunner;
   const engineVersion = await engineVersionOf(opts, env);
   const scannedAt = (opts.now?.() ?? new Date()).toISOString();
@@ -136,7 +207,12 @@ export async function scanRepos(
   const list = join(opts.outdir, 'repos.txt');
   writeFileSync(list, `${repos.join('\n')}\n`);
   const script = opts.scriptPath ?? join(ROOT, 'scripts', 'eval-scan.sh');
-  const run = await runner('bash', [script, opts.workdir, opts.outdir, list], env);
+  const run = await runner(
+    'bash',
+    [script, opts.workdir, opts.outdir, list],
+    env,
+    opts.timeoutMs ?? SCAN_RUN_TIMEOUT_MS,
+  );
   if (run.code !== 0) throw new Error(`eval-scan.sh failed with exit ${run.code}`);
 
   const wanted = new Set(repos);
