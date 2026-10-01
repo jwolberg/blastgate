@@ -446,7 +446,7 @@ describe('gh-aw runtime steps are not PR-code execution (0062)', () => {
       '          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}',
       '      - run: |',
       '          mkdir -p /tmp/gh-aw/safeoutputs',
-      '          copilot --prompt "$(cat /tmp/gh-aw/prompt.txt)"',
+      '          bash "${RUNNER_TEMP}/gh-aw/actions/run_awf.sh" -- awf -- copilot --prompt-file /tmp/gh-aw/prompt.txt',
       ...extra,
     ]);
 

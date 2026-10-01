@@ -55,8 +55,8 @@ Public incidents show that the risk depends on configuration. Comment and Contro
 
 **Rule of Two**
 
-- R3. Untrusted input (direct) holds when an outsider can trigger the agent step itself: its trigger is attacker-reachable and the action's write-access gate is absent or opened to outsiders (for example claude-code-action's `allowed_non_write_users: '*'` with `github_token` passed, or `allowed_bots: '*'`, which any GitHub App can satisfy per the action's security docs), with no recognized guard on the job, the agent step, or a job it `needs`.
-- R4. Sensitive access holds when the agent has a tool able to read process environment or runner files while its job holds a named secret, a code-write `GITHUB_TOKEN`, or `id-token: write`. Credential rules are those of Precision Core R3 / 0047, and the agent's own model API key counts.
+- R3. Untrusted input (direct) holds when an outsider can trigger the agent step itself: its trigger is attacker-reachable and the action's write-access gate is absent or opened to outsiders (for example claude-code-action's `allowed_non_write_users: '*'` with `github_token` passed, or `allowed_bots: '*'` on a public repository, where any GitHub App can satisfy it per the action's security docs; unknown visibility leaves the leg unknown), with no recognized guard on the job, the agent step, or a job it `needs`.
+- R4. Sensitive access holds when the agent has a tool able to read process environment or runner files while a named secret in the agent step's own scope (workflow, job, or step env; not another step's), a code-write `GITHUB_TOKEN`, or `id-token: write`. Credential rules are those of Precision Core R3 / 0047, and the agent's own model API key counts.
 - R5. An exfiltration channel holds when the agent has a shell or network tool, can write to a public surface (comments, PRs, issues), or runs in a public repository whose Actions logs are publicly readable.
 
 **Verdict**
@@ -152,7 +152,7 @@ flowchart TB
   P -->|no| W1[warn: profile does not cover version]
   P -->|yes| D{R3 direct trigger?}
   D -->|no| W2[warn: indirect injection]
-  D -->|yes| A{R4 can read a secret, code-write token, or OIDC?}
+  D -->|yes| A{R4 can read a secret, code-write token, or OIDC in its own scope?}
   A -->|no| W3[warn: names missing access leg]
   A -->|yes| X{R5 shell or network tool, public write, or public logs?}
   X -->|no| W4[warn: names missing exfil leg]

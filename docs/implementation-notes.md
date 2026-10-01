@@ -878,3 +878,21 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   (`gh issue edit --body "$GEMINI_API_KEY"`): shell expansion reads env even when only
   `gh issue edit` is allowed. The plan (AE3, user-approved) treats a scoped shell as no shell.
   That is precise against intent but misses this vector.
+
+## 2026-10-01 — PR #39 re-review fixes (0059, 0062)
+
+- **Fixed — 0062 used a denylist of workspace commands.** `node build.js`, `docker build .`,
+  `$GITHUB_WORKSPACE/x.sh`, `eval`, `bash -c`, … slipped through. `isGhAwRuntimeStep` is now an
+  allowlist. A gh-aw job's step is runtime only if every simple command, after stripping comments
+  and heredoc bodies, masking quotes, and following `$(…)`, is a gh-aw runtime script, a
+  `$GH_AW_*` invocation, or inert plumbing. Any unrecognized command counts as running PR code.
+  `find -exec`, `git … core.hooksPath`, and `awk/sed/jq -f` are rejected. Calibrated on the real
+  home-assistant lock file: every runtime step is still exempt, so 0 fails.
+- **Fixed — `allowed_bots: '*'` failed regardless of visibility.** The doc scopes the any-App
+  risk to public repos, so the direct leg is now held when public, unknown when unknown, and
+  missing when private. The CLI default is unknown, so without `--public` a bots-only agent
+  warns.
+- **Taken (suggestion) — a guarded `needs:` job is not a gate when the dependent job runs
+  `always()`, `!cancelled()`, or `failure()`.**
+- Plan R4 and the flowchart now scope access to the agent step (the PR #38 low, applied here so
+  #38's approved head does not move).

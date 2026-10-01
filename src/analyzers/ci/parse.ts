@@ -238,17 +238,108 @@ export function untrustedCheckoutStep(job: JobSpec): number | undefined {
 
 // A job compiled by GitHub Agentic Workflows (gh-aw) installs its runtime with this action.
 const GH_AW_SETUP_RE = /^github\/gh-aw-actions\/setup@/;
-// gh-aw runtime steps operate on its own paths; PR content reaches the job only via its agent.
-const GH_AW_RUNTIME_RE = /(?:\$\{?RUNNER_TEMP\}?|\/tmp)\/gh-aw\//;
-// A command that resolves through the checked-out workspace: a relative path, or a build,
-// package, or test tool that runs the repo's own scripts or config.
-const WORKSPACE_EXEC_RE =
-  /(?:^|[\s;&|(`])(?:\.{1,2}\/|(?:make|npx|pip3?|poetry|uv|tox|pytest|cargo|bundle|rake|gradlew?|mvn|composer|dotnet|bazel|just)\b|(?:npm|pnpm|bun)\s+(?:ci|i|install|run|test|t|start|exec|rebuild|x)\b|yarn\s*(?:$|[;&|])|yarn\s+(?:install|run|test|start|exec|dlx|build)\b|go\s+(?:run|test|build|generate)\b|python[\d.]*\s+(?!-c\b)[\w-]|(?:ba)?sh\s+(?!-c\b)[\w.-])/m;
+// gh-aw runtime: scripts under its own paths, or its compiler's `$GH_AW_*` variables.
+const GH_AW_PATH_RE = /^["']?(?:\$\{?RUNNER_TEMP\}?|\/tmp)\/gh-aw\//;
+const GH_AW_VAR_RE = /^["']?\$\{?GH_AW_\w+\}?["']?$/;
+// Commands that never run the checked-out workspace's code (shell plumbing, gh-aw's `awf`).
+const INERT_COMMANDS = new Set([
+  ...['set', 'export', 'echo', 'printf', 'mkdir', 'cp', 'mv', 'rm', 'touch', 'chmod', 'cat'],
+  ...['test', '[', '[[', 'true', 'false', 'exit', 'return', 'trap', 'umask', 'cd', 'local'],
+  ...['read', 'shift', 'wait', 'sleep', 'date', 'id', 'openssl', 'tr', 'head', 'tail', 'grep'],
+  ...['tee', 'sort', 'uniq', 'wc', 'base64', 'command', 'type', 'which', 'unset', 'declare'],
+  ...['readonly', 'mktemp', 'ln', 'ls', 'basename', 'dirname', 'realpath', ':', 'curl', 'kill'],
+  ...['awf', 'gh', 'break', 'continue', 'for', 'in'],
+  ...['if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'case', 'esac'],
+]);
+// Inert unless told to run a program from a file or to execute a command.
+const CONDITIONAL_COMMANDS: Record<string, RegExp> = {
+  sed: /^-f$|^--file/,
+  awk: /^-f$|^--file/,
+  jq: /^-f$|^--from-file/,
+  find: /^-(?:exec|execdir|ok|okdir)$/,
+  git: /hooksPath|^-c$/,
+};
+const SCRIPT_RUNNERS = new Set(['bash', 'sh', 'node', 'source', '.']);
 
-/** A gh-aw runtime step: names gh-aw's own paths (outside comments) and runs no workspace code. */
-function isGhAwRuntimeStep(run: string): boolean {
-  const code = run.replace(/(^|\s)#.*$/gm, '$1');
-  return GH_AW_RUNTIME_RE.test(code) && !WORKSPACE_EXEC_RE.test(code);
+/** A `run:` script's simple commands: comments, heredoc bodies, and quoted text removed. */
+function shellSegments(run: string): string[] {
+  const out: string[] = [];
+  let heredoc: string | undefined;
+  for (const line of run.replace(/\\\n/g, ' ').split('\n')) {
+    if (heredoc !== undefined) {
+      heredoc = line.trim() === heredoc ? undefined : heredoc;
+      continue;
+    }
+    heredoc = /<<-?\s*['"]?(\w+)['"]?/.exec(line)?.[1];
+    const code = line.replace(/(^|\s)#.*$/, '$1');
+    const subs = [...code.matchAll(/\$\(([^()]*)\)/g)].map((m) => m[1] ?? '');
+    const masked = code
+      .replace(/"(?:[^"\\]|\\.)*"/g, (q) => (q.startsWith('"$') ? q : '""'))
+      .replace(/'[^']*'/g, "''")
+      .replace(/\$\(([^()]*)\)/g, '$X');
+    for (const c of [masked, ...subs]) {
+      out.push(...c.split(/&&|\|\||;|\|/));
+    }
+  }
+  return out;
+}
+
+/** The command words of a segment, past keywords, groupings, and leading `VAR=value`s. */
+function commandWords(segment: string): string[] {
+  let s = segment.trim();
+  for (let prev = ''; prev !== s;) {
+    prev = s;
+    s = s
+      .replace(/^[({!]\s*/, '')
+      .replace(/^(?:if|then|else|elif|do|while|until|time|exec)\s+/, '')
+      .replace(/^[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s*/, '');
+  }
+  return s.split(/\s+/).filter(Boolean);
+}
+
+/**
+ * A gh-aw runtime step (0062): every command in it is a gh-aw runtime script, a compiler
+ * `$GH_AW_*` invocation, or inert shell plumbing, so it cannot run the PR's code. An allowlist, so any command it does not
+ * recognize — `node x.js`, `docker build .`, `$GITHUB_WORKSPACE/x.sh`, `eval` — counts as
+ * running the PR's code.
+ */
+export function isGhAwRuntimeStep(run: string): boolean {
+  for (const segment of shellSegments(run)) {
+    const [cmd, ...args] = commandWords(segment);
+    if (cmd === undefined || /^[)}\]]/.test(cmd) || cmd === '""' || cmd === "''") {
+      continue;
+    }
+    if (GH_AW_PATH_RE.test(cmd) || GH_AW_VAR_RE.test(cmd)) {
+      continue;
+    }
+    if (SCRIPT_RUNNERS.has(cmd)) {
+      // The script is the first non-option word; `-c` before it runs an inline command instead.
+      const at = args.findIndex((a) => !a.startsWith('-'));
+      const target = args[at];
+      if (
+        target !== undefined &&
+        (GH_AW_PATH_RE.test(target) || GH_AW_VAR_RE.test(target)) &&
+        !args.slice(0, at).includes('-c')
+      ) {
+        continue;
+      }
+      return false;
+    }
+    const risky = CONDITIONAL_COMMANDS[cmd];
+    if (risky) {
+      if (args.some((a) => risky.test(a))) {
+        return false;
+      }
+      continue;
+    }
+    if (cmd === 'npm' && /^(?:root|config|view|ls|-v|--version)$/.test(args[0] ?? '')) {
+      continue;
+    }
+    if (!INERT_COMMANDS.has(cmd)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

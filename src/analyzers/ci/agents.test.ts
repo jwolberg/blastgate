@@ -277,9 +277,12 @@ jobs:
     expect(a.direct).toBe('held');
   });
 
-  it("allowed_bots: '*' on an issue_comment job → direct holds", () => {
-    const a = assess(AE1.replace("allowed_non_write_users: '*'", "allowed_bots: '*'"));
-    expect(a.direct).toBe('held');
+  it("allowed_bots: '*' on an issue_comment job → direct holds only on a public repo", () => {
+    const bots = AE1.replace("allowed_non_write_users: '*'", "allowed_bots: '*'");
+    expect(assess(bots, 'public').direct).toBe('held');
+    // Only a public repo lets an arbitrary GitHub App open issues or comment (security doc).
+    expect(assess(bots, 'unknown').direct).toBe('unknown');
+    expect(assess(bots, 'private').direct).toBe('missing');
   });
 
   it('a recognized job actor guard → direct missing', () => {
@@ -487,6 +490,7 @@ ${opts.withLines.map((l) => `          ${l}`).join('\n')}
   it("allowed_bots: '*' alone does not scrub, so environment secrets count", () => {
     const a = assess(
       claude({ withLines: [KEY, "allowed_bots: '*'", "claude_args: '--allowedTools Bash'"] }),
+      'public',
     );
     expect(a.direct).toBe('held');
     expect(a.access).toBe('held');
@@ -523,13 +527,13 @@ ${opts.withLines.map((l) => `          ${l}`).join('\n')}
 
 /** PR #39 review fixes: secret scope, step/needs guards, gemini settings, unknown workspace config. */
 describe('assessAgentStep — PR #39 review fixes', () => {
-  function assess(yaml: string, jobId?: string) {
+  function assess(yaml: string, jobId?: string, visibility: RepoVisibility = 'unknown') {
     const wf = parseWorkflow(yaml);
     const job = jobId ? wf.jobs![jobId]! : Object.values(wf.jobs ?? {})[0]!;
     const idx = (job.steps ?? []).findIndex(
       (s) => typeof s.uses === 'string' && agentProfileFor(s.uses) !== undefined,
     );
-    return assessAgentStep({ workflow: wf, job, stepIndex: idx, visibility: 'unknown' });
+    return assessAgentStep({ workflow: wf, job, stepIndex: idx, visibility });
   }
 
   it("a secret only in another step's env is not readable by the agent", () => {
@@ -620,6 +624,14 @@ ${stepIf}        with:
     expect(assess(GUARDABLE('', '', '    needs: [gate]\n'), 'claude').direct).toBe('missing');
   });
 
+  it.each([['always()'], ['${{ !cancelled() }}'], ['failure()']])(
+    'a needs: gate does not guard a job that runs anyway (if: %s)',
+    (cond) => {
+      const yaml = GUARDABLE(`    if: ${cond}\n`, '', '    needs: [gate]\n');
+      expect(assess(yaml, 'claude').direct).toBe('held');
+    },
+  );
+
   const GEMINI = (extra: string, env = '') => `
 on: issues
 jobs:
@@ -651,7 +663,8 @@ ${extra}          prompt: Triage this issue.
   });
 
   it("allowed_bots: '*' reason says any GitHub App can trigger it (claude security doc)", () => {
-    const a = assess(`
+    const a = assess(
+      `
 on: issue_comment
 jobs:
   claude:
@@ -659,7 +672,10 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           allowed_bots: '*'
-`);
+`,
+      undefined,
+      'public',
+    );
     expect(a.direct).toBe('held');
     expect(a.reasons.direct).toMatch(/GitHub App/);
   });

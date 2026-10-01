@@ -285,7 +285,7 @@ export function assessAgentStep(inputs: AssessInputs): AgentAssessment {
   const { profile } = resolved;
   const unknown: string[] = resolved.unknown ? [resolved.unknown] : [];
   const tools = toolsOf(profile, step, [step.env, job.env, workflow.env], unknown);
-  const direct = directLeg(profile, workflow, job, step, unknown);
+  const direct = directLeg(profile, workflow, job, step, inputs.visibility, unknown);
   const access = accessLeg(profile, workflow, job, stepIndex, tools);
   const exfil = exfilLeg(workflow, job, tools, inputs.visibility);
   return {
@@ -309,6 +309,7 @@ function directLeg(
   workflow: WorkflowSpec,
   job: JobSpec,
   step: StepSpec,
+  visibility: RepoVisibility,
   unknown: string[],
 ): Verdict {
   const events = credentialReachableTextTriggers(normalizeTriggers(workflow.on));
@@ -333,6 +334,7 @@ function directLeg(
     return { leg: 'held', why: `any ${on} author triggers it (the action has no actor check)` };
   }
   let sawExpression = false;
+  let botsNeedVisibility = false;
   for (const input of profile.outsiderInputs) {
     const value = step.with?.[input];
     if (isExpression(value)) {
@@ -342,22 +344,35 @@ function directLeg(
     const opened = str(value)
       .split(',')
       .some((v) => v.trim() === '*');
+    if (!opened) {
+      continue;
+    }
+    if (input === 'allowed_bots') {
+      // Any GitHub App can act only on a public repo (claude-code-action security docs).
+      if (visibility === 'public') {
+        return {
+          leg: 'held',
+          why: `\`allowed_bots: '*'\` lets any GitHub App, which anyone can create, trigger it on ${on} in this public repo (claude-code-action security docs)`,
+        };
+      }
+      botsNeedVisibility ||= visibility === 'unknown';
+      continue;
+    }
     // allowed_non_write_users only works with an explicit github_token (not App auth).
-    const effective =
-      opened && (input !== 'allowed_non_write_users' || str(step.with?.github_token) !== '');
-    if (effective) {
-      return {
-        leg: 'held',
-        why:
-          input === 'allowed_bots'
-            ? `\`allowed_bots: '*'\` lets any GitHub App, which anyone can create, trigger it on ${on} (claude-code-action security docs)`
-            : `\`${input}: '*'\` lets any ${on} author trigger it`,
-      };
+    if (input !== 'allowed_non_write_users' || str(step.with?.github_token) !== '') {
+      return { leg: 'held', why: `\`${input}: '*'\` lets any ${on} author trigger it` };
     }
   }
   if (sawExpression) {
     unknown.push(`${profile.action} gate inputs are non-literal`);
     return { leg: 'unknown', why: 'its write-access gate inputs are non-literal' };
+  }
+  if (botsNeedVisibility) {
+    unknown.push('repository visibility (allowed_bots opens the gate only on a public repo)');
+    return {
+      leg: 'unknown',
+      why: "`allowed_bots: '*'` opens it to any GitHub App only if the repo is public, and visibility is unknown",
+    };
   }
   return {
     leg: 'missing',
@@ -365,8 +380,14 @@ function directLeg(
   };
 }
 
+const RUNS_ANYWAY_RE = /\b(?:always|failure)\(\)|!\s*cancelled\(\)/;
+
 /** A job this one `needs` (transitively) whose guard restricts who can trigger the run. */
 function guardedNeed(workflow: WorkflowSpec, job: JobSpec): string | undefined {
+  // A job that runs even when a needed job is skipped or fails is not gated by it.
+  if (RUNS_ANYWAY_RE.test(str(job.if))) {
+    return undefined;
+  }
   const jobs = workflow.jobs ?? {};
   const seen = new Set<string>();
   const queue = needsOf(job);
