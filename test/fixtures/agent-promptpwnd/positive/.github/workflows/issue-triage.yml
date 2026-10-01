@@ -1,0 +1,22 @@
+name: issue-triage
+# PromptPwnd shape: the issue body is interpolated into the prompt of a --yolo agent
+# that may run shell commands, in a job holding its API key and a write token.
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/run-gemini-cli@v0.1.21
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          settings: '{"tools":{"core":["run_shell_command","read_file"]}}'
+          prompt: |
+            Label this issue. Title: ${{ github.event.issue.title }}
+            Body: ${{ github.event.issue.body }}

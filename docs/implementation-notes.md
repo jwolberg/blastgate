@@ -688,3 +688,295 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   command-substitution file-read sink (`$(<`/`$(cat`); other artifact-exec shapes and a sharper
   event-text→`run:` taint model are future work. The artifact-injection finding reuses the
   `untrusted-text-injection` entry kind (ASI01/MCP10) to avoid taxonomy surgery.
+
+## 2026-10-01 — Agent-in-CI U1 (0055): vendor re-verification changed two defaults
+
+- **Deviation — codex-action `allow-users: '*'` opens the gate (KTD3 revised, user-approved).**
+  The plan said codex's bypass inputs take explicit names only. The action's source
+  (`src/checkActorPermissions.ts`, every tag v1.0–v1.12) admits all users when
+  `allow-users` is `'*'`; only `allow-bot-users` rejects `'*'`. The codex profile now lists
+  `allow-users` as an outsider input, so a wildcard can make the direct leg hold. Named users
+  stay indirect warns.
+- **Deviation — the gemini `--yolo` allowlist bypass keys on `gemini_cli_version`, not the
+  action version (KTD4 revised, user-approved).** GHSA-wpqr-6v78-jr5g fixes it in Gemini CLI
+  0.39.1 / 0.40.0-preview.3. run-gemini-cli 0.1.21 and 0.1.22 both default
+  `gemini_cli_version: latest` and differ in nothing security-relevant (diffed action.yml).
+  `geminiYoloIgnoresAllowlist` flags only a literal pin below the fix; unset/`latest`/
+  `preview`/`nightly` are patched; an expression or branch is `unknown`.
+- **Decision — ranges are major lines; branch and SHA refs are unknown.** claude v1, codex v1,
+  run-gemini-cli 0.x, ai-inference v1–v3. A partial tag (`v1`) is covered only when its whole
+  line lies in range. `@main`/`@beta` and every SHA pin resolve to `unknown` (warn, never fail)
+  since no SHAs are recorded yet. Tradeoff: SHA-pinned agents — the hardened ones — cannot
+  fail until we record release SHAs. Follow-up candidate: resolve SHAs from a recorded table.
+- **Decision — `actions/ai-inference` stays tool-less even though it has tool inputs.** Its
+  `enable-github-mcp` (GitHub MCP tools, needs a PAT) and `provider: copilot` (Copilot CLI) are
+  off by default. They are recorded as `toolInputs` but the step still only warns (R8), which
+  errs toward warn. Follow-up candidate: model them as tool grants.
+
+## 2026-10-01 — Agent-in-CI U2 (0056): agent and tool-less LLM recognition
+
+- **Deviation — home-assistant changed shape; U2 follows a one-step relay.** At HEAD,
+  `detect-non-english-issues.yml` no longer calls GitHub Models from github-script. A
+  github-script step reads the title/body from `env:` and `core.setOutput`s them, and
+  `actions/ai-inference` reads `${{ steps.detect_language.outputs.issue_text }}`. A step's
+  outputs now count as tainted when untrusted text reaches that step (any key, including
+  `env:`), and a tool-less LLM step reading a tainted output or `${{ env.X }}` ingests. This
+  taint is consulted only for LLM steps, so the 0046 rule (env-passed text never reaches a
+  shell) is unchanged. Verified: the real workflow went from PASS to an agent-ingested WARN at
+  the ai-inference step (line 65).
+- **Decision — "calls GitHub Models" means the script names `models.github.ai` or
+  `models.inference.ai.azure.com`.** A github-script step that calls a model through some
+  other client or endpoint is not recognized (false negative, warn-only class).
+- **Decision — the legacy name regex stays for unprofiled agents** (aider, opencode,
+  sweep-ai, gpt-engineer, claude-code-base-action). They are still agent-ingested; profiled
+  actions resolve through `agentProfileFor` first.
+
+## 2026-10-01 — Agent-in-CI U4 (0058): repository visibility input
+
+- **Decision — visibility is plumbed but not yet read.** `EngineInputs.visibility`
+  (`public | private | unknown`) is always set by `collectInputs` (default `unknown`); U3/U5
+  consume it. Tests assert the plumbing through `actionCollectOptions` / `scanCollectOptions`
+  since no output changes until U5.
+- **Decision — the Action reads only `repository.private` from `GITHUB_EVENT_PATH`.**
+  `true` → private, `false` → public, missing/unreadable/non-boolean → unknown. Internal
+  repos report `private: true`, so their logs are not counted as public. The MCP surface
+  passes no visibility (unknown).
+
+## 2026-10-01 — Agent-in-CI U3 (0057): Rule-of-Two assessment
+
+- **Decision — only explicitly granted tools count.** For claude-code-action, tools come
+  from `claude_args --allowedTools` / `settings.permissions.allow` only; the action's own
+  default tool set is treated as no shell and no file read. An unrestricted `Bash` (or
+  `Bash(*)`, or a permission-bypass flag) grants shell + file read + network; a scoped
+  `Bash(cmd:*)` grants nothing; `Read` grants file read; `WebFetch` grants network.
+  Tradeoff: a default-tools agent can never fail, so we may miss some real fails. In
+  exchange, no fail rests on a default we did not read.
+- **Decision — codex always has a shell** (`codex exec` runs commands in its sandbox) and
+  has network only under `sandbox: danger-full-access`. Per the plan's R5, a shell tool alone
+  satisfies the exfil leg.
+- **Deviation — codex's own OpenAI key is not counted as readable.** The action serves
+  `openai-api-key` through a proxy and drops sudo by default, and its security doc says this
+  keeps the key secret. Counting it would have made every `allow-users: '*'` codex job a
+  false fail. Only `safety-strategy: unsafe` exposes it. Other job secrets still count.
+  (Found in self-review before commit; test added.)
+- **Decision — gemini tools follow `settings` `tools.core` (or legacy `coreTools`).** No
+  list means `--yolo` with every tool. A scoped `run_shell_command(cmd)` is not a shell unless
+  the pinned Gemini CLI ignores allowlists (U1's `geminiYoloIgnoresAllowlist`).
+- **Decision — on-disk credentials** are the `actions/checkout`-persisted token (only when it
+  is `contents: write`), a `google-github-actions/auth` credentials file, and gemini's own
+  `gcp_workload_identity_provider` credentials file. These stay readable under claude's
+  env scrub (KTD2).
+- **Decision — the public-surface exfil leg reads `issues` / `pull-requests` / `discussions:
+  write` (or `write-all`)** from the token permissions. Inherited/unknown permissions do not
+  count.
+
+## 2026-10-01 — Agent-in-CI U5 (0059): agent verdict, evidence, and reasons
+
+- **Decision — an agent fail is per sink.** Besides the three held legs and a covered
+  version, the path's sink must be a credential the agent's tools can read
+  (`AgentAssessment.readable`: secret names, every secret, or the GITHUB_TOKEN). Without
+  this, claude's scrubbed `ANTHROPIC_API_KEY` would fail alongside the readable
+  `.git/config` token. Now the key path warns and the token path fails. `tierFor` is
+  unchanged (KTD6): the agent payload is simply withheld unless the path is proven.
+- **Decision — the payload is a fixed comment** asking the agent to print `env | base64` or
+  curl it to `attacker.example`. The 0049 surface tests now run over both the shell-injection
+  fixture and an AE1 agent fail, so markdown, default JSON, the Action, MCP, and run records
+  are all checked for the agent payload too.
+- **Decision — `AgentAssessment`, `Leg`, and `RepoVisibility` moved to `src/graph/types.ts`**
+  so the entry node can carry the assessment without the graph depending on an analyzer.
+  `agents.ts` and `engine/build.ts` re-export them.
+- **Decision — warn reasons list all three legs with their whys, then one cause:** a missing
+  leg first, then an uncovered version, then a privileged-capability sink (e.g.
+  `issues:write`), then a credential the tools cannot read. A sweep test checks that every
+  agent fail across 36 claude variants names all three legs held and carries a payload.
+
+## 2026-10-01 — Agent-in-CI U6 (0060): incident fixture pairs
+
+- **Decision — the PromptPwnd fixture is a gemini issue-triage job**, matching Aikido's
+  flagship example. It has the issue body interpolated into `prompt:`, a `gh`-only
+  `run_shell_command` allowlist, and `gemini_cli_version: '0.38.0'`. That CLI ignores the
+  allowlist under `--yolo` (GHSA-wpqr-6v78-jr5g), so it fails on `GEMINI_API_KEY`. The
+  hardened engine test pins `latest` and warns.
+- **Verified the fixtures are meaningful:** the three positives fail against the pre-U5 commit
+  (6cb258b, all agents warn) and pass at U5. The negatives are the same workflows on `push`
+  (KTD8) and produce zero findings.
+- Hardened variants as engine tests: claude gate intact (AE2), tools restricted (AE3), and
+  scrub default (U5); gemini with an `author_association` guard and PromptPwnd with a patched
+  CLI (U6).
+
+## 2026-10-01 — Agent-in-CI U7 (0061) re-scan findings fed back into U2 (0056)
+
+- **Deviation — U2 also taints outputs of github-script steps that read text in-script.**
+  The re-scan found home-assistant `detect-duplicate-issues.yml` had no finding. Its
+  `extract` step reads the issue through `context.payload` / `github.rest.issues.get`
+  and `setOutput`s the title and body, which `actions/ai-inference` then reads. A
+  github-script step whose script names `context.payload` or `github.rest.issues|pulls` and
+  reads `.body`/`.title` now taints its outputs. This affects only LLM-step classification
+  (warn-only).
+- **Eval hygiene — six clones were silently empty.** Network timeouts left sparse checkouts
+  with no `.github/`, and they scanned as clean 0/0 (free-programming-books dropped from
+  1 warn to 0 at the same SHA). They were re-cloned. `eval-scan.sh` gained `SCAN_FLAGS` (used
+  with `--public`). Follow-up candidate: have the script fail a repo whose checkout lacks the
+  sparse paths instead of scanning it.
+
+## 2026-10-01 — 0062: gh-aw runtime steps are not PR-code execution (user-directed fix)
+
+- **Why it's in this branch:** the 0061 re-scan produced 2 fails on home-assistant's
+  `quality-scale-reviewer.lock.yml` that hand review refuted. Every `run:` after the PR-head
+  checkout runs gh-aw's own runtime (`${RUNNER_TEMP}/gh-aw/actions/*.sh`, the MCP gateway,
+  the Copilot launch). None runs PR code. Per the plan's stop condition I asked; you chose to
+  fix 0048 here rather than ticket it.
+- **Deviation from the option as worded:** exempting only `${RUNNER_TEMP}`-script steps would
+  not clear it, because gh-aw also emits long inline runtime steps. The rule instead: in a job
+  that uses `github/gh-aw-actions/setup`, a `run:` step referencing gh-aw runtime paths
+  (`${RUNNER_TEMP}/gh-aw/`, `/tmp/gh-aw/`) is not execution evidence. A custom step in the
+  same job (`npm ci`) and gh-aw-path steps without gh-aw setup still count (tests).
+- **Result:** both home-assistant fails become warns. Follow-up candidates: the fork-PR warn
+  reason still says "exfiltratable from an untrusted run" when there is no execution
+  evidence (pre-existing wording), and gh-aw's Copilot engine is not yet a profiled agent.
+
+## 2026-10-01 — Agent-in-CI U7 (0061): re-scan and documentation
+
+- Final re-scan (`SCAN_FLAGS=--public`, all 50 clones verified populated): **0 fails, 20 warns**.
+  The 2 agent findings are both home-assistant tool-less LLM warns. The 2 first-pass fails
+  were gh-aw false fails, fixed in 0062. Results:
+  `docs/evaluations/2026-10-01-agent-model-rescan.md`.
+- Threat model §3.4 gains the agent verdict table (three legs with what breaks each), and
+  the README states the Rule-of-Two fail rule and the `--public` flag.
+- Known gaps recorded there: `workflow_run` relays into an agent (pytorch ×3) are the
+  deferred multi-hop scope. Agent-fail precision is untestable on this sample (no proven
+  agent exploit in it); the U6 fixtures are the positive evidence.
+
+## 2026-10-01 — PR #39 review fixes (0057, 0059, 0060, 0062)
+
+- **Fixed (high) — access counted secrets the agent cannot read.** Secrets now come only from
+  the agent step's own environment (workflow `env:`, job `env:`, the step's `env:`/`with:`).
+  A secret in another step's `env:` no longer makes the agent path fail. On-disk credentials
+  are typed by the sink they prove. A checkout-persisted `contents: write` token proves the
+  GITHUB_TOKEN sink. A key file `google-github-actions/auth` wrote from `credentials_json`
+  proves that secret. A workload-identity file needs the job's OIDC request token, so it
+  counts only when the environment is not scrubbed and the job has `id-token: write`.
+- **Fixed — direct leg ignored step-level and `needs:` guards.** An actor or label guard on
+  the agent step, or on any job it `needs` (transitively), now breaks the direct leg.
+- **Fixed — gemini `tools.exclude` / `excludeTools` were ignored.** A workspace-trusted run
+  (`GEMINI_TRUST_WORKSPACE: true`, or a CLI pinned below 0.39.1 that trusts it automatically)
+  may load the repo's `.gemini/settings.json`, which Blastgate does not read, so its tools are
+  unknown (R9). Consequence: the PromptPwnd fixture moved from "old CLI ignores a gh-only
+  allowlist" to "patched CLI granted `run_shell_command`", and the old-CLI variant now warns.
+- **Kept — `allowed_bots: '*'` opens the direct leg.** claude-code-action's security doc says
+  that on a public repo, GitHub Apps "created by anyone" can trigger it with a prompt they
+  control. The reason now says so and cites it.
+- **Fixed — 0062 exempted user steps that only mentioned a gh-aw path.** Comments are
+  stripped, and a step that also invokes workspace code (a relative path, make, npm/pnpm/bun
+  run|test|install, npx, yarn, pip, python script, bash script, …) is never exempt. Checked
+  against the real home-assistant lock file: `npm root -g` (a read-only query) does not count.
+- **Fixed (suggestion) — the first agent step masked later ones.** Every agent-ingested step
+  in a job is assessed, and the one closest to a fail (most legs held, then a covered version)
+  becomes the entry, with its evidence line.
+- Re-scan after the fixes: 50 repos, 0 fails, 20 warns (unchanged).
+- **Open question for you:** PromptPwnd's leak used a *scoped* shell command
+  (`gh issue edit --body "$GEMINI_API_KEY"`): shell expansion reads env even when only
+  `gh issue edit` is allowed. The plan (AE3, user-approved) treats a scoped shell as no shell.
+  That is precise against intent but misses this vector.
+
+## 2026-10-01 — PR #39 re-review fixes (0059, 0062)
+
+- **Fixed — 0062 used a denylist of workspace commands.** `node build.js`, `docker build .`,
+  `$GITHUB_WORKSPACE/x.sh`, `eval`, `bash -c`, … slipped through. `isGhAwRuntimeStep` is now an
+  allowlist. A gh-aw job's step is runtime only if every simple command, after stripping comments
+  and heredoc bodies, masking quotes, and following `$(…)`, is a gh-aw runtime script, a
+  `$GH_AW_*` invocation, or inert plumbing. Any unrecognized command counts as running PR code.
+  `find -exec`, `git … core.hooksPath`, and `awk/sed/jq -f` are rejected. Calibrated on the real
+  home-assistant lock file: every runtime step is still exempt, so 0 fails.
+- **Fixed — `allowed_bots: '*'` failed regardless of visibility.** The doc scopes the any-App
+  risk to public repos, so the direct leg is now held when public, unknown when unknown, and
+  missing when private. The CLI default is unknown, so without `--public` a bots-only agent
+  warns.
+- **Taken (suggestion) — a guarded `needs:` job is not a gate when the dependent job runs
+  `always()`, `!cancelled()`, or `failure()`.**
+- Plan R4 and the flowchart now scope access to the agent step (the PR #38 low, applied here so
+  #38's approved head does not move).
+
+## 2026-10-01 — PR #39 round-3 review fix (0062): the gh-aw allowlist fails closed
+
+- **Fixed — the tokenizer could be fooled.** Quoted command words, `$((…))`/`<<<`/comments read
+  as heredocs, backticks, process substitution, `command ./x`, `trap ./x`, `awk system()`,
+  `sed e`, and runtime scripts handed a workspace path or a non-agent command after `--` were
+  all classified as gh-aw runtime. Now:
+  - shell syntax the tokenizer does not model (backticks, `<(`/`>(`, `$((`, `<<<` outside single
+    quotes) makes the step not-runtime;
+  - heredocs are found after comment stripping;
+  - a quoted command word must be a gh-aw path or `$GH_AW_*` variable;
+  - `command` only with `-v`; `trap` only with a single-quoted body, which is itself checked;
+  - `awk`/`sed` are not allowlisted;
+  - gh-aw scripts and `$GH_AW_*` commands may not take a workspace path before `--`, and only
+    an agent launch (`awf`, `copilot`, `claude`, `codex`, `gemini`) after it.
+- **Judgment — `awf` is the agent boundary.** gh-aw's firewall launched with its own generated
+  config (`--config` under a gh-aw path) runs the agent. What it runs is the agent class, judged
+  by the Rule-of-Two verdict, not direct PR-code execution. A bare `awf -- node build.js` is
+  rejected.
+- Calibrated on the real home-assistant lock file: every runtime step is still exempt.
+  Re-scan: 50 repos, 0 fails, 20 warns.
+
+## 2026-10-01 — Two user decisions after the PR #39 round-4 review
+
+- **0062 dropped (user decision).** Round 4 found five more tokenizer bypasses, and gh-aw's
+  real agent launch embeds a ~1KB `bash -c` script that would also need parsing. Shell parsing
+  would not converge, so the exemption, its allowlist, and its tests are removed, and
+  `untrustedExecutionStep` is back to its `main` behavior. home-assistant's gh-aw workflow keeps
+  2 hand-refuted false fails, documented as the R12 exception in the re-scan doc. Ticket 0062 is
+  iceboxed with the history and a pointer to a structural approach (gh-aw step names).
+- **A scoped shell now reads environment secrets (user decision; revises AE3).** PromptPwnd
+  leaked `GEMINI_API_KEY` through a command-scoped shell (`gh issue edit --body "$KEY"`). The
+  shell expands `$SECRET` into the allowed command's arguments. `Bash(cmd:*)` and
+  `run_shell_command(cmd)` now count for reading env, but not as a general shell, so they do not
+  count for on-disk reads or exfiltration. AE3 flips from warn to fail when the key is in env
+  and an exfil leg holds; under claude's scrub it still warns. Unverified: whether Claude
+  Code's permission matcher refuses `$VAR` expansion inside a scoped `Bash` rule. If it does,
+  claude's scoped grants should go back to not reading env.
+- Re-scan: 50 repos, 2 fails (the known gh-aw exception), 18 warns. The agent model produces no
+  fails on this sample.
+
+## 2026-10-01 — 0063: claude scoped Bash rules do admit `$VAR` expansion (documented)
+
+- Claude Code's permissions doc (https://code.claude.com/docs/en/permissions): "A Bash rule
+  matches the command text Claude writes", "A `*` in a Bash rule matches any text", and
+  "Bash permission patterns that try to constrain command arguments are fragile" (its example
+  includes `curl $URL`). So `Bash(gh issue view:*)` admits `gh issue view 1 "$ANTHROPIC_API_KEY"`,
+  and the shell expands it. The revised AE3 stands for claude. A rule with no `*` "matches one
+  exact command", which admits no injected argument (ticket 0064).
+- Verified from documentation, not by running Claude Code.
+- **Open finding (not acted on):** the same doc says Claude Code runs a built-in set of
+  read-only commands (`cat`, `echo`, `grep`, …) "without a permission prompt in every mode". If
+  that holds inside claude-code-action, a claude step with no `--allowedTools` can still read
+  `.git/config` or echo env, so "default tools = none" understates access (missed fails, never
+  false ones). Raised with the user.
+
+## 2026-10-01 — 0065: SHA-pinned agents resolve through recorded release tags
+
+- `scripts/refresh-agent-shas.sh` (read-only GitHub API) writes
+  `src/analyzers/ci/agent-release-shas.ts`, mapping every release tag's commit SHA to the tag,
+  for the four profiled actions (360 SHAs on 2026-10-01). A commit with several tags keeps the
+  most specific one (`v1.0.238` over the moving `v1`).
+- `agentProfileFor` resolves a SHA pin to its tag, then applies the profile's version range. A
+  SHA of an out-of-range release (claude `v0.0.17`) stays unknown and names the release. A SHA
+  that is no release (a fork, an unreleased commit) stays unknown. The per-profile `pinnedShas`
+  field is gone.
+- Maintenance: re-run the script when an action releases. Until then, a brand-new release's SHA
+  is unknown, so it warns and never fails. Effect on the sample: home-assistant's SHA-pinned
+  `actions/ai-inference` is now covered, but tool-less steps still only warn (R8).
+
+## 2026-10-01 — 0067: agent steps reached through a workflow_run relay
+
+- `relayedTextEvents` (injection.ts) maps each workflow to the attacker-text events reaching it
+  through `workflow_run`, matching upstreams by `name:` (or file path when unnamed),
+  transitively and cycle-safe.
+- A `workflow_run` job with relayed text becomes an injection entry **only when its sink is an
+  agent**. A relay hands over an issue/PR number, not text, so only an agent that fetches the
+  issue ingests it; other sinks still need the job's own text events. The direct leg treats the
+  relayed events as the trigger, and the action's own gate still applies (claude checks the
+  upstream actor's write access).
+- pytorch effect (previously silent, 2026-10-01 re-scan §4): `claude-distributed-triage` warns
+  (direct held via `allowed_bots: '*'` on a public repo, access missing),
+  `claude-issue-triage-run` warns (named `allowed_bots`), and `hardened-pr-review-run` warns
+  (tool grants unreadable). No new fails.

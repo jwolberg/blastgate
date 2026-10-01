@@ -16,7 +16,7 @@ import type { RubyGemsInputs } from '../analyzers/rubygems/index';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
 import { parsePolicy, ruleKey } from '../engine/policy';
-import type { EngineInputs } from '../engine/build';
+import type { EngineInputs, RepoVisibility } from '../engine/build';
 
 /** npm lifecycle + build scripts where install-time execution concealment lives (0021). */
 const LIFECYCLE_SCRIPTS = [
@@ -86,6 +86,8 @@ export interface CollectOptions {
   base?: string;
   /** Reference date (`YYYY-MM-DD`) for policy-rule expiry (0030); the bin supplies today. */
   now?: string;
+  /** Repository visibility (KTD5); default `unknown`. */
+  visibility?: RepoVisibility;
 }
 
 /** Collect per-layer inputs from a repo checkout. Layers with no source files are omitted. */
@@ -266,6 +268,7 @@ export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInpu
     inputs.policy = { rules: headPolicy.rules };
   }
 
+  inputs.visibility = opts.visibility ?? 'unknown';
   if (opts.now !== undefined) {
     inputs.now = opts.now;
   }

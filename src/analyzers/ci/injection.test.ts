@@ -257,3 +257,194 @@ describe('splicesFileIntoCommand — quote- and assignment-aware (0054)', () => 
     expect(splicesFileIntoCommand(run)).toBe(true);
   });
 });
+
+/**
+ * Agent-in-CI U2 (0056; R1, R8; KTD7): every profiled agent action ingests the event by
+ * design, and a tool-less LLM step (actions/ai-inference, or github-script calling
+ * GitHub Models) ingests untrusted text that reaches it through `env:`, `with:`, its
+ * script, or an earlier step's output. `env:` protects a shell, not a model.
+ */
+describe('classifyUntrustedText — agent and tool-less LLM steps (0056)', () => {
+  const TITLE = '${{ github.event.issue.title }}';
+  const BODY = '${{ github.event.issue.body }}';
+  const MODELS_SCRIPT = [
+    'const res = await fetch("https://models.github.ai/inference/chat/completions", {',
+    '  method: "POST",',
+    '  body: JSON.stringify({ messages: [{ role: "user", content: process.env.ISSUE_BODY }] }),',
+    '});',
+  ].join('\n');
+
+  it('AE4: issue title/body via env: into github-script that calls GitHub Models → agent-ingested', () => {
+    const job: JobSpec = {
+      permissions: { issues: 'write', models: 'read' },
+      steps: [
+        {
+          uses: 'actions/github-script@v7',
+          env: { ISSUE_TITLE: TITLE, ISSUE_BODY: BODY },
+          with: { script: MODELS_SCRIPT },
+        },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'agent-ingested',
+      path: ['steps', 0, 'uses'],
+    });
+  });
+
+  it('github-script reading the body from a job-level env: and calling Models → agent-ingested', () => {
+    const job: JobSpec = {
+      env: { ISSUE_BODY: BODY },
+      steps: [{ uses: 'actions/github-script@v7', with: { script: MODELS_SCRIPT } }],
+    };
+    expect(classifyUntrustedText(job)?.sinkClass).toBe('agent-ingested');
+  });
+
+  it('github-script reading env but calling no model → no sink (env-passed rule)', () => {
+    const job: JobSpec = {
+      steps: [
+        {
+          uses: 'actions/github-script@v7',
+          env: { ISSUE_BODY: BODY },
+          with: { script: 'core.info(process.env.ISSUE_BODY.length)' },
+        },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
+  it('actions/ai-inference with the issue body in prompt: → agent-ingested, not action-input', () => {
+    const job: JobSpec = {
+      steps: [{ uses: 'actions/ai-inference@v2', with: { prompt: `Classify: ${BODY}` } }],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'agent-ingested',
+      path: ['steps', 0, 'uses'],
+    });
+  });
+
+  it('actions/ai-inference fed the body through an earlier step output (home-assistant HEAD) → agent-ingested', () => {
+    const job: JobSpec = {
+      steps: [
+        {
+          id: 'detect_language',
+          uses: 'actions/github-script@v7',
+          env: { ISSUE_TITLE: TITLE, ISSUE_BODY: BODY },
+          with: { script: "core.setOutput('issue_text', process.env.ISSUE_BODY)" },
+        } as StepSpec,
+        {
+          uses: 'actions/ai-inference@v2',
+          with: { prompt: 'Is this English?\n${{ steps.detect_language.outputs.issue_text }}' },
+        },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'agent-ingested',
+      path: ['steps', 1, 'uses'],
+    });
+  });
+
+  it('ai-inference fed by a github-script step that reads the issue in-script (home-assistant duplicates) → agent-ingested', () => {
+    const job: JobSpec = {
+      steps: [
+        {
+          id: 'extract',
+          uses: 'actions/github-script@v7',
+          with: {
+            script: [
+              'const { data: issue } = await github.rest.issues.get({',
+              '  issue_number: context.payload.issue.number, owner, repo });',
+              "core.setOutput('current_title', issue.title);",
+              "core.setOutput('current_body', issue.body);",
+            ].join('\n'),
+          },
+        } as StepSpec,
+        {
+          uses: 'actions/ai-inference@v2',
+          with: { prompt: 'Body: ${{ steps.extract.outputs.current_body }}' },
+        },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'agent-ingested',
+      path: ['steps', 1, 'uses'],
+    });
+  });
+
+  it('a github-script step reading only the issue number does not taint its outputs', () => {
+    const job: JobSpec = {
+      steps: [
+        {
+          id: 'n',
+          uses: 'actions/github-script@v7',
+          with: { script: "core.setOutput('num', context.payload.issue.number);" },
+        } as StepSpec,
+        { uses: 'actions/ai-inference@v2', with: { prompt: '#${{ steps.n.outputs.num }}' } },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
+  it('actions/ai-inference fed via ${{ env.X }} holding the body → agent-ingested', () => {
+    const job: JobSpec = {
+      env: { ISSUE_BODY: BODY },
+      steps: [{ uses: 'actions/ai-inference@v2', with: { prompt: '${{ env.ISSUE_BODY }}' } }],
+    };
+    expect(classifyUntrustedText(job)?.sinkClass).toBe('agent-ingested');
+  });
+
+  it('actions/ai-inference with no untrusted text reaching it → no sink', () => {
+    const job: JobSpec = {
+      steps: [
+        { id: 'clean', run: 'echo "n=1" >> "$GITHUB_OUTPUT"' } as StepSpec,
+        {
+          uses: 'actions/ai-inference@v2',
+          with: { prompt: 'Summarize ${{ steps.clean.outputs.n }}' },
+        },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toBeUndefined();
+  });
+
+  it.each([
+    ['google-github-actions/run-gemini-cli@v0'],
+    ['openai/codex-action@v1'],
+    ['anthropics/claude-code-action@v1'],
+  ])('%s → agent-ingested by design, with no interpolation', (uses) => {
+    const job: JobSpec = { steps: [{ uses: 'actions/checkout@v4' }, { uses }] };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'agent-ingested',
+      path: ['steps', 1, 'uses'],
+    });
+  });
+
+  it('an unprofiled agent on the legacy name list (aider) stays agent-ingested', () => {
+    const job: JobSpec = { steps: [{ uses: 'paul-gauthier/aider-action@v1' }] };
+    expect(classifyUntrustedText(job)?.sinkClass).toBe('agent-ingested');
+  });
+
+  it('an execution sink plus an agent in one job → execution still wins', () => {
+    const job: JobSpec = {
+      steps: [
+        { uses: 'google-github-actions/run-gemini-cli@v0' },
+        { run: `echo "${TITLE}"` },
+        { uses: 'actions/ai-inference@v2', with: { prompt: BODY } },
+      ],
+    };
+    expect(classifyUntrustedText(job)).toEqual({
+      sinkClass: 'execution',
+      path: ['steps', 1, 'run'],
+    });
+  });
+
+  it('agentActionsUsed lists gemini, codex, and ai-inference steps', () => {
+    const job: JobSpec = {
+      steps: [
+        { uses: 'google-github-actions/run-gemini-cli@v0' },
+        { uses: 'openai/codex-action@v1' },
+        { uses: 'actions/ai-inference@v2' },
+        { uses: 'actions/checkout@v4' },
+      ],
+    };
+    expect(agentActionsUsed(job)).toHaveLength(3);
+  });
+});

@@ -1,9 +1,12 @@
-import type { AttackNode } from '../../graph/types';
+import type { AgentAssessment, AttackNode, RepoVisibility } from '../../graph/types';
 import { type AnalyzerResult, emptyResult } from '../types';
+import { assessAgentStep } from './agents';
 import {
   agentActionsUsed,
   artifactSpliceStep,
+  agentIngestedSteps,
   classifyUntrustedText,
+  relayedTextEvents,
   credentialReachableTextTriggers,
   injectableTextRefs,
   injectionNeutralized,
@@ -31,6 +34,8 @@ export interface WorkflowInput {
 
 export interface CiInputs {
   workflows: WorkflowInput[];
+  /** Repository visibility for the agent exfiltration leg (KTD5); absent = `unknown`. */
+  visibility?: RepoVisibility;
 }
 
 const CREDENTIAL_HINT = /(AWS|TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)/i;
@@ -46,8 +51,30 @@ function sinkKindFor(name: string): 'secret' | 'credential' {
  * for jobs reachable from untrusted input. Cross-layer edges (an install script
  * running inside a job) are the engine's job (U7).
  */
+/** The agent assessment closest to a fail: most legs held, then a covered version; first wins ties. */
+function strongestAgent(
+  candidates: { stepIndex: number; assessment: AgentAssessment }[],
+): { stepIndex: number; assessment: AgentAssessment } | undefined {
+  const score = (a: AgentAssessment): number =>
+    [a.direct, a.access, a.exfil].filter((l) => l === 'held').length * 2 + (a.covered ? 1 : 0);
+  return candidates.reduce<(typeof candidates)[number] | undefined>(
+    (best, c) => (!best || score(c.assessment) > score(best.assessment) ? c : best),
+    undefined,
+  );
+}
+
 export function analyzeCi(inputs: CiInputs): AnalyzerResult {
   const result = emptyResult();
+  // 0067: attacker text handed to a workflow through `workflow_run`, resolved across files.
+  const relayed = relayedTextEvents(
+    inputs.workflows.flatMap((w) => {
+      try {
+        return [{ path: w.path, spec: parseWorkflow(w.content) }];
+      } catch {
+        return [];
+      }
+    }),
+  );
 
   for (const wf of inputs.workflows) {
     let spec;
@@ -155,10 +182,23 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       // keeps only the original narrow actor-guard exemption.
       // 0046: classify WHERE the text lands; only a sink that could inject becomes an entry
       // (env-passed / boolean-compared text never does). Tiering by class is the engine's.
-      const textSink =
+      // 0067: a relayed issue/PR reaches the job as a number, not text, so only an agent that
+      // fetches and reads it ingests the text; other sinks need the job's own text events.
+      const relayEvents = triggers.includes('workflow_run') ? (relayed.get(wf.path) ?? []) : [];
+      const directSink =
         injectableEvents.length > 0 && !injectionNeutralized(job)
           ? classifyUntrustedText(job)
           : undefined;
+      const relaySink =
+        !directSink && relayEvents.length > 0 && !injectionNeutralized(job)
+          ? classifyUntrustedText(job)
+          : undefined;
+      const textSink =
+        directSink ?? (relaySink?.sinkClass === 'agent-ingested' ? relaySink : undefined);
+      const textEvents =
+        directSink !== undefined
+          ? injectableEvents.join('/')
+          : `${relayEvents.join('/')} (relayed via workflow_run)`;
       const spliceStep =
         workflowRunArtifactInjection(job, triggers) && !hasActorGuard(job)
           ? artifactSpliceStep(job)
@@ -166,13 +206,34 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       // The artifact splice is an execution sink; it wins over a weaker text sink.
       const artifactWins =
         spliceStep !== undefined && (!textSink || textSink.sinkClass !== 'execution');
-      const sinkPath = artifactWins ? ['steps', spliceStep, 'run'] : textSink?.path;
+      // 0059: judge every agent step against the Rule of Two and keep the strongest, so a
+      // tool-less LLM step ahead of a fail-capable agent cannot mask it.
+      const agent =
+        !artifactWins && textSink?.sinkClass === 'agent-ingested'
+          ? strongestAgent(
+              agentIngestedSteps(job).map((stepIndex) => ({
+                stepIndex,
+                assessment: assessAgentStep({
+                  workflow: spec,
+                  job,
+                  stepIndex,
+                  visibility: inputs.visibility ?? 'unknown',
+                  relayedEvents: relayEvents,
+                }),
+              })),
+            )
+          : undefined;
+      const sinkPath = artifactWins
+        ? ['steps', spliceStep, 'run']
+        : agent
+          ? ['steps', agent.stepIndex, 'uses']
+          : textSink?.path;
       if (sinkPath) {
         const refs = injectableTextRefs(job);
         const via = refs.length > 0 ? refs.join(', ') : agentActionsUsed(job).join(', ');
         const label = artifactWins
           ? `untrusted workflow_run artifact reaches a shell in job ${jobId}`
-          : `untrusted ${injectableEvents.join('/')} text reaches job ${jobId} (${via})`;
+          : `untrusted ${textEvents} text reaches job ${jobId} (${via})`;
         const line = locator.line(['jobs', jobId, ...sinkPath]);
         const entryId = `entry:injection:${wf.path}#${jobId}`;
         result.nodes.push({
@@ -184,6 +245,9 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           guarded: false,
           sinkClass: artifactWins ? 'execution' : textSink?.sinkClass,
           evidence: line === undefined ? undefined : { file: wf.path, line },
+          // 0059: judge the agent step against the Rule of Two; the engine fails it only
+          // when all three legs hold.
+          agent: agent?.assessment,
         });
         result.edges.push({ from: entryId, to: jobNodeId, edge: { kind: 'injects' } });
       }

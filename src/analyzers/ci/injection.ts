@@ -10,13 +10,16 @@
  */
 
 import type { SinkClass } from '../../graph/types';
+import { agentProfileFor } from './agents';
 import {
   collectStrings,
   hasActorGuard,
   hasScriptPermissionGuard,
   isLabelGated,
+  normalizeTriggers,
   type JobSpec,
   type StepSpec,
+  type WorkflowSpec,
 } from './parse';
 
 /** Events that carry attacker-authored free text (issue/PR/discussion bodies, comments). */
@@ -47,6 +50,49 @@ export function credentialReachableTextTriggers(triggers: string[]): string[] {
   return untrustedTextTriggers(triggers).filter((t) => t !== 'pull_request');
 }
 
+/**
+ * Attacker-text events that reach each workflow through `workflow_run` (0067). A
+ * `workflow_run` workflow names its upstreams by `name:` (or file path when unnamed); when an
+ * upstream starts on attacker text — directly or through its own relay — that text is handed
+ * on (an issue or PR number the downstream job fetches). Keyed by workflow path; cycle-safe.
+ */
+export function relayedTextEvents(
+  workflows: { path: string; spec: WorkflowSpec }[],
+): Map<string, string[]> {
+  const byName = new Map<string, { path: string; spec: WorkflowSpec }[]>();
+  for (const w of workflows) {
+    const name = typeof w.spec.name === 'string' ? w.spec.name : w.path;
+    byName.set(name, [...(byName.get(name) ?? []), w]);
+  }
+  const upstreamsOf = (spec: WorkflowSpec): string[] => {
+    const on = spec.on as Record<string, unknown> | undefined;
+    const run = on && typeof on === 'object' && !Array.isArray(on) ? on.workflow_run : undefined;
+    const names = (run as { workflows?: unknown } | undefined)?.workflows;
+    return Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : [];
+  };
+  const reaching = (spec: WorkflowSpec, seen: Set<WorkflowSpec>): string[] => {
+    if (seen.has(spec)) {
+      return [];
+    }
+    seen.add(spec);
+    const own = credentialReachableTextTriggers(normalizeTriggers(spec.on));
+    const relayed = upstreamsOf(spec).flatMap((n) =>
+      (byName.get(n) ?? []).flatMap((u) => reaching(u.spec, seen)),
+    );
+    return [...new Set([...own, ...relayed])];
+  };
+  const out = new Map<string, string[]>();
+  for (const w of workflows) {
+    const relayed = upstreamsOf(w.spec).flatMap((n) =>
+      (byName.get(n) ?? []).flatMap((u) => reaching(u.spec, new Set([w.spec]))),
+    );
+    if (relayed.length > 0) {
+      out.set(w.path, [...new Set(relayed)]);
+    }
+  }
+  return out;
+}
+
 // Attacker-authored fields of the event payload: `.body` / `.title` on issue,
 // comment, pull_request, review, discussion. Numbers/ids/logins are not free text.
 const UNTRUSTED_TEXT_REF = /github\.event\.[\w.]*(?:body|title)\b/g;
@@ -56,9 +102,21 @@ const UNTRUSTED_TEXT_REF_TEST = /github\.event\.[\w.]*(?:body|title)\b/;
 // `contains(<text>, '…')` etc. — so untrusted text inside one is matched, not injected.
 const BOOLEAN_GUARD_CALL = /\b(?:contains|startsWith|endsWith)\s*\([^()]*\)/g;
 
-// Coding-agent actions that read the event context by design (so the body reaches
-// the agent even without an explicit `${{ … }}` interpolation).
-const AGENT_ACTION_RE = /(?:anthropics\/claude|claude-code|opencode|aider|sweep-ai|gpt-engineer)/i;
+// Coding-agent actions with no profile (agents.ts) that still read the event context by
+// design (so the body reaches the agent even without an explicit `${{ … }}` interpolation).
+const UNPROFILED_AGENT_RE =
+  /(?:anthropics\/claude|claude-code|opencode|aider|sweep-ai|gpt-engineer)/i;
+
+/** A recognized agent or LLM action: a profiled one (U1) or an unprofiled agent name. */
+function isAgentAction(uses: string): boolean {
+  return agentProfileFor(uses) !== undefined || UNPROFILED_AGENT_RE.test(uses);
+}
+
+/** A coding agent: ingests the event by design, unlike a tool-less LLM step (R8). */
+function isCodingAgent(uses: string): boolean {
+  const resolved = agentProfileFor(uses);
+  return resolved ? !resolved.profile.toolLess : UNPROFILED_AGENT_RE.test(uses);
+}
 
 /** The attacker-authored event-text expressions a job interpolates into its steps. */
 export function injectableTextRefs(job: JobSpec): string[] {
@@ -73,12 +131,12 @@ export function injectableTextRefs(job: JobSpec): string[] {
   return [...refs];
 }
 
-/** Known coding-agent actions a job runs. */
+/** Known agent and LLM actions a job runs. */
 export function agentActionsUsed(job: JobSpec): string[] {
   return (job.steps ?? [])
     .map((s) => s.uses)
     .filter((u): u is string => typeof u === 'string')
-    .filter((u) => AGENT_ACTION_RE.test(u));
+    .filter(isAgentAction);
 }
 
 /**
@@ -304,7 +362,73 @@ const INERT_KEYS = new Set(['env', 'if', 'name', 'id', 'uses']);
 
 type Hit = { sinkClass: SinkClass; path: (string | number)[] };
 
-function classifyStep(step: StepSpec): Hit | undefined {
+// A github-script step calling GitHub Models is a tool-less LLM step (KTD7).
+const MODELS_ENDPOINT_RE = /models\.github\.ai|models\.inference\.ai\.azure\.com/;
+const STEP_OUTPUT_REF = /steps\.([\w-]+)\.outputs\b/g;
+const ENV_REF = /\benv\.([A-Za-z_]\w*)/g;
+
+/**
+ * Where untrusted text sits in a job beyond direct interpolation: env vars that hold it
+ * and step ids whose outputs may carry it. Only an LLM step consults this — `env:` keeps
+ * text out of a shell, but a model reads it all the same (R8).
+ */
+interface Taint {
+  env: Set<string>;
+  steps: Set<string>;
+}
+
+function taintedEnvNames(env: unknown): string[] {
+  if (!env || typeof env !== 'object') {
+    return [];
+  }
+  return Object.entries(env as Record<string, unknown>)
+    .filter(([, v]) => interpolatesUntrustedText(v))
+    .map(([k]) => k);
+}
+
+/** Untrusted text, or a reference to a tainted env var or step output, anywhere in `value`. */
+function carriesTaint(value: unknown, taint: Taint): boolean {
+  const strings: string[] = [];
+  collectStrings(value, strings);
+  return strings.some(
+    (s) =>
+      UNTRUSTED_TEXT_REF_TEST.test(s.replace(BOOLEAN_GUARD_CALL, '')) ||
+      [...s.matchAll(STEP_OUTPUT_REF)].some((m) => taint.steps.has(m[1] ?? '')) ||
+      [...s.matchAll(ENV_REF)].some((m) => taint.env.has(m[1] ?? '')),
+  );
+}
+
+// A github-script body that reads issue/PR/comment text itself, from the event payload or
+// the REST API, rather than through a `${{ github.event.* }}` expression.
+const SCRIPT_TEXT_SOURCE_RE = /context\.payload\b|github\.rest\.(?:issues|pulls)\./;
+const SCRIPT_TEXT_FIELD_RE = /\.(?:body|title)\b/;
+
+/** A github-script step that reads attacker-authored text in-script; its outputs carry it. */
+function readsTextInScript(step: StepSpec): boolean {
+  const script = typeof step.with?.script === 'string' ? step.with.script : '';
+  return (
+    GITHUB_SCRIPT_RE.test(typeof step.uses === 'string' ? step.uses : '') &&
+    SCRIPT_TEXT_SOURCE_RE.test(script) &&
+    SCRIPT_TEXT_FIELD_RE.test(script)
+  );
+}
+
+/**
+ * A tool-less LLM step (actions/ai-inference, or github-script calling GitHub Models) that
+ * untrusted text reaches. github-script reads `process.env`, so job and step env count.
+ */
+function llmIngestsTaint(step: StepSpec, uses: string, taint: Taint): boolean {
+  if (agentProfileFor(uses)?.profile.toolLess) {
+    return carriesTaint(step.with, taint) || carriesTaint(step.env, taint);
+  }
+  const script = typeof step.with?.script === 'string' ? step.with.script : '';
+  if (!GITHUB_SCRIPT_RE.test(uses) || !MODELS_ENDPOINT_RE.test(script)) {
+    return false;
+  }
+  return taint.env.size > 0 || carriesTaint(step.env, taint) || carriesTaint(script, taint);
+}
+
+function classifyStep(step: StepSpec, taint: Taint): Hit | undefined {
   const uses = typeof step.uses === 'string' ? step.uses : '';
   if (interpolatesUntrustedText(step.run)) {
     return { sinkClass: 'execution', path: ['run'] };
@@ -312,8 +436,9 @@ function classifyStep(step: StepSpec): Hit | undefined {
   if (GITHUB_SCRIPT_RE.test(uses) && interpolatesUntrustedText(step.with?.script)) {
     return { sinkClass: 'execution', path: ['with', 'script'] };
   }
-  // A coding agent ingests the event context by design, with or without an interpolation.
-  if (AGENT_ACTION_RE.test(uses)) {
+  // A coding agent ingests the event context by design, with or without an interpolation;
+  // a tool-less LLM step ingests whatever untrusted text reaches it.
+  if (isCodingAgent(uses) || llmIngestsTaint(step, uses, taint)) {
     return { sinkClass: 'agent-ingested', path: ['uses'] };
   }
   for (const [key, value] of Object.entries(step.with ?? {})) {
@@ -354,10 +479,32 @@ export function classifyUntrustedText(job: JobSpec): UntrustedTextSink | undefin
       best = { sinkClass: hit.sinkClass, path: [...prefix, ...hit.path] };
     }
   };
-  (job.steps ?? []).forEach((step, i) => consider(classifyStep(step), ['steps', i]));
+  stepHits(job).forEach((hit, i) => consider(hit, ['steps', i]));
   // Job-level keys (e.g. a reusable workflow's `with:`) — permissions/secrets hold no event text.
   consider(unrecognizedIn(job, new Set(['steps', 'permissions', 'secrets'])), []);
   return best;
+}
+
+/** Every step that is an `agent-ingested` sink, so each agent can be judged, not just the first. */
+export function agentIngestedSteps(job: JobSpec): number[] {
+  return stepHits(job).flatMap((hit, i) => (hit?.sinkClass === 'agent-ingested' ? [i] : []));
+}
+
+/** The sink each step is, in order, carrying untrusted text forward through step outputs. */
+function stepHits(job: JobSpec): (Hit | undefined)[] {
+  const taint: Taint = { env: new Set(taintedEnvNames(job.env)), steps: new Set() };
+  return (job.steps ?? []).map((step) => {
+    const stepTaint: Taint = {
+      env: new Set([...taint.env, ...taintedEnvNames(step.env)]),
+      steps: taint.steps,
+    };
+    const hit = classifyStep(step, stepTaint);
+    // A later step may read this one's outputs: they carry whatever text it was given.
+    if (typeof step.id === 'string' && (carriesTaint(step, stepTaint) || readsTextInScript(step))) {
+      taint.steps.add(step.id);
+    }
+    return hit;
+  });
 }
 
 /** Index of the `run:` step that splices a downloaded artifact into a shell (0042 evidence). */

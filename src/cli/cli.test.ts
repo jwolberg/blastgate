@@ -4,7 +4,8 @@ import type { RepoFs } from './collect';
 import { hookOutput } from './gate';
 import { renderJson, renderMarkdown, renderText, scanExitCode } from './render';
 import type { GateResult } from '../engine/gate';
-import { runCli } from './index';
+import { runCli, scanCollectOptions } from './index';
+import { collectInputs } from './collect';
 
 /** package-lock.json head that adds `evil-pkg@1.0.0` with a lifecycle script. */
 const HEAD_LOCK = JSON.stringify({
@@ -359,5 +360,21 @@ describe('blastgate check --gate (runCli hook mode)', () => {
     const { out } = await invoke(['check', '--gate', 'dependency-install'], failingFs(), hookJson);
     const payload = JSON.parse(out);
     expect(payload.decision).toBe('block');
+  });
+});
+
+/** Agent-in-CI U4 (0058; R5, KTD5): `--public` sets visibility; the default is unknown. */
+describe('--public repository visibility (0058)', () => {
+  it('--public → public; without it → unknown', () => {
+    expect(scanCollectOptions(['.', '--public'], undefined).visibility).toBe('public');
+    expect(scanCollectOptions(['.'], undefined).visibility).toBe('unknown');
+  });
+  it('collectInputs carries the visibility into the engine inputs, defaulting to unknown', () => {
+    expect(collectInputs(cleanFs(), { visibility: 'public' }).visibility).toBe('public');
+    expect(collectInputs(cleanFs()).visibility).toBe('unknown');
+  });
+  it('the help text lists --public', async () => {
+    const { out } = await invoke(['--help'], cleanFs());
+    expect(out).toContain('--public');
   });
 });

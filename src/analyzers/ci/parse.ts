@@ -7,9 +7,11 @@ export interface StepSpec {
   env?: Record<string, unknown>;
   if?: unknown;
   name?: unknown;
+  id?: unknown;
 }
 
 export interface JobSpec {
+  needs?: unknown;
   permissions?: unknown;
   steps?: StepSpec[];
   env?: Record<string, unknown>;
@@ -18,8 +20,10 @@ export interface JobSpec {
 }
 
 export interface WorkflowSpec {
+  name?: unknown;
   on?: unknown;
   permissions?: unknown;
+  env?: Record<string, unknown>;
   jobs?: Record<string, JobSpec>;
 }
 
