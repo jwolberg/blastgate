@@ -16,6 +16,8 @@ export interface CrawlConfig {
   submitMode: boolean;
   /** Off = the site is built but never pushed (KTD6.3). */
   publishSite: boolean;
+  /** GitHub login the reports are filed as; credits for it mean "credited". Empty = tracking skipped. */
+  reporterLogin: string;
   throttle: CrawlThrottle;
 }
 
@@ -23,6 +25,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   allowlist: [],
   submitMode: false,
   publishSite: false,
+  reporterLogin: '',
   throttle: { perHour: 5, perDay: 20 },
 };
 
@@ -64,7 +67,7 @@ export function parseCrawlConfig(text: string): CrawlConfig {
     return fail(`not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) fail('top level must be an object');
-  rejectUnknown(raw, ['allowlist', 'submitMode', 'publishSite', 'throttle'], '');
+  rejectUnknown(raw, ['allowlist', 'submitMode', 'publishSite', 'reporterLogin', 'throttle'], '');
 
   let allowlist: string[] = [];
   if (raw.allowlist !== undefined) {
@@ -86,10 +89,20 @@ export function parseCrawlConfig(text: string): CrawlConfig {
     };
   }
 
+  let reporterLogin = DEFAULT_CRAWL_CONFIG.reporterLogin;
+  if (raw.reporterLogin !== undefined) {
+    const l = raw.reporterLogin;
+    if (typeof l !== 'string' || !/^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))?$/.test(l)) {
+      fail('reporterLogin must be a GitHub login (or empty)');
+    }
+    reporterLogin = l;
+  }
+
   return {
     allowlist,
     submitMode: bool(raw, 'submitMode', DEFAULT_CRAWL_CONFIG.submitMode),
     publishSite: bool(raw, 'publishSite', DEFAULT_CRAWL_CONFIG.publishSite),
+    reporterLogin,
     throttle,
   };
 }

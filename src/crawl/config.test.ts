@@ -7,6 +7,7 @@ describe('parseCrawlConfig', () => {
       allowlist: [],
       submitMode: false,
       publishSite: false,
+      reporterLogin: '',
       throttle: { perHour: 5, perDay: 20 },
     });
     expect(DEFAULT_CRAWL_CONFIG.allowlist).toEqual([]);
@@ -18,6 +19,7 @@ describe('parseCrawlConfig', () => {
         allowlist: ['untrusted-text-injection'],
         submitMode: true,
         publishSite: true,
+        reporterLogin: 'blastgate-bot',
         throttle: { perHour: 2 },
       }),
     );
@@ -25,6 +27,7 @@ describe('parseCrawlConfig', () => {
       allowlist: ['untrusted-text-injection'],
       submitMode: true,
       publishSite: true,
+      reporterLogin: 'blastgate-bot',
       throttle: { perHour: 2, perDay: 20 },
     });
   });
@@ -41,6 +44,8 @@ describe('parseCrawlConfig', () => {
     expect(() => parseCrawlConfig('{"allowlist":[""]}')).toThrow(/allowlist/);
     expect(() => parseCrawlConfig('{"throttle":{"perHour":0}}')).toThrow(/perHour/);
     expect(() => parseCrawlConfig('{"throttle":{"perDay":1.5}}')).toThrow(/perDay/);
+    expect(() => parseCrawlConfig('{"reporterLogin":5}')).toThrow(/reporterLogin/);
+    expect(() => parseCrawlConfig('{"reporterLogin":"a b"}')).toThrow(/reporterLogin/);
     expect(() => parseCrawlConfig('[]')).toThrow(/object/);
     expect(() => parseCrawlConfig('not json')).toThrow(/JSON/);
   });

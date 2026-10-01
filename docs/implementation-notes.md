@@ -1078,3 +1078,25 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   after later transitions as a record of what was reviewed.
 - Integration: U5 and U6 both extended the ledger in parallel (`wouldSend`, `trippedArchetypes`);
   merged by hand, both suites kept.
+
+## 2026-10-01 — 0078: ops wiring and runbook (public-crawler U8)
+
+- Three subcommands, not two: `scan`, `submit`, and `publish`. A separate `publish` step means
+  the registry deploy key exists only there; it verifies github.com's ed25519 host key against
+  GitHub's published fingerprint (checked against `gh api meta` on 2026-10-01) before loading the
+  key into a temporary ssh-agent.
+- The scan job uses the job's read-only `github.token` for code search and metadata (no
+  `secrets.*`). Unverified: whether REST code search accepts an Actions installation token; the
+  U11 dry run must confirm it, else the scan job needs a separate read-only search token.
+- `currentFails` covers repos scanned pass/warn/fail (empty = clean) and excludes unknown and
+  clone-failed, so the tracker only marks `fixed` on a real clean rescan.
+- Engine identity is `<cli version>+<blastgate commit>` (from `BLASTGATE_SHA`), so bumping the
+  pinned crawler commit re-vouches every listed pass before new repos are scanned.
+- Kill switch is the file `ops/KILL_SWITCH` in the ops repo; `--cap` defaults to 100.
+- TDD note: for `publish.ts` and the orchestrator the worker wrote tests first but captured the
+  red failure by moving the implementation aside afterward, rather than observing red before
+  writing code. The template test, pack test, and config change followed red-first normally.
+- Not exercised against real GitHub: no PVR POST, SSH push, or real ops repo run. The workflow is
+  checked structurally only (pins, secret placement, concurrency, permissions). `gitPersist`'s
+  rebase-and-retry path is untested. The ops repo must allow `github-actions` to push to its
+  default branch.

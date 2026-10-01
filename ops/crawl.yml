@@ -1,0 +1,139 @@
+# Blastgate crawler: workflow TEMPLATE for the PRIVATE ops repo (jwolberg/blastgate-crawl).
+# Copy to .github/workflows/crawl.yml there. Setup and operation: docs/runbooks/crawler.md.
+#
+# Why two jobs (plan KTD1): the scan job clones and scans strangers' repositories, so it holds
+# no credentials at all. The submit job holds the reporting token and the registry deploy key
+# but never clones or parses a target repository; it consumes only scan-result.json.
+#
+# Repo variable BLASTGATE_SHA pins the crawler code (a full commit SHA of jwolberg/blastgate).
+# Bumping it is a reviewed change, like bumping an action.
+name: Crawl
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+# One run at a time, and never cancel a run that may be mid-report: the ledger's
+# `submitting` state assumes a single writer.
+concurrency:
+  group: crawl
+  cancel-in-progress: false
+
+# Nothing by default; each job asks for exactly what it needs.
+permissions: {}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    steps:
+      - name: Check out ops repo (ledger, config)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: ops
+          persist-credentials: false
+      - name: Check out crawler code at the pinned commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jwolberg/blastgate
+          ref: ${{ vars.BLASTGATE_SHA }}
+          path: blastgate
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: Install and build
+        working-directory: blastgate
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Discover, scan, re-verify
+        env:
+          # Read-only token for code search and repo metadata; the job grants contents: read only.
+          GITHUB_TOKEN: ${{ github.token }}
+          BLASTGATE_SHA: ${{ vars.BLASTGATE_SHA }}
+        run: |
+          node blastgate/dist/crawl/index.js scan \
+            --ledger ops/ledger.json \
+            --config ops/config.json \
+            --out "$RUNNER_TEMP/crawl-out"
+      # Only the result file crosses to the submit job: no clones, no raw findings, no payloads.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scan-result
+          path: ${{ runner.temp }}/crawl-out/scan-result.json
+          retention-days: 1
+          if-no-files-found: error
+
+  submit:
+    needs: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Protected environment: add required reviewers or a deployment branch rule so a
+    # modified workflow cannot reach the credentials unreviewed.
+    environment: crawler
+    permissions:
+      contents: write
+    steps:
+      - name: Check out ops repo (the ledger is committed back here)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: ops
+      - name: Check out crawler code at the pinned commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jwolberg/blastgate
+          ref: ${{ vars.BLASTGATE_SHA }}
+          path: blastgate
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: Install and build
+        working-directory: blastgate
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: scan-result
+          path: ${{ runner.temp }}/scan-in
+      - name: Submit reports, track advisories, commit ledger, build site
+        env:
+          # Reporting token, on this step only. Fine-grained PAT if it can file private
+          # vulnerability reports on strangers' repos, else a classic public_repo token
+          # (see the runbook for the risk acceptance).
+          GITHUB_TOKEN: ${{ secrets.PVR_TOKEN }}
+        run: |
+          node blastgate/dist/crawl/index.js submit \
+            --ledger ops/ledger.json \
+            --config ops/config.json \
+            --in "$RUNNER_TEMP/scan-in/scan-result.json" \
+            --site "$RUNNER_TEMP/site" \
+            --kill-switch ops/KILL_SWITCH
+      # Publishing is a separate step so the registry deploy key exists nowhere else. It runs
+      # only when publishSite is true in ops/config.json; otherwise the command logs a skip.
+      - name: Publish the site (orphan commit, force-push)
+        env:
+          REGISTRY_DEPLOY_KEY: ${{ secrets.REGISTRY_DEPLOY_KEY }}
+          REGISTRY_REMOTE: git@github.com:jwolberg/blastgate-registry.git
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com > ~/.ssh/known_hosts 2>/dev/null
+          fp=$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')
+          if [ "$fp" != "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU" ]; then
+            echo "unexpected github.com host key" >&2
+            exit 1
+          fi
+          eval "$(ssh-agent -s)" > /dev/null
+          trap 'ssh-agent -k > /dev/null' EXIT
+          printf '%s\n' "$REGISTRY_DEPLOY_KEY" | ssh-add - 2> /dev/null
+          export GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes'
+          node blastgate/dist/crawl/index.js publish \
+            --config ops/config.json \
+            --site "$RUNNER_TEMP/site" \
+            --remote "$REGISTRY_REMOTE"
