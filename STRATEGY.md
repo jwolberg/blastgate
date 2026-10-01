@@ -1,6 +1,6 @@
 ---
 name: Blastgate
-last_updated: 2026-09-29
+last_updated: 2026-10-01
 ---
 
 # Blastgate Strategy
@@ -22,7 +22,9 @@ Enforce the Agents Rule of Two as a provable graph reachability property. Report
 - **Fail-tier precision** - share of `fail` findings confirmed exploitable on hand review; measured by re-running the public-repo scan eval (`docs/evaluations/`).
 - **Benchmark recall vs zizmor** - known-vulnerable agent-in-CI workflows caught out of a labeled corpus, reported side by side with zizmor.
 - **Confirmed disclosures** - real vulnerabilities reported and acknowledged by maintainers or vendors.
-- **External adopters** - repos not owned by us running the Blastgate Action; measured via GitHub code search.
+- **Repos listed** - public agent-in-CI repos on the crawler's pass list (`jwolberg/blastgate-registry`), each at a scanned SHA.
+- **Reports acknowledged** - crawler-filed private vulnerability reports that a maintainer accepted, fixed, or published with credit.
+- **External adopters** - repos not owned by us running the Blastgate Action by choice; measured via GitHub code search. Secondary: opt-in adoption is not the distribution path.
 
 ## Tracks
 
@@ -46,9 +48,9 @@ _Why it serves the approach:_ it is the proof that reachability beats pattern-ma
 
 ### Distribution
 
-npm, the Marketplace Action, the Claude Code plugin, and a standalone MCP server so any agent (Claude Code, Codex, Muse, Dots, …) can self-check a change before it acts.
+Blastgate goes to the repos; maintainers never have to run or install anything. A crawler we operate finds public repos running AI agents in CI, scans them, publishes the ones that pass on a public registry, and privately reports proven exploits through GitHub private vulnerability reporting - fails are never published. In parallel, upstream the agent check into OpenSSF Scorecard's Dangerous-Workflow check, which already scans everyone (`docs/learnings/scorecard-dangerous-workflow-upstream.md`). npm, the Marketplace Action, the Claude Code plugin, and the MCP self-check stay available as opt-in surfaces for teams that want the gate on every PR.
 
-_Why it serves the approach:_ no one adopts what they can't install - and agents calling the gate enforce the Rule of Two from the inside.
+_Why it serves the approach:_ a tool people must install never spreads, but a proven, privately reported exploit gets a maintainer's attention - and each fixed report is public evidence that reachability beats pattern-matching. See `docs/plans/2026-10-01-002-feat-public-crawler-plan.md`.
 
 ## Not working on
 
