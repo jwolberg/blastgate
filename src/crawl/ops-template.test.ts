@@ -114,6 +114,13 @@ describe('ops/crawl.yml template', () => {
     expect(holders('REGISTRY_DEPLOY_KEY')[0]).not.toContain('crawl/index.js submit');
   });
 
+  it('passes the discovery state file to scan and to submit (which persists it)', () => {
+    const run = (job: string, cmd: string): string =>
+      wf.jobs[job]?.steps.find((x) => x.run?.includes(`crawl/index.js ${cmd}`))?.run ?? '';
+    expect(run('scan', 'scan')).toContain('--discovery ops/discovery.json');
+    expect(run('submit', 'submit')).toContain('--discovery ops/discovery.json');
+  });
+
   it('serializes runs without cancelling an in-flight one', () => {
     expect(wf.concurrency.group).toBe('crawl');
     expect(wf.concurrency['cancel-in-progress']).toBe(false);

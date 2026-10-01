@@ -19,7 +19,12 @@ export interface CrawlConfig {
   /** GitHub login the reports are filed as; credits for it mean "credited". Empty = tracking skipped. */
   reporterLogin: string;
   throttle: CrawlThrottle;
+  /** Max code-search requests one scan run spends on discovery (~9/min, so 300 is ~35 min). */
+  discoveryBudget: number;
 }
+
+/** Upper bound: well above what a 5 hour job can spend at the 9/min search throttle (~2,700). */
+export const MAX_DISCOVERY_BUDGET = 5000;
 
 export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   allowlist: [],
@@ -27,6 +32,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   publishSite: false,
   reporterLogin: '',
   throttle: { perHour: 5, perDay: 20 },
+  discoveryBudget: 300,
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -49,11 +55,17 @@ function bool(o: Record<string, unknown>, k: string, dflt: boolean): boolean {
   return v;
 }
 
-function posInt(o: Record<string, unknown>, k: string, dflt: number): number {
+function posInt(
+  o: Record<string, unknown>,
+  k: string,
+  dflt: number,
+  label = `throttle.${k}`,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
   const v = o[k];
   if (v === undefined) return dflt;
-  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
-    fail(`throttle.${k} must be a positive integer`);
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > max) {
+    fail(`${label} must be a positive integer${max < Number.MAX_SAFE_INTEGER ? ` <= ${max}` : ''}`);
   }
   return v;
 }
@@ -67,7 +79,11 @@ export function parseCrawlConfig(text: string): CrawlConfig {
     return fail(`not valid JSON (${(e as Error).message})`);
   }
   if (!isObj(raw)) fail('top level must be an object');
-  rejectUnknown(raw, ['allowlist', 'submitMode', 'publishSite', 'reporterLogin', 'throttle'], '');
+  rejectUnknown(
+    raw,
+    ['allowlist', 'submitMode', 'publishSite', 'reporterLogin', 'throttle', 'discoveryBudget'],
+    '',
+  );
 
   let allowlist: string[] = [];
   if (raw.allowlist !== undefined) {
@@ -104,5 +120,12 @@ export function parseCrawlConfig(text: string): CrawlConfig {
     publishSite: bool(raw, 'publishSite', DEFAULT_CRAWL_CONFIG.publishSite),
     reporterLogin,
     throttle,
+    discoveryBudget: posInt(
+      raw,
+      'discoveryBudget',
+      DEFAULT_CRAWL_CONFIG.discoveryBudget,
+      'discoveryBudget',
+      MAX_DISCOVERY_BUDGET,
+    ),
   };
 }

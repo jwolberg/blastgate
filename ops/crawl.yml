@@ -30,7 +30,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out ops repo (ledger, config)
+      - name: Check out ops repo (ledger, config, discovery state)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: ops
@@ -59,6 +59,7 @@ jobs:
           node blastgate/dist/crawl/index.js scan \
             --ledger ops/ledger.json \
             --config ops/config.json \
+            --discovery ops/discovery.json \
             --out "$RUNNER_TEMP/crawl-out"
       # Only the result file crosses to the submit job: no clones, no raw findings, no payloads.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -78,7 +79,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out ops repo (the ledger is committed back here)
+      - name: Check out ops repo (the ledger and discovery state are committed back here)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: ops
@@ -111,6 +112,7 @@ jobs:
           node blastgate/dist/crawl/index.js submit \
             --ledger ops/ledger.json \
             --config ops/config.json \
+            --discovery ops/discovery.json \
             --in "$RUNNER_TEMP/scan-in/scan-result.json" \
             --site "$RUNNER_TEMP/site" \
             --kill-switch ops/KILL_SWITCH
