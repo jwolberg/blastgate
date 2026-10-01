@@ -712,3 +712,21 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   `enable-github-mcp` (GitHub MCP tools, needs a PAT) and `provider: copilot` (Copilot CLI) are
   off by default. They are recorded as `toolInputs` but the step still only warns (R8), which
   errs toward warn. Follow-up candidate: model them as tool grants.
+
+## 2026-10-01 — Agent-in-CI U2 (0056): agent and tool-less LLM recognition
+
+- **Deviation — home-assistant changed shape; U2 follows a one-step relay.** At HEAD,
+  `detect-non-english-issues.yml` no longer calls GitHub Models from github-script. A
+  github-script step reads the title/body from `env:` and `core.setOutput`s them, and
+  `actions/ai-inference` reads `${{ steps.detect_language.outputs.issue_text }}`. A step's
+  outputs now count as tainted when untrusted text reaches that step (any key, including
+  `env:`), and a tool-less LLM step reading a tainted output or `${{ env.X }}` ingests. This
+  taint is consulted only for LLM steps, so the 0046 rule (env-passed text never reaches a
+  shell) is unchanged. Verified: the real workflow went from PASS to an agent-ingested WARN at
+  the ai-inference step (line 65).
+- **Decision — "calls GitHub Models" means the script names `models.github.ai` or
+  `models.inference.ai.azure.com`.** A github-script step that calls a model through some
+  other client or endpoint is not recognized (false negative, warn-only class).
+- **Decision — the legacy name regex stays for unprofiled agents** (aider, opencode,
+  sweep-ai, gpt-engineer, claude-code-base-action). They are still agent-ingested; profiled
+  actions resolve through `agentProfileFor` first.

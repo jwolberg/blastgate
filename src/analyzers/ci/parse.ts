@@ -7,6 +7,7 @@ export interface StepSpec {
   env?: Record<string, unknown>;
   if?: unknown;
   name?: unknown;
+  id?: unknown;
 }
 
 export interface JobSpec {
