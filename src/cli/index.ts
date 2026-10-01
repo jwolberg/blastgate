@@ -26,7 +26,7 @@ import { osvHttpSource } from '../registry/osv';
 import { enrichWithAdvisories } from '../enrichment/advisories';
 import { parseRunRecords, toRunRecord } from '../report/run-record';
 import { renderTrendReport } from '../report/trend';
-import { collectInputs, type RepoFs } from './collect';
+import { collectInputs, type CollectOptions, type RepoFs } from './collect';
 import { bypassOutput, hookOutput } from './gate';
 import { nodeRepoFs } from './node-fs';
 import { classifyShellCommand } from './shell-guard';
@@ -98,6 +98,7 @@ function usage(): string {
     '  --json / --md      shorthands for --format json / --format md',
     '  --provenance       opt-in npm provenance-regression check (network; needs --base)',
     '  --advisories       opt-in CVE/advisory enrichment of reachable deps (network; OSV; never gates)',
+    '  --public           the repo is public: its Actions logs count as an agent exfiltration channel',
     '  --record <dir>     append this run to a directory of records for `blastgate report`',
     "  --include-payloads  with --json, include each fail's illustrative exploit payload (local use only)",
     '  --version          print version',
@@ -130,12 +131,22 @@ async function provenanceResult(
   return analyzeProvenance(baseLock, headLock, cachedFetcher(httpSource()));
 }
 
+/** The collect options for a scan: diff base, policy clock, and `--public` visibility (KTD5). */
+export function scanCollectOptions(
+  argv: string[],
+  base: string | undefined,
+  now?: string,
+): CollectOptions {
+  return {
+    ...(base !== undefined ? { base } : {}),
+    now,
+    visibility: argv.includes('--public') ? 'public' : 'unknown',
+  };
+}
+
 async function scanMode(argv: string[], env: CliEnv): Promise<number> {
   const base = baseRef(argv);
-  const inputs = collectInputs(env.fs, {
-    ...(base !== undefined ? { base } : {}),
-    now: env.now?.(),
-  });
+  const inputs = collectInputs(env.fs, scanCollectOptions(argv, base, env.now?.()));
   inputs.provenance = await provenanceResult(argv, env, base);
   const result = runEngine(inputs);
   // 0036: opt-in CVE/advisory enrichment. Enrichment only — decorates findings and
@@ -189,7 +200,7 @@ async function checkMode(argv: string[], env: CliEnv): Promise<number> {
   // A hook fires on an in-flight change, so diff the working tree against HEAD to
   // light up new-dependency / changed-config signals (KTD5).
   const base = baseRef(argv) ?? 'HEAD';
-  const inputs = collectInputs(env.fs, { base, now: env.now?.() });
+  const inputs = collectInputs(env.fs, scanCollectOptions(argv, base, env.now?.()));
   inputs.provenance = await provenanceResult(argv, env, base);
   const result = runEngine(inputs);
 

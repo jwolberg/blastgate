@@ -730,3 +730,14 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - **Decision — the legacy name regex stays for unprofiled agents** (aider, opencode,
   sweep-ai, gpt-engineer, claude-code-base-action). They are still agent-ingested; profiled
   actions resolve through `agentProfileFor` first.
+
+## 2026-10-01 — Agent-in-CI U4 (0058): repository visibility input
+
+- **Decision — visibility is plumbed but not yet read.** `EngineInputs.visibility`
+  (`public | private | unknown`) is always set by `collectInputs` (default `unknown`); U3/U5
+  consume it. Tests assert the plumbing through `actionCollectOptions` / `scanCollectOptions`
+  since no output changes until U5.
+- **Decision — the Action reads only `repository.private` from `GITHUB_EVENT_PATH`.**
+  `true` → private, `false` → public, missing/unreadable/non-boolean → unknown. Internal
+  repos report `private: true`, so their logs are not counted as public. The MCP surface
+  passes no visibility (unknown).

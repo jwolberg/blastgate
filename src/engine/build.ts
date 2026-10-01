@@ -30,6 +30,12 @@ import type { CiJobNode, DependencyNode } from '../graph/types';
 import type { Acknowledgement } from './acknowledge';
 import type { AcceptRule } from './policy';
 
+/**
+ * Repository visibility (KTD5): on a public repo, Actions logs are a public exfiltration
+ * channel. Supplied by the surface (Action payload, CLI `--public`), never guessed.
+ */
+export type RepoVisibility = 'public' | 'private' | 'unknown';
+
 /** Per-layer inputs; an omitted layer is simply not analyzed. */
 export interface EngineInputs {
   deps?: DependencyInputs;
@@ -72,6 +78,8 @@ export interface EngineInputs {
    * `--provenance` and passes its result here to be merged like any other layer.
    */
   provenance?: AnalyzerResult;
+  /** Repository visibility for the agent exfiltration leg (R5); absent = `unknown`. */
+  visibility?: RepoVisibility;
 }
 
 export interface BuildResult {
