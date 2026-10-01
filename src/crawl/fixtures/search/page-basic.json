@@ -1,0 +1,38 @@
+{
+  "total_count": 8,
+  "incomplete_results": false,
+  "items": [
+    {
+      "name": "claude.yml",
+      "path": ".github/workflows/claude.yml",
+      "repository": { "full_name": "acme/widgets" }
+    },
+    {
+      "name": "claude.yml",
+      "path": ".github/workflows/claude.yml",
+      "repository": { "full_name": "acme/forked" }
+    },
+    {
+      "name": "review.yml",
+      "path": ".github/workflows/review.yml",
+      "repository": { "full_name": "acme/widgets" }
+    },
+    {
+      "name": "ci.yml",
+      "path": ".github/workflows/ci.yml",
+      "repository": { "full_name": "oldco/archived-thing" }
+    },
+    {
+      "name": "ci.yml",
+      "path": ".github/workflows/ci.yml",
+      "repository": { "full_name": "someone/private-repo" }
+    },
+    { "name": "ci.yml", "path": ".github/workflows/ci.yml", "repository": { "full_name": "../x" } },
+    {
+      "name": "ci.yml",
+      "path": ".github/workflows/ci.yml",
+      "repository": { "full_name": "a/b/c" }
+    },
+    { "name": "ci.yml", "path": ".github/workflows/ci.yml", "repository": { "full_name": "a b/c" } }
+  ]
+}

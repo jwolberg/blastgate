@@ -994,3 +994,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Follow-up: a listed repo that stops being discovered (workflow removed, repo made private)
   never reaches the delta, so it stays listed. The site build (U7) or orchestrator (U8) should
   drop passes for repos absent from the current discovery set.
+
+## 2026-10-01 — 0071: discovery via sharded code search (public-crawler U1)
+
+- Deviation: crawl fixtures live in `src/crawl/fixtures/`, not the plan's `test/fixtures/crawl/`.
+  `test/engine.e2e.test.ts` asserts every `test/fixtures/` directory is a declared check, so later
+  crawl units put fixtures there too.
+- Throttle is 9 searches per sliding 60s (strictest reading of "<10"); only `/search/` paths are
+  throttled. A 403/429 carrying `retry-after` or an exhausted `x-ratelimit-remaining` is waited out
+  and retried up to 5 times, then `GitHubRateLimitError` is thrown — the orchestrator treats that
+  as the plan's "stop on abuse/secondary limit" signal. A 403 with no rate-limit signal is
+  returned as-is.
+- Sharding bisects `size:0..1000000` to depth 24; a single-byte bucket is split by 20 common
+  workflow filenames. That list cannot partition a bucket, so a filename-split bucket is always
+  reported `truncated` (fixed at integration: the worker's version lost unlisted filenames
+  silently). Every saturated shard still collects its first 1,000 reachable hits.
+- A non-200 search response (after retries) throws rather than skipping a shard; repo metadata
+  404/410/451 drops the repo.

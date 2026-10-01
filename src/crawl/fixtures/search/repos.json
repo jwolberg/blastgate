@@ -1,0 +1,21 @@
+{
+  "acme/widgets": {
+    "full_name": "acme/widgets",
+    "private": false,
+    "fork": false,
+    "archived": false
+  },
+  "acme/forked": { "full_name": "acme/forked", "private": false, "fork": true, "archived": false },
+  "oldco/archived-thing": {
+    "full_name": "oldco/archived-thing",
+    "private": false,
+    "fork": false,
+    "archived": true
+  },
+  "someone/private-repo": {
+    "full_name": "someone/private-repo",
+    "private": true,
+    "fork": false,
+    "archived": false
+  }
+}
