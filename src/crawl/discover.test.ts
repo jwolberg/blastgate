@@ -889,3 +889,25 @@ describe('resilient, incremental discovery (0083)', () => {
     });
   });
 });
+
+describe('owner-scoped discovery (0086)', () => {
+  it('qualifies every query, including split shards, with user:<owner>', async () => {
+    const env = makeEnv({ data: (a) => (a === CLAUDE ? uniform(2400) : []) });
+    const out = await discover({ client: clientFor(env), actions: [CLAUDE], owner: 'jwolberg' });
+    expect(out.complete).toBe(true);
+    expect(env.searches.length).toBeGreaterThan(3); // the shard saturated and was split
+    for (const s of env.searches) expect(s.q.raw).toMatch(/ user:jwolberg$/);
+    expect(out.truncated.concat(out.partial).every((q) => q.endsWith(' user:jwolberg'))).toBe(true);
+  });
+
+  it('refuses an owner that is not a plain GitHub login, before any request', async () => {
+    for (const bad of ['', 'a b', 'x repo:evil/y', '-lead', 'a/b', 'a'.repeat(40), 'a"b']) {
+      const env = makeEnv({ data: () => [] });
+      await expect(
+        discover({ client: clientFor(env), actions: [CLAUDE], owner: bad }),
+        bad,
+      ).rejects.toThrow(/owner/);
+      expect(env.calls, bad).toEqual([]);
+    }
+  });
+});
