@@ -21,10 +21,19 @@ export interface CrawlConfig {
   throttle: CrawlThrottle;
   /** Max code-search requests one scan run spends on discovery (~9/min, so 300 is ~35 min). */
   discoveryBudget: number;
+  /**
+   * Wall-clock limit on discovery per run (0088). Secondary search limits can stretch a few
+   * searches into hours, so the budget alone does not bound time; past this, no new search
+   * starts and the run moves on to scanning.
+   */
+  discoveryMinutes: number;
 }
 
 /** Upper bound: well above what a 5 hour job can spend at the 9/min search throttle (~2,700). */
 export const MAX_DISCOVERY_BUDGET = 5000;
+
+/** Leaves room in the 300 minute scan job for one in-flight request's retries and the scans. */
+export const MAX_DISCOVERY_MINUTES = 240;
 
 export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   allowlist: [],
@@ -33,6 +42,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   reporterLogin: '',
   throttle: { perHour: 5, perDay: 20 },
   discoveryBudget: 300,
+  discoveryMinutes: 60,
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -81,7 +91,15 @@ export function parseCrawlConfig(text: string): CrawlConfig {
   if (!isObj(raw)) fail('top level must be an object');
   rejectUnknown(
     raw,
-    ['allowlist', 'submitMode', 'publishSite', 'reporterLogin', 'throttle', 'discoveryBudget'],
+    [
+      'allowlist',
+      'submitMode',
+      'publishSite',
+      'reporterLogin',
+      'throttle',
+      'discoveryBudget',
+      'discoveryMinutes',
+    ],
     '',
   );
 
@@ -126,6 +144,13 @@ export function parseCrawlConfig(text: string): CrawlConfig {
       DEFAULT_CRAWL_CONFIG.discoveryBudget,
       'discoveryBudget',
       MAX_DISCOVERY_BUDGET,
+    ),
+    discoveryMinutes: posInt(
+      raw,
+      'discoveryMinutes',
+      DEFAULT_CRAWL_CONFIG.discoveryMinutes,
+      'discoveryMinutes',
+      MAX_DISCOVERY_MINUTES,
     ),
   };
 }

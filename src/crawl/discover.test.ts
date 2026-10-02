@@ -363,6 +363,45 @@ describe('search pacing and secondary limits (0087)', () => {
   });
 });
 
+describe('discovery wall-clock limit (0088)', () => {
+  it('stops before a search past the deadline, keeping what it found and what is pending', async () => {
+    let n = 0;
+    const env = makeEnv({
+      data: (a) => (a === CLAUDE ? uniform(2400) : []),
+      // every third search draws a 735s secondary limit, as in run 36969994556
+      intercept: (req) =>
+        req.url.includes('/search/code') && ++n % 3 === 0
+          ? json({ message: 'slow' }, 429, { 'retry-after': '735', 'x-ratelimit-remaining': '10' })
+          : undefined,
+    });
+    const deadline = env.clock.now() + 30 * 60_000;
+    const out = await discover({
+      client: clientFor(env),
+      actions: [CLAUDE],
+      deadline,
+      clock: env.clock.now,
+    });
+    expect(out.timedOut).toBe(true);
+    expect(out.complete).toBe(false);
+    expect(out.repos.length).toBeGreaterThan(0);
+    expect(out.state.sweep.pending.length).toBeGreaterThan(0);
+    // No new search starts after the deadline: any later call is a retry of the request
+    // already in flight (same URL as the call before it).
+    const sent = env.calls.filter((c) => c.req.url.includes('/search/code'));
+    expect(sent.some((c) => c.at < deadline)).toBe(true);
+    sent.forEach((c, i) => {
+      if (c.at > deadline) expect(c.req.url).toBe(sent[i - 1]?.req.url);
+    });
+  });
+
+  it('does not time out without a deadline', async () => {
+    const env = makeEnv({ data: (a) => (a === CLAUDE ? uniform(50) : []) });
+    const out = await discover({ client: clientFor(env), actions: [CLAUDE] });
+    expect(out.timedOut).toBe(false);
+    expect(out.complete).toBe(true);
+  });
+});
+
 describe('discover', () => {
   it('queries every recognized agent action, scoped to workflow files', async () => {
     const env = makeEnv({ data: () => [] });

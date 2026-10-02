@@ -68,7 +68,8 @@ Strict JSON; unknown keys are rejected so a typo cannot silently flip a safety d
 | `publishSite` | `false` | Off builds the site but never pushes it. |
 | `reporterLogin` | `""` | Login the reports are filed as. Empty skips advisory tracking. |
 | `throttle` | `{perHour: 5, perDay: 20}` | Submission budget per trailing hour and day. |
-| `discoveryBudget` | `300` | Max code-search requests one run spends on discovery (1 to 5000). Searches are throttled to 9/min, so 300 is about 35 minutes. |
+| `discoveryBudget` | `300` | Max code-search requests one run spends on discovery (1 to 5000). Searches are paced at 9/min, so 300 is about 35 minutes when GitHub does not push back. |
+| `discoveryMinutes` | `60` | Wall-clock limit on discovery per run (1 to 240). Past it no new search starts and the run scans known repos; a request already in flight may finish its retries first. Under secondary limits a handful of searches can take hours, so this, not the budget, is what bounds time (0088). |
 
 Turn on `submitMode` and `publishSite` independently, and only after [6].
 
@@ -118,7 +119,12 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   quota (a separate read-only search token would help) from a secondary limit (it would not).
   **Measured 2026-10-02 (run 36960100294):** the Actions token has the full `code_search` quota
   (limit 10, remaining 10, used 0), yet its first searches drew 429s with retry-after 16, 1, 22, 1,
-  then 735s. Those are secondary limits, so a separate search token would not help.
+  then 735s. Those are secondary limits, not the quota. **Correction (0088):** on the next
+  scheduled run (36969994556) the *first* search of a fresh run drew retry-after=650, so the
+  penalty carries across runs and tokens. It is keyed to the Actions identity or the runner IP.
+  A token from a different identity may have its own allowance; that is untested. That run spent
+  4h21m in discovery and scanned nothing, which is why `discoveryMinutes` exists. With 5,577
+  repos already known (2026-10-02), the ops config runs `discoveryBudget: 10`.
 - **Search pacing (0087).** Searches go out evenly spaced (one every ~6.7s, 9/min), never in a
   burst. A secondary limit (quota left, but a 429 or retry-after) waits at least a minute,
   doubling on each consecutive hit (60s, 120s, 240s, …) or longer if `retry-after` says so,

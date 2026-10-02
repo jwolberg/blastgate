@@ -64,6 +64,13 @@ export interface DiscoverOptions {
   /** Clock for sweep ids. */
   now?: () => Date;
   /**
+   * Epoch ms after which no new search starts (0088). A request already in flight may still
+   * finish its rate-limit retries, so the overshoot is at most one request's retry ladder.
+   */
+  deadline?: number;
+  /** Epoch-ms clock for `deadline`; defaults to Date.now. */
+  clock?: () => number;
+  /**
    * Restrict every query to this account's repos (`user:<owner>`), for a scoped check run
    * (0086). An owner run never resumes `state`: it always starts a fresh, separate sweep.
    */
@@ -85,6 +92,8 @@ export interface DiscoverResult {
   rateLimited: boolean;
   /** The per-run search budget ran out. */
   budgetExhausted: boolean;
+  /** The per-run wall-clock limit was reached (0088). */
+  timedOut: boolean;
   /** Search requests spent this run. */
   searches: number;
 }
@@ -95,7 +104,11 @@ interface Page {
   names: string[];
 }
 
-class BudgetExhausted extends Error {}
+class BudgetExhausted extends Error {
+  constructor(readonly by: 'searches' | 'time') {
+    super(by);
+  }
+}
 
 const isWholeRange = (s: Shard): boolean => s.size[0] === 0 && s.size[1] === MAX_FILE_SIZE;
 
@@ -129,6 +142,8 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
   const variants = opts.filenameVariants ?? DEFAULT_FILENAME_VARIANTS;
   const seeds = opts.sizeSeeds ?? DEFAULT_SIZE_SEEDS;
   const budget = opts.budget ?? Number.POSITIVE_INFINITY;
+  const deadline = opts.deadline ?? Number.POSITIVE_INFINITY;
+  const clock = opts.clock ?? Date.now;
   const nowIso = (opts.now?.() ?? new Date()).toISOString();
 
   // Work on a copy: the caller's state is never mutated.
@@ -159,7 +174,8 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
   async function fetchPage(shard: Shard, page: number): Promise<Page & { failed?: true }> {
     const query = queryOf(shard);
     for (let attempt = 0; ; attempt++) {
-      if (searches >= budget) throw new BudgetExhausted();
+      if (searches >= budget) throw new BudgetExhausted('searches');
+      if (attempt === 0 && clock() >= deadline) throw new BudgetExhausted('time');
       searches++;
       let res;
       try {
@@ -251,6 +267,7 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
 
   let rateLimited = false;
   let budgetExhausted = false;
+  let timedOut = false;
   while (queue.length > 0) {
     const shard = queue[0] as Shard;
     try {
@@ -259,8 +276,10 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
     } catch (e) {
       // The shard stays at the head of the queue: it is retried first next run.
       if (e instanceof GitHubRateLimitError) rateLimited = true;
-      else if (e instanceof BudgetExhausted) budgetExhausted = true;
-      else throw e;
+      else if (e instanceof BudgetExhausted) {
+        if (e.by === 'time') timedOut = true;
+        else budgetExhausted = true;
+      } else throw e;
       break;
     }
   }
@@ -293,6 +312,7 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
     complete,
     rateLimited,
     budgetExhausted,
+    timedOut,
     searches,
   };
 }

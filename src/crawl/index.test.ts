@@ -311,12 +311,12 @@ describe('runScan', () => {
         scanRepos: async () => ({}),
       });
       await runScan({ ...scanArgs(), discovery: p('nope.json') }, deps);
-      expect(seen[0]).toEqual({ state: undefined, budget: 300 });
+      expect(seen[0]).toMatchObject({ state: undefined, budget: 300 });
 
       writeFileSync(p('discovery.json'), serializeDiscoveryState(dstate()));
       writeFileSync(p('config.json'), JSON.stringify({ discoveryBudget: 42 }));
       await runScan({ ...scanArgs(), discovery: p('discovery.json') }, deps);
-      expect(seen[1]).toEqual({ state: dstate(), budget: 42 });
+      expect(seen[1]).toMatchObject({ state: dstate(), budget: 42 });
     });
 
     it('refuses a corrupt discovery file instead of silently restarting the sweep', async () => {
@@ -324,6 +324,35 @@ describe('runScan', () => {
       await expect(
         runScan({ ...scanArgs(), discovery: p('discovery.json') }, localScanDeps()),
       ).rejects.toThrow(/discovery/);
+    });
+
+    it('0088: passes a discovery deadline of now + discoveryMinutes and logs a time stop', async () => {
+      const seen: Array<{ deadline?: number; clock?: () => number }> = [];
+      const lines: string[] = [];
+      writeFileSync(p('config.json'), JSON.stringify({ discoveryMinutes: 20 }));
+      await runScan(
+        scanArgs(),
+        localScanDeps({
+          discover: async (_c, ctx) => {
+            seen.push(ctx);
+            return {
+              repos: [],
+              truncated: [],
+              partial: [],
+              state: dstate(),
+              complete: false,
+              timedOut: true,
+              searches: 7,
+            };
+          },
+          lsRemoteHeads: async () => new Map(),
+          scanRepos: async () => ({}),
+          log: (l) => lines.push(l),
+        }),
+      );
+      expect(seen[0]?.deadline).toBe(NOW.getTime() + 20 * 60_000);
+      expect(seen[0]?.clock?.()).toBe(NOW.getTime()); // judged by the scan's clock, not Date.now
+      expect(lines.join('\n')).toMatch(/stopped by time limit/);
     });
 
     it('0086: an owner-scoped scan passes the owner, ignores and never emits discovery state', async () => {
@@ -342,7 +371,7 @@ describe('runScan', () => {
         { ...scanArgs(), discovery: p('discovery.json'), owner: 'jwolberg' },
         deps,
       );
-      expect(seen[0]).toEqual({ state: undefined, budget: 300, owner: 'jwolberg' });
+      expect(seen[0]).toMatchObject({ state: undefined, budget: 300, owner: 'jwolberg' });
       expect(res.discoveryState).toBeUndefined();
       const file = JSON.parse(readFileSync(p('out', 'scan-result.json'), 'utf8')) as ScanResultFile;
       expect(file.discoveryState).toBeUndefined();
