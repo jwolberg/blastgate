@@ -1218,3 +1218,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Open: the whole-range query omits `size:`; relying on GitHub treating that as all sizes (as the
   old code did).
 
+
+## 2026-10-01 — 0084: claude scoped Bash grants read no env secrets
+
+- Found during the hand review of the crawler's first held fails. Verified headless on Claude Code
+  2.1.287 (the version claude-code-action v1.0.239 pins): `printf '%s' "$VAR"` is denied with
+  "Part of this command (a variable) cannot be checked in advance" under `Bash(printf:*)`,
+  `Bash(printf *)`, and with no rule. 0063's conclusion (documentation only) was wrong for claude.
+- Change: `claudeTools` no longer grants `envRead` for a wildcard-scoped Bash rule. Unrestricted
+  `Bash`, the bypass flags, codex, and gemini's scoped shell are unchanged.
+- Tests that encoded 0063 (agents AE3/0064-wildcard, contract AE3) now assert the verified
+  behavior.
+- Re-scan on identical clones, main vs branch: the 50-repo sample is unchanged (no finding's tier
+  or reason moved). Of the crawler's 3 fail repos, one drops from 4 fails to 2 (its two
+  ANTHROPIC_API_KEY findings were false fails; the two persisted-GITHUB_TOKEN paths remain).
+- Lesson: two capability claims about Claude Code (0063 and the pre-0070 "default tools = none")
+  were wrong in opposite directions until run against the pinned CLI. Verify agent capability
+  claims empirically, not from docs.

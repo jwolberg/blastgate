@@ -69,3 +69,15 @@ the variable's value"); `cat` of a file outside the working directory was denied
 step with no grants holds file read for the workspace (checkout-persisted tokens,
 `gha-creds-*.json`) but not env read, shell, or network. On the 50-repo sample this changed no
 finding (re-scan of the same clones with both engines).
+
+## [6] Amendment (2026-10-01, ticket 0084): a scoped claude Bash grant reads no env secrets
+
+The [4] bullet "A command-scoped shell counts for reading env (PromptPwnd's `$SECRET`
+expansion), pending verification for Claude Code (ticket 0063)" is superseded for claude. 0063
+concluded from the docs alone that a wildcard rule such as `Bash(gh issue view:*)` admits `$VAR`
+expansion. Run headless on CLI 2.1.287 (pinned by claude-code-action v1.0.239), Claude Code
+denies any command containing a variable, with or without a matching allow rule (`Bash(printf:*)`
+and `Bash(printf *)` both tested): "Part of this command (a variable) cannot be checked in
+advance". So a scoped claude grant gives no env read. Gemini's `run_shell_command(cmd)` is
+unchanged (PromptPwnd's real incident). Effect: a crawler-held fail on an env-only API key
+became a warn; the 50-repo sample is unchanged.

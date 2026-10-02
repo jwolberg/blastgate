@@ -499,14 +499,14 @@ function claudeTools(w: Record<string, unknown>, unknown: string[]): Tools {
       granted.push(...allow.map(str));
     }
   }
+  // A scoped `Bash(cmd:*)` grants nothing here: Claude Code denies any command containing a
+  // variable, even under a matching wildcard rule ("Part of this command (a variable) cannot be
+  // checked in advance"; verified on CLI 2.1.287, 0084, superseding 0063), so it reads no env.
   const tools: Tools = { ...NO_TOOLS, fileRead: 'held' };
   for (const m of granted.join(' ').matchAll(TOOL_TOKEN_RE)) {
     const [, name, spec] = m;
     if (name === 'Bash' && (spec === undefined || /^\s*\*?\s*(?::\s*\*)?\s*$/.test(spec))) {
       tools.shell = tools.envRead = tools.fileRead = tools.network = 'held';
-    } else if (name === 'Bash' && spec !== undefined && spec.includes('*')) {
-      // A wildcard admits any argument text, so `$SECRET` can ride in; an exact rule cannot.
-      tools.envRead = 'held';
     } else if (name === 'Read') {
       tools.fileRead = 'held';
     } else if (name === 'WebFetch') {

@@ -277,10 +277,12 @@ describe('agent verdict (0059)', () => {
     expect(f?.evidence?.payload).toBeUndefined();
   });
 
-  it('AE3 (revised): a scoped Bash(gh issue view:*) can expand the API key into its arguments → fail', () => {
+  it('0084: a scoped Bash(gh issue view:*) cannot expand the API key in claude → warn, not fail', () => {
+    // Claude Code denies any command containing a variable, even under a matching wildcard rule
+    // (verified on CLI 2.1.287); supersedes the docs-only 0063 reading.
     const f = onKey(runEngine(claude({ args: '--allowedTools "Bash(gh issue view:*)"' })));
-    expect(f?.tier).toBe('fail');
-    expect(f?.reason).toMatch(/sensitive access: held/i);
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).toMatch(/sensitive access: missing/i);
   });
 
   it('0064: an exact-match Bash(npm test) with the scrub off and a key in env → no fail', () => {
