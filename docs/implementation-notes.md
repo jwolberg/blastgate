@@ -1267,3 +1267,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Verified live: `"anthropics/claude-code-action" path:.github/workflows user:jwolberg` returned
   5 hits across 4 jwolberg repos. Code search covers public repos only, so private repos are never scanned.
 - Caveat: the ledger delta skips repos already scanned at the same engine version.
+
+## 2026-10-01 — 0087 search pacing and secondary-limit backoff
+
+- Evidence: check run 36960100294 drew 429s while code_search showed 10/10 remaining (secondary
+  limits). Retry-after went 16, 1, 22, 1, then 735s, so prompt retries escalated the penalty.
+- Decision: replaced the 9-per-60s sliding window with even spacing (ceil(60s/9) apart). The
+  average rate is the same, with no bursts.
+- Decision: a secondary limit waits max(retry-after, 60s x 2^k), with k counted client-wide and
+  reset on any non-rate-limited response. The one-minute floor applies even over a shorter
+  retry-after, which is more conservative than the header. GitHub warns that continuing while
+  limited can get an integration banned.
+- Bare-429 and "secondary rate limit" message detection applies to GETs only. A POST without a
+  header signal is returned untouched so submit's stop-the-run rule (KTD) still holds; a test
+  covers it. Two old tests' 30s/45s expectations moved to the 60s floor on purpose.
+- Tradeoff: worst case is 60+120+240+480+960s (~31 min) of waiting before a request gives up.
+  That's within the 300-min scan timeout, and cheaper than losing 6h of discovery to a run that
+  stops early.
