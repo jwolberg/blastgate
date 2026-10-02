@@ -1328,3 +1328,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Fixtures are synthetic. Of the five dry-run fails, only the one with the wrong reason changes:
   no fork-pr fail, now UNKNOWN because an unrelated workflow file in that repo fails to parse
   (duplicate YAML keys; fail closed, never reported). The other four are unchanged.
+
+## 2026-10-02 — 0090 same-repo guard before a PR-ref fetch
+
+- Found by the dry-run hand review (details in the private ops repo). A `run:` step that exits
+  when the PR head repo != the base repo, before `git fetch … refs/pull/…`, only ever fetches
+  same-repo PRs, so it is no longer an untrusted checkout.
+- Narrow on purpose: the guard must use `!=`, compare a head-repo token with a base-repo token
+  (`REPO`, `GITHUB_REPOSITORY`, `github.repository`; case-sensitive so `head_repo` alone
+  doesn't count), sit before the fetch, and exit inside its `if … fi`. Anything else fails
+  closed. Tests cover `==`, guard-after-fetch, and no-exit.
+- Scope change: the login-gate half moved to 0091. The dry-run job's bot (a review bot)
+  auto-acts on fork PRs, so "only runs for the bot" does not stop an outsider's PR from
+  triggering it. Crediting it for fork-pr findings would create false passes.
+- Verified: the refuted dry-run fail drops to warn (the agent reading the bot's text, legs
+  incomplete). The other four are unchanged. The 50-repo sample has identical findings vs main.
