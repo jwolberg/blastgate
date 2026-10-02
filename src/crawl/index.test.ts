@@ -15,6 +15,7 @@ import {
   type SubmitDeps,
   defaultScanDeps,
   execOut,
+  formatRateLimit,
   gitPersist,
   parseScanResult,
   runScan,
@@ -981,5 +982,30 @@ describe('gitPersist', () => {
     expect(sh(origin, 'rev-list', '--count', 'main')).toBe('3');
     await persist(emptyLedger());
     expect(sh(origin, 'rev-list', '--count', 'main')).toBe('3');
+  });
+});
+
+describe('formatRateLimit (0085)', () => {
+  it('prints status, route, resource and the limit headers in one line', () => {
+    expect(
+      formatRateLimit({
+        status: 429,
+        route: 'search',
+        limit: '10',
+        remaining: '0',
+        used: '10',
+        reset: '1790909850',
+        resource: 'code_search',
+        retryAfter: '30',
+      }),
+    ).toBe(
+      'crawl: rate limited (429, search, code_search): limit=10 remaining=0 used=10 reset=1790909850 retry-after=30',
+    );
+  });
+
+  it('degrades to the status line when GitHub sent no limit headers', () => {
+    expect(formatRateLimit({ status: 403, route: 'core', retryAfter: '60' })).toBe(
+      'crawl: rate limited (403, core, resource?): retry-after=60',
+    );
   });
 });

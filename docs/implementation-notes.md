@@ -1235,3 +1235,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Lesson: two capability claims about Claude Code (0063 and the pre-0070 "default tools = none")
   were wrong in opposite directions until run against the pinned CLI. Verify agent capability
   claims empirically, not from docs.
+
+## 2026-10-01 — 0085: rate-limit telemetry in the scan job
+
+- Correction recorded: I had suggested a separate read-only search token would "roughly triple"
+  the search rate. Code search is capped at 10 requests/min even for a user token (`gh api
+  rate_limit` → `code_search.limit: 10`; general search is 30), and the crawler already throttles
+  to 9/min. Whether such a token helps depends on what the Actions token's quota is, so this
+  measures first.
+- `createGitHubClient` takes `onRateLimit(info)`, called for every rate-limited response with the
+  `x-ratelimit-*` / `retry-after` header values and a route class (`search`/`core`). It never sees
+  the URL: a `/repos/owner/name` path is a repo name, and run logs must not pair repos with
+  anything. The crawler logs one line per event; a plain 403 is not a rate limit and is not logged.
+- `ops/crawl.yml` prints `gh api rate_limit` for the Actions token before discovery.
+- TDD note: the client-hook and template tests went red first; the two formatter tests were
+  written just after the formatter.
