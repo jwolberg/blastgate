@@ -427,3 +427,106 @@ describe('untrusted-text entry classification (0046)', () => {
     expect(entry && entry.kind === 'entry' && entry.evidence?.line).toBe(8);
   });
 });
+
+// 0089: actions/checkout resolves a branch NAME against `repository:` (default: the base repo),
+// so a fork's branch name is either absent or a same-named base branch, never fork code.
+// A commit SHA is different: GitHub serves fork PR commits from the base repo.
+describe('untrusted checkout: branch name vs SHA (0089)', () => {
+  const wf = (trigger: string, checkoutWith: string[]): string =>
+    [
+      'on:',
+      `  ${trigger}:`,
+      'jobs:',
+      '  fix:',
+      '    permissions:',
+      '      contents: write',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '        with:',
+      ...checkoutWith.map((l) => `          ${l}`),
+      '      - run: make fix',
+      '        env:',
+      '          TOKEN: ${{ secrets.DEPLOY_TOKEN }}',
+    ].join('\n');
+  const forkPr = (content: string): boolean => {
+    const r = analyzeCi({ workflows: [{ path: '.github/workflows/w.yml', content }] });
+    return r.nodes.some((n) => n.kind === 'entry' && n.entryKind === 'fork-pr');
+  };
+
+  it('a head branch name without repository: is base-repo code, not a fork checkout', () => {
+    expect(forkPr(wf('workflow_run', ['ref: ${{ github.event.workflow_run.head_branch }}']))).toBe(
+      false,
+    );
+    expect(forkPr(wf('pull_request_target', ['ref: ${{ github.head_ref }}']))).toBe(false);
+    expect(
+      forkPr(wf('pull_request_target', ['ref: ${{ github.event.pull_request.head.ref }}'])),
+    ).toBe(false);
+  });
+
+  it('a head branch name with repository: github.repository is still the base repo', () => {
+    expect(
+      forkPr(
+        wf('workflow_run', [
+          'repository: ${{ github.repository }}',
+          'ref: ${{ github.event.workflow_run.head_branch }}',
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  it('a head branch name with repository: the head repo IS fork code', () => {
+    expect(
+      forkPr(
+        wf('workflow_run', [
+          'repository: ${{ github.event.workflow_run.head_repository.full_name }}',
+          'ref: ${{ github.event.workflow_run.head_branch }}',
+        ]),
+      ),
+    ).toBe(true);
+    expect(
+      forkPr(
+        wf('pull_request_target', [
+          'repository: ${{ github.event.pull_request.head.repo.full_name }}',
+          'ref: ${{ github.head_ref }}',
+        ]),
+      ),
+    ).toBe(true);
+  });
+
+  it('a head branch name with any other repository: (e.g. a step output) counts as fork code', () => {
+    // fail closed: the head repo is often resolved by an earlier step (gh api pulls/N)
+    expect(
+      forkPr(
+        wf('pull_request_target', [
+          'repository: ${{ steps.pr.outputs.head_repo }}',
+          'ref: ${{ steps.pr.outputs.head_ref }}',
+        ]),
+      ),
+    ).toBe(true);
+  });
+
+  it('a head commit SHA is fork code with or without repository:', () => {
+    expect(forkPr(wf('workflow_run', ['ref: ${{ github.event.workflow_run.head_sha }}']))).toBe(
+      true,
+    );
+    expect(
+      forkPr(wf('pull_request_target', ['ref: ${{ github.event.pull_request.head.sha }}'])),
+    ).toBe(true);
+    expect(
+      forkPr(wf('pull_request_target', ['ref: refs/pull/${{ github.event.number }}/merge'])),
+    ).toBe(true);
+    expect(
+      forkPr(wf('pull_request_target', ['ref: ${{ github.event.pull_request.merge_commit_sha }}'])),
+    ).toBe(true);
+  });
+
+  it('a ref that mixes a branch name and a SHA counts as the SHA (fork code)', () => {
+    expect(
+      forkPr(
+        wf('pull_request_target', [
+          'ref: ${{ github.event.pull_request.head.sha || github.head_ref }}',
+        ]),
+      ),
+    ).toBe(true);
+  });
+});

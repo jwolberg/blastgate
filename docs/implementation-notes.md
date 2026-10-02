@@ -1311,3 +1311,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   is public. That review names third-party repos with unfixed vulnerabilities, so it now lives
   in the private ops repo (approved by Jay). Analyzer fixes from it (0089, 0090) use synthetic
   fixtures only.
+
+## 2026-10-02 — 0089 branch-name checkout is base-repo code
+
+- Found by the dry-run hand review (details in the private ops repo). `actions/checkout` with
+  `ref:` set to a head branch NAME (`workflow_run.head_branch`, `head_ref`,
+  `pull_request.head.ref`) and no `repository:` resolves against the base repo, so it is not
+  fork code. The analyzer counted it as an untrusted checkout and reported "runs PR code".
+- Commit refs (`head_sha`, `pull_request.head.sha`, `refs/pull/*`, `merge_commit_sha`) stay
+  untrusted with or without `repository:`, since GitHub serves fork PR commits from the base repo.
+  A ref mixing both counts as the commit.
+- Decision (fail closed): a branch-name ref counts as fork code when `repository:` is set to
+  anything except `${{ github.repository }}`. My first version matched only explicit head-repo
+  expressions. Rescanning a real dry-run repo showed that dropped a genuine fork checkout whose
+  head repo comes from a step output (`steps.pr.outputs.head_repo`). A test now covers that shape.
+- Fixtures are synthetic. Of the five dry-run fails, only the one with the wrong reason changes:
+  no fork-pr fail, now UNKNOWN because an unrelated workflow file in that repo fails to parse
+  (duplicate YAML keys; fail closed, never reported). The other four are unchanged.
