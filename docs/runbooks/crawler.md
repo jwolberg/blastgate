@@ -116,6 +116,14 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   `crawl: rate limited (<status>, <search|core>, <resource>): limit=… remaining=… used=… reset=…
   retry-after=…` line, headers only, never a URL or repo. Compare the two to tell a low token
   quota (a separate read-only search token would help) from a secondary limit (it would not).
+- **Owner-scoped check run (0086).** `gh workflow run crawl.yml -R jwolberg/blastgate-crawl -f
+  owner=<login>` scans only that account's public repos (`user:<login>` on every search) and
+  skips the submit job entirely: no reports, no ledger or `discovery.json` commit, no publish.
+  `discovery.json` is neither read nor changed, so the global sweep is untouched. Per-repo
+  verdicts are in the run's `scan-result` artifact (kept 1 day); the logs stay counts-only. Use
+  it to check a new `BLASTGATE_SHA` end to end against code you own. Repos already in the ledger
+  at the same engine version are skipped by the delta, so a scoped run right after a normal one
+  may scan nothing.
 - **Run logs** carry counts only (discovered, truncated/partial shards, verdict counts, outcome
   counts), never a repo name next to a verdict. Truncated or partial shards mean discovery missed
   some repos; the run still finishes.

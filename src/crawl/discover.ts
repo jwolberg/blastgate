@@ -63,6 +63,11 @@ export interface DiscoverOptions {
   sizeSeeds?: readonly (readonly [number, number])[];
   /** Clock for sweep ids. */
   now?: () => Date;
+  /**
+   * Restrict every query to this account's repos (`user:<owner>`), for a scoped check run
+   * (0086). An owner run never resumes `state`: it always starts a fresh, separate sweep.
+   */
+  owner?: string;
 }
 
 export interface DiscoverResult {
@@ -94,18 +99,31 @@ class BudgetExhausted extends Error {}
 
 const isWholeRange = (s: Shard): boolean => s.size[0] === 0 && s.size[1] === MAX_FILE_SIZE;
 
-export function shardQuery(s: Shard): string {
+/** A GitHub login: alphanumerics and single inner hyphens, at most 39 characters. */
+export function isOwnerLogin(owner: string): boolean {
+  return /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(owner);
+}
+
+export function assertOwnerLogin(owner: string): void {
+  if (!isOwnerLogin(owner))
+    throw new Error(`bad owner: ${JSON.stringify(owner)} is not a GitHub login`);
+}
+
+export function shardQuery(s: Shard, owner?: string): string {
   const size = isWholeRange(s)
     ? ''
     : s.size[0] === s.size[1]
       ? ` size:${s.size[0]}`
       : ` size:${s.size[0]}..${s.size[1]}`;
   const filename = s.filename ? ` filename:${s.filename}` : '';
-  return `"${s.action}" path:.github/workflows${size}${filename}`;
+  const user = owner ? ` user:${owner}` : '';
+  return `"${s.action}" path:.github/workflows${size}${filename}${user}`;
 }
 
 export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
-  const { client } = opts;
+  const { client, owner } = opts;
+  if (owner !== undefined) assertOwnerLogin(owner);
+  const queryOf = (s: Shard): string => shardQuery(s, owner);
   const actions = opts.actions ?? AGENT_PROFILES.map((p) => p.action);
   const maxDepth = opts.maxDepth ?? 24;
   const variants = opts.filenameVariants ?? DEFAULT_FILENAME_VARIANTS;
@@ -114,7 +132,7 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
   const nowIso = (opts.now?.() ?? new Date()).toISOString();
 
   // Work on a copy: the caller's state is never mutated.
-  const prior = opts.state ? structuredClone(opts.state) : undefined;
+  const prior = opts.state && owner === undefined ? structuredClone(opts.state) : undefined;
   const state: DiscoveryState =
     prior && prior.sweep.completedAt === undefined
       ? prior
@@ -139,7 +157,7 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
 
   /** A failed page (after the client's retries) marks the shard partial and yields nothing. */
   async function fetchPage(shard: Shard, page: number): Promise<Page & { failed?: true }> {
-    const query = shardQuery(shard);
+    const query = queryOf(shard);
     for (let attempt = 0; ; attempt++) {
       if (searches >= budget) throw new BudgetExhausted();
       searches++;
@@ -204,11 +222,11 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
     if (split?.[0]?.filename) {
       // A filename split only reaches the listed variants, so coverage of this bucket is not
       // guaranteed: report it, and keep the parent's reachable hits too.
-      truncated.add(shardQuery(shard));
+      truncated.add(queryOf(shard));
       await collect(shard, first);
     }
     if (split) return split;
-    truncated.add(shardQuery(shard));
+    truncated.add(queryOf(shard));
     await collect(shard, first);
     return [];
   }

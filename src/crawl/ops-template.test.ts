@@ -15,6 +15,7 @@ const wf = parse(raw) as {
     string,
     {
       needs?: string | string[];
+      if?: string;
       environment?: string;
       permissions?: Record<string, string>;
       steps: Array<{
@@ -129,6 +130,19 @@ describe('ops/crawl.yml template', () => {
     expect(probe).toBeLessThan(discover);
     expect(JSON.stringify(steps[probe])).toContain('github.token');
     expect(JSON.stringify(steps[probe])).not.toMatch(/\bsecrets\b/);
+  });
+
+  it('0086: an owner dispatch input scopes the scan via env and skips submit', () => {
+    const dispatch = wf.on.workflow_dispatch as { inputs?: Record<string, { default?: string }> };
+    expect(dispatch.inputs?.owner?.default).toBe('');
+    // never interpolated straight into a shell script (injection)
+    for (const job of Object.values(wf.jobs)) {
+      for (const s of job.steps) expect(s.run ?? '').not.toMatch(/\$\{\{\s*inputs\./);
+    }
+    const scan = wf.jobs.scan?.steps.find((s) => s.run?.includes('crawl/index.js scan'));
+    expect(scan?.env?.OWNER).toBe('${{ inputs.owner }}');
+    expect(scan?.run).toMatch(/\$\{OWNER:\+--owner "\$OWNER"\}/);
+    expect(wf.jobs.submit?.if).toMatch(/inputs\.owner\s*==\s*''/);
   });
 
   it('serializes runs without cancelling an in-flight one', () => {

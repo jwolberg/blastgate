@@ -13,6 +13,14 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+    inputs:
+      # Check run (0086): scan only this account's public repos, and skip the submit job (no
+      # reports, no ledger or discovery commit, no publish). Results stay in the scan-result
+      # artifact. Leave empty for a normal run.
+      owner:
+        description: 'GitHub login to scope a check run to (empty = normal run)'
+        required: false
+        default: ''
 
 # One run at a time, and never cancel a run that may be mid-report: the ledger's
 # `submitting` state assumes a single writer.
@@ -61,12 +69,15 @@ jobs:
           # Read-only token for code search and repo metadata; the job grants contents: read only.
           GITHUB_TOKEN: ${{ github.token }}
           BLASTGATE_SHA: ${{ vars.BLASTGATE_SHA }}
+          # Passed through env, never interpolated into the script; the crawler validates it.
+          OWNER: ${{ inputs.owner }}
         run: |
           node blastgate/dist/crawl/index.js scan \
             --ledger ops/ledger.json \
             --config ops/config.json \
             --discovery ops/discovery.json \
-            --out "$RUNNER_TEMP/crawl-out"
+            --out "$RUNNER_TEMP/crawl-out" \
+            ${OWNER:+--owner "$OWNER"}
       # Only the result file crosses to the submit job: no clones, no raw findings, no payloads.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -77,6 +88,8 @@ jobs:
 
   submit:
     needs: scan
+    # An owner-scoped check run (0086) never reports, commits, or publishes.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.owner == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Protected environment: add required reviewers or a deployment branch rule so a

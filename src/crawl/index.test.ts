@@ -17,6 +17,7 @@ import {
   execOut,
   formatRateLimit,
   gitPersist,
+  main,
   parseScanResult,
   runScan,
   runSubmit,
@@ -323,6 +324,64 @@ describe('runScan', () => {
       await expect(
         runScan({ ...scanArgs(), discovery: p('discovery.json') }, localScanDeps()),
       ).rejects.toThrow(/discovery/);
+    });
+
+    it('0086: an owner-scoped scan passes the owner, ignores and never emits discovery state', async () => {
+      const seen: Array<{ state: DiscoveryState | undefined; budget: number; owner?: string }> = [];
+      const deps = localScanDeps({
+        discover: async (_c, ctx) => {
+          seen.push(ctx);
+          return { repos: [], truncated: [], partial: [], state: dstate() };
+        },
+        lsRemoteHeads: async () => new Map(),
+        scanRepos: async () => ({}),
+      });
+      writeFileSync(p('discovery.json'), serializeDiscoveryState(dstate()));
+      const before = readFileSync(p('discovery.json'), 'utf8');
+      const res = await runScan(
+        { ...scanArgs(), discovery: p('discovery.json'), owner: 'jwolberg' },
+        deps,
+      );
+      expect(seen[0]).toEqual({ state: undefined, budget: 300, owner: 'jwolberg' });
+      expect(res.discoveryState).toBeUndefined();
+      const file = JSON.parse(readFileSync(p('out', 'scan-result.json'), 'utf8')) as ScanResultFile;
+      expect(file.discoveryState).toBeUndefined();
+      expect(readFileSync(p('discovery.json'), 'utf8')).toBe(before);
+
+      // and an unscoped scan still carries the state through
+      const res2 = await runScan({ ...scanArgs(), discovery: p('discovery.json') }, deps);
+      expect(seen[1]?.owner).toBeUndefined();
+      expect(res2.discoveryState).toBeDefined();
+    });
+
+    it('0086: refuses a bad owner before reading anything or searching', async () => {
+      let searched = false;
+      const deps = localScanDeps({
+        discover: async () => {
+          searched = true;
+          return { repos: [], truncated: [], partial: [] };
+        },
+      });
+      await expect(
+        runScan({ ...scanArgs(), ledger: p('missing.json'), owner: 'x repo:evil/y' }, deps),
+      ).rejects.toThrow(/owner/);
+      expect(searched).toBe(false);
+      await expect(
+        main(
+          [
+            'scan',
+            '--ledger',
+            p('missing.json'),
+            '--config',
+            p('c.json'),
+            '--out',
+            p('o'),
+            '--owner',
+            'a b',
+          ],
+          {},
+        ),
+      ).rejects.toThrow(/owner/);
     });
   });
 

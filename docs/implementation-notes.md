@@ -1250,3 +1250,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - `ops/crawl.yml` prints `gh api rate_limit` for the Actions token before discovery.
 - TDD note: the client-hook and template tests went red first; the two formatter tests were
   written just after the formatter.
+
+## 2026-10-01 — 0086 owner-scoped check run
+
+- Request: dispatch the crawler against Jay's own repos. Added `crawl scan --owner <login>` and a
+  `workflow_dispatch` `owner` input; a scoped run skips the submit job (no reports, no commits, no
+  publish), so it is safe to run with any `submitMode`.
+- Decision: an owner run neither reads nor emits `discovery.json` state. Mixing `user:` shards into
+  the global sweep queue would corrupt it.
+- Decision: logs stay counts-only even for your own repos (existing invariant). Per-repo results
+  are in the 1-day `scan-result` artifact.
+- The input reaches the script only through env (`OWNER`), never `${{ inputs.owner }}` inside
+  `run:`, and both `runScan` and `discover` reject anything that is not a GitHub login.
+- The submit `if:` checks `github.event_name` explicitly instead of relying on null == '' coercion
+  for scheduled runs.
+- Verified live: `"anthropics/claude-code-action" path:.github/workflows user:jwolberg` returned
+  5 hits across 4 jwolberg repos. Code search covers public repos only, so private repos are never scanned.
+- Caveat: the ledger delta skips repos already scanned at the same engine version.

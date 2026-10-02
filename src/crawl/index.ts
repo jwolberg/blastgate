@@ -28,7 +28,13 @@ import {
   reportHeader,
   reportSummaryPrefix,
 } from './disclose';
-import { type DiscoverResult, type Eligibility, checkEligible, discover } from './discover';
+import {
+  type DiscoverResult,
+  type Eligibility,
+  assertOwnerLogin,
+  checkEligible,
+  discover,
+} from './discover';
 import {
   type DiscoveryState,
   parseDiscoveryState,
@@ -255,6 +261,11 @@ export interface ScanArgs {
   cap?: number;
   /** Discovery state file (ops/discovery.json); a missing file means a fresh sweep. */
   discovery?: string;
+  /**
+   * Scope the run to one account's repos (0086). The discovery state is neither read nor
+   * emitted, so a scoped check run never touches the global sweep.
+   */
+  owner?: string;
 }
 
 /** What runScan needs from discovery; the state-related fields are absent in simple fakes. */
@@ -268,7 +279,7 @@ export interface ScanDeps {
   client: GitHubClient;
   discover: (
     client: GitHubClient,
-    ctx: { state: DiscoveryState | undefined; budget: number },
+    ctx: { state: DiscoveryState | undefined; budget: number; owner?: string },
   ) => Promise<ScanDiscovery>;
   lsRemoteHeads: (repos: readonly string[]) => Promise<Map<string, string | null>>;
   scanRepos: typeof scanRepos;
@@ -311,7 +322,12 @@ export function defaultScanDeps(env: NodeJS.ProcessEnv): ScanDeps {
       onRateLimit: (info) => console.error(formatRateLimit(info)),
     }),
     discover: (client, ctx) =>
-      discover({ client, budget: ctx.budget, ...(ctx.state ? { state: ctx.state } : {}) }),
+      discover({
+        client,
+        budget: ctx.budget,
+        ...(ctx.state ? { state: ctx.state } : {}),
+        ...(ctx.owner !== undefined ? { owner: ctx.owner } : {}),
+      }),
     lsRemoteHeads: (repos) => lsRemoteHeads(repos),
     scanRepos,
     reverify,
@@ -345,10 +361,12 @@ function readFailFindings(evalDir: string, repo: string): Finding[] | null {
 }
 
 export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResultFile> {
+  const { owner } = args;
+  if (owner !== undefined) assertOwnerLogin(owner);
   const ledger = readLedgerFile(args.ledger);
   const config = readConfigFile(args.config);
   const priorState =
-    args.discovery !== undefined && existsSync(args.discovery)
+    owner === undefined && args.discovery !== undefined && existsSync(args.discovery)
       ? parseDiscoveryState(readFileSync(args.discovery, 'utf8'))
       : undefined;
   const out = resolve(args.out);
@@ -361,6 +379,7 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
     found = await deps.discover(deps.client, {
       state: priorState,
       budget: config.discoveryBudget,
+      ...(owner !== undefined ? { owner } : {}),
     });
   } catch (e) {
     if (!(e instanceof GitHubRateLimitError)) throw e;
@@ -473,7 +492,7 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
     scans,
     candidates,
     currentFails,
-    ...(found.state ? { discoveryState: found.state } : {}),
+    ...(found.state && owner === undefined ? { discoveryState: found.state } : {}),
   };
   writeFileSync(join(out, 'scan-result.json'), `${JSON.stringify(result, null, 2)}\n`);
 
@@ -716,7 +735,7 @@ export async function runPublish(
 // ---------------------------------------------------------------- CLI
 
 const USAGE = `usage:
-  crawl scan    --ledger <path> --config <path> --out <dir> [--cap N] [--discovery <path>]
+  crawl scan    --ledger <path> --config <path> --out <dir> [--cap N] [--discovery <path>] [--owner <login>]
   crawl submit  --ledger <path> --config <path> --in <scan-result.json> --site <dir> [--kill-switch <path>] [--remote <url>] [--discovery <path>]
   crawl publish --config <path> --site <dir> --remote <url>`;
 
@@ -743,6 +762,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
       site: { type: 'string' },
       'kill-switch': { type: 'string' },
       remote: { type: 'string' },
+      owner: { type: 'string' },
     },
   });
   const log = (l: string): void => console.log(l);
@@ -759,6 +779,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
         out: need(values.out, 'out'),
         ...(cap !== undefined ? { cap } : {}),
         ...(values.discovery ? { discovery: values.discovery } : {}),
+        ...(values.owner !== undefined ? { owner: values.owner } : {}),
       },
       defaultScanDeps(env),
     );
