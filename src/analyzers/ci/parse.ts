@@ -240,6 +240,42 @@ function checkoutFetchesUntrusted(ref: unknown, repository: unknown): boolean {
 /** Shell forms that fetch/check out the untrusted PR ref inside a `run:` step. */
 const PR_CHECKOUT_CMD_RE = /gh\s+pr\s+checkout|git\s+fetch[^\n]*\bpull\/|checkout\s+FETCH_HEAD/;
 
+/** A shell `if` comparing the PR head repo with the base repo for INequality (0090). */
+const SAME_REPO_MISMATCH_RE =
+  /^\s*(?:if|elif)\b(?=.*!=)(?=.*head[._]?repo)(?=.*(?:\bREPO\b|GITHUB_REPOSITORY|github\.repository))/i;
+/** Base-repo tokens are matched case-sensitively: `head_repo` alone must not count as the base. */
+const BASE_REPO_TOKEN_RE = /\bREPO\b|GITHUB_REPOSITORY|github\.repository/;
+
+/**
+ * Whether a `run:` script exits for fork PRs before its PR-ref fetch (0090): an `if` that
+ * compares the head repo with the base repo using `!=` and whose body (up to its `fi`) exits,
+ * all before the fetch. Only same-repo PRs, which come from collaborators, then reach the fetch.
+ * Narrow on purpose: an `==` guard, a guard after the fetch, or one that does not exit
+ * protects nothing.
+ */
+function exitsForForkBeforeFetch(script: string): boolean {
+  const lines = script.split('\n');
+  const fetchAt = lines.findIndex((l) => PR_CHECKOUT_CMD_RE.test(l));
+  if (fetchAt < 0) {
+    return false;
+  }
+  for (let i = 0; i < fetchAt; i++) {
+    const line = lines[i] ?? '';
+    if (!SAME_REPO_MISMATCH_RE.test(line) || !BASE_REPO_TOKEN_RE.test(line)) {
+      continue;
+    }
+    let body = line;
+    for (let j = i; j < fetchAt; j++) {
+      if (j > i) body += `\n${lines[j] ?? ''}`;
+      if (/\bfi\b/.test(lines[j] ?? '')) {
+        if (/\bexit\b/.test(body)) return true;
+        break;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Whether a privileged job checks out the *untrusted* PR/workflow_run head — the
  * precondition that lets an attacker's code actually run in the job (0041). A
@@ -261,7 +297,11 @@ export function untrustedCheckoutStep(job: JobSpec): number | undefined {
         return true;
       }
     }
-    return typeof step.run === 'string' && PR_CHECKOUT_CMD_RE.test(step.run);
+    return (
+      typeof step.run === 'string' &&
+      PR_CHECKOUT_CMD_RE.test(step.run) &&
+      !exitsForForkBeforeFetch(step.run)
+    );
   });
   return i >= 0 ? i : undefined;
 }

@@ -530,3 +530,68 @@ describe('untrusted checkout: branch name vs SHA (0089)', () => {
     ).toBe(true);
   });
 });
+
+// 0090: a run step that exits for fork PRs (head repo != base repo) BEFORE fetching the PR ref
+// only ever fetches same-repo PRs, which come from collaborators, so it is not an untrusted checkout.
+describe('same-repo guard before a PR-ref fetch (0090)', () => {
+  const wf = (script: string[]): string =>
+    [
+      'on:',
+      '  issue_comment:',
+      'jobs:',
+      '  verify:',
+      '    permissions:',
+      '      contents: read',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '      - id: ctx',
+      '        env:',
+      '          REPO: ${{ github.repository }}',
+      '          PR: ${{ github.event.issue.number }}',
+      '        run: |',
+      ...script.map((l) => `          ${l}`),
+      '      - run: make verify',
+      '        env:',
+      '          TOKEN: ${{ secrets.AGENT_TOKEN }}',
+    ].join('\n');
+  const forkPr = (content: string): boolean => {
+    const r = analyzeCi({ workflows: [{ path: '.github/workflows/w.yml', content }] });
+    return r.nodes.some((n) => n.kind === 'entry' && n.entryKind === 'fork-pr');
+  };
+  const lookup = 'head_repo="$(gh api "repos/${REPO}/pulls/${PR}" --jq .head.repo.full_name)"';
+  const fetch = 'git fetch origin "+refs/pull/${PR}/head:refs/remotes/origin/pr"';
+
+  it('an exit when the head repo differs from the base repo, before the fetch, is a guard', () => {
+    expect(
+      forkPr(wf([lookup, 'if [[ "${head_repo}" != "${REPO}" ]]; then', '  exit 0', 'fi', fetch])),
+    ).toBe(false);
+    // operands reversed, single brackets, GITHUB_REPOSITORY
+    expect(
+      forkPr(wf([lookup, 'if [ "$GITHUB_REPOSITORY" != "$head_repo" ]; then exit 0; fi', fetch])),
+    ).toBe(false);
+  });
+
+  it('no guard: the PR-ref fetch is an untrusted checkout', () => {
+    expect(forkPr(wf([lookup, fetch]))).toBe(true);
+  });
+
+  it('a guard that exits when the repos are EQUAL does not protect', () => {
+    expect(
+      forkPr(wf([lookup, 'if [[ "${head_repo}" == "${REPO}" ]]; then', '  exit 0', 'fi', fetch])),
+    ).toBe(true);
+  });
+
+  it('a guard placed after the fetch does not protect', () => {
+    expect(
+      forkPr(wf([lookup, fetch, 'if [[ "${head_repo}" != "${REPO}" ]]; then', '  exit 0', 'fi'])),
+    ).toBe(true);
+  });
+
+  it('a mismatch branch that does not exit does not protect', () => {
+    expect(
+      forkPr(
+        wf([lookup, 'if [[ "${head_repo}" != "${REPO}" ]]; then', '  echo fork', 'fi', fetch]),
+      ),
+    ).toBe(true);
+  });
+});
