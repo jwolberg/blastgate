@@ -204,9 +204,39 @@ export function hasInstallStep(job: JobSpec): boolean {
   });
 }
 
-/** Ref expressions that resolve to the untrusted PR/workflow_run head (the attacker's code). */
-const UNTRUSTED_REF_RE =
-  /pull_request\.head|head_ref|workflow_run\.head_(sha|branch|ref)|refs\/pull\/|merge_commit_sha/;
+/**
+ * Ref expressions naming the untrusted head by COMMIT: fork code wherever they are fetched,
+ * since GitHub serves fork PR commits (and refs/pull/*) from the base repo.
+ */
+const UNTRUSTED_SHA_REF_RE =
+  /pull_request\.head\.sha|workflow_run\.head_sha|refs\/pull\/|merge_commit_sha/;
+/**
+ * Ref expressions naming the untrusted head by BRANCH NAME. actions/checkout resolves a name
+ * against `repository:` (default: the base repo), so these are fork code only when
+ * `repository:` points elsewhere (0089).
+ */
+const UNTRUSTED_BRANCH_REF_RE =
+  /pull_request\.head\.ref|\bhead_ref\b|workflow_run\.head_(branch|ref)/;
+/** `repository:` values that are the base repo itself. Anything else fails closed as the fork. */
+const BASE_REPO_RE = /^\s*\$\{\{\s*github\.repository\s*\}\}\s*$/;
+
+/** Whether an actions/checkout `with:` fetches the untrusted head (0041, 0089). */
+function checkoutFetchesUntrusted(ref: unknown, repository: unknown): boolean {
+  if (typeof ref !== 'string') {
+    return false;
+  }
+  if (UNTRUSTED_SHA_REF_RE.test(ref)) {
+    return true;
+  }
+  // A head repo resolved by an earlier step (`steps.pr.outputs.head_repo`) is common, so any
+  // repository: other than the base repo counts as the fork.
+  return (
+    UNTRUSTED_BRANCH_REF_RE.test(ref) &&
+    typeof repository === 'string' &&
+    repository.trim() !== '' &&
+    !BASE_REPO_RE.test(repository)
+  );
+}
 /** Shell forms that fetch/check out the untrusted PR ref inside a `run:` step. */
 const PR_CHECKOUT_CMD_RE = /gh\s+pr\s+checkout|git\s+fetch[^\n]*\bpull\/|checkout\s+FETCH_HEAD/;
 
@@ -227,8 +257,7 @@ export function checksOutUntrustedRef(job: JobSpec): boolean {
 export function untrustedCheckoutStep(job: JobSpec): number | undefined {
   const i = (job.steps ?? []).findIndex((step) => {
     if (typeof step.uses === 'string' && /actions\/checkout/.test(step.uses)) {
-      const ref = step.with?.ref;
-      if (typeof ref === 'string' && UNTRUSTED_REF_RE.test(ref)) {
+      if (checkoutFetchesUntrusted(step.with?.ref, step.with?.repository)) {
         return true;
       }
     }
