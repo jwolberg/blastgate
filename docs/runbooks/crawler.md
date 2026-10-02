@@ -160,7 +160,11 @@ Do not set `allowlist`, `submitMode`, or `publishSite` until all of this holds:
   has zero false passes.
 - Each archetype to allowlist has at least 20 hand-confirmed fails across at least 10 owners and
   zero refuted.
-- The result and your approval are written to `docs/evaluations/<date>-crawler-dry-run.md`.
+- The result and your approval are written to `docs/evaluations/<date>-crawler-dry-run.md` **in
+  the private ops repo** (`jwolberg/blastgate-crawl`), never in this public repo. The review
+  names third-party repos with unfixed vulnerabilities, and unsolicited fails are only ever
+  disclosed privately to the owner. Analyzer fixes that come out of the review use synthetic
+  fixtures here: no target repo names, owners, or workflow text.
 
 Stop and ask before: the first live report, the first public site push, and on any GitHub abuse or
 secondary-rate-limit response (the run stops submitting on its own and logs it).
