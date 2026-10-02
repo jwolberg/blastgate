@@ -10,6 +10,7 @@ describe('parseCrawlConfig', () => {
       reporterLogin: '',
       throttle: { perHour: 5, perDay: 20 },
       discoveryBudget: 300,
+      discoveryMinutes: 60,
     });
     expect(DEFAULT_CRAWL_CONFIG.allowlist).toEqual([]);
   });
@@ -31,6 +32,7 @@ describe('parseCrawlConfig', () => {
       reporterLogin: 'blastgate-bot',
       throttle: { perHour: 2, perDay: 20 },
       discoveryBudget: 300,
+      discoveryMinutes: 60,
     });
   });
 
@@ -42,6 +44,15 @@ describe('parseCrawlConfig', () => {
     for (const v of ['0', '-3', '1.5', '"300"', 'null', '100000']) {
       expect(() => parseCrawlConfig(`{"discoveryBudget":${v}}`), v).toThrow(
         /discoveryBudget must be/,
+      );
+    }
+  });
+
+  it('0088: accepts discoveryMinutes and rejects zero, fractional, or over the 240 cap', () => {
+    expect(parseCrawlConfig('{"discoveryMinutes":20}').discoveryMinutes).toBe(20);
+    for (const v of ['0', '-1', '2.5', '"60"', '241']) {
+      expect(() => parseCrawlConfig(`{"discoveryMinutes":${v}}`), v).toThrow(
+        /discoveryMinutes must be/,
       );
     }
   });

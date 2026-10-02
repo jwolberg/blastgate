@@ -271,7 +271,10 @@ export interface ScanArgs {
 /** What runScan needs from discovery; the state-related fields are absent in simple fakes. */
 export type ScanDiscovery = Pick<DiscoverResult, 'repos' | 'truncated' | 'partial'> &
   Partial<
-    Pick<DiscoverResult, 'state' | 'complete' | 'rateLimited' | 'budgetExhausted' | 'searches'>
+    Pick<
+      DiscoverResult,
+      'state' | 'complete' | 'rateLimited' | 'budgetExhausted' | 'timedOut' | 'searches'
+    >
   >;
 
 export interface ScanDeps {
@@ -279,7 +282,14 @@ export interface ScanDeps {
   client: GitHubClient;
   discover: (
     client: GitHubClient,
-    ctx: { state: DiscoveryState | undefined; budget: number; owner?: string },
+    ctx: {
+      state: DiscoveryState | undefined;
+      budget: number;
+      /** Epoch ms, judged by `clock` (the scan's own clock, so tests and runs agree). */
+      deadline?: number;
+      clock?: () => number;
+      owner?: string;
+    },
   ) => Promise<ScanDiscovery>;
   lsRemoteHeads: (repos: readonly string[]) => Promise<Map<string, string | null>>;
   scanRepos: typeof scanRepos;
@@ -325,6 +335,8 @@ export function defaultScanDeps(env: NodeJS.ProcessEnv): ScanDeps {
       discover({
         client,
         budget: ctx.budget,
+        ...(ctx.deadline !== undefined ? { deadline: ctx.deadline } : {}),
+        ...(ctx.clock ? { clock: ctx.clock } : {}),
         ...(ctx.state ? { state: ctx.state } : {}),
         ...(ctx.owner !== undefined ? { owner: ctx.owner } : {}),
       }),
@@ -379,6 +391,8 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
     found = await deps.discover(deps.client, {
       state: priorState,
       budget: config.discoveryBudget,
+      deadline: deps.now().getTime() + config.discoveryMinutes * 60_000,
+      clock: () => deps.now().getTime(),
       ...(owner !== undefined ? { owner } : {}),
     });
   } catch (e) {
@@ -507,7 +521,7 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
     deps.log(
       `scan: discovery ${found.complete ? 'sweep complete' : `sweep in progress, ${found.state.sweep.pending.length} shard(s) pending`}; ` +
         `searches ${found.searches ?? 0}/${config.discoveryBudget}; ` +
-        `${found.rateLimited ? 'stopped by rate limit' : found.budgetExhausted ? 'stopped by budget' : 'not interrupted'}`,
+        `${found.rateLimited ? 'stopped by rate limit' : found.timedOut ? `stopped by time limit (${config.discoveryMinutes} min)` : found.budgetExhausted ? 'stopped by budget' : 'not interrupted'}`,
     );
   }
   deps.log(

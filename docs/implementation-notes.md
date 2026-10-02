@@ -1284,3 +1284,23 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Tradeoff: worst case is 60+120+240+480+960s (~31 min) of waiting before a request gives up.
   That's within the 300-min scan timeout, and cheaper than losing 6h of discovery to a run that
   stops early.
+
+## 2026-10-02 — 0088 (part 1) discovery wall-clock limit
+
+- Evidence: scheduled run 36969994556 spent 4h21m in discovery (58 secondary 429s; the first
+  search of the fresh run already drew retry-after=650), scanned nothing, and was killed by a
+  runner shutdown. Discovery progress only reaches submit through scan-result.json, so it was
+  all lost.
+- Added `discoveryMinutes` (default 60, max 240). Past the deadline no new search starts, and
+  discovery ends like a spent budget: the shard stays queued and the run scans known repos.
+- Tradeoff: the check sits before each new search, not inside the client's retry sleeps. A
+  request already in flight can overshoot by its retry ladder, worst case about an hour. That
+  fits the 300-min job alongside the scans, and keeps the client free of a deadline concept.
+- Bug caught by the suite: the deadline was computed from the scan's injected clock but checked
+  against Date.now. The scan now passes its own clock to discover.
+- Runbook correction: 0087 said a separate search token "would not help". The penalty carries
+  across runs, so that was too strong; reworded as untested.
+- Deferred to 0088 part 2: discovery as its own job (state survives a killed scan job) and an
+  optional dedicated read-only search token for it.
+- Ops: config.json set to `{"discoveryBudget": 10}` on 2026-10-02 (approved), and stuck run
+  37007879115 cancelled.
