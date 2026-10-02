@@ -1304,3 +1304,10 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   optional dedicated read-only search token for it.
 - Ops: config.json set to `{"discoveryBudget": 10}` on 2026-10-02 (approved), and stuck run
   37007879115 cancelled.
+
+## 2026-10-02 — dry-run evaluation doc lives in the private ops repo
+
+- The runbook said to write the dry-run hand review to `docs/evaluations/` in this repo, which
+  is public. That review names third-party repos with unfixed vulnerabilities, so it now lives
+  in the private ops repo (approved by Jay). Analyzer fixes from it (0089, 0090) use synthetic
+  fixtures only.
