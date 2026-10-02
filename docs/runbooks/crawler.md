@@ -111,6 +111,11 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   since absence then proves nothing. To force a fresh sweep, delete `discovery.json`; to speed up
   the first pass, raise `discoveryBudget` or dispatch the workflow repeatedly. `discovery.json` is
   machine-written and strictly validated; do not hand-edit it.
+- **Rate-limit telemetry.** The scan job's first step prints the Actions token's `rate_limit`
+  resources (`code_search`, `search`, `core`). Every rate-limited response then logs one
+  `crawl: rate limited (<status>, <search|core>, <resource>): limit=… remaining=… used=… reset=…
+  retry-after=…` line, headers only, never a URL or repo. Compare the two to tell a low token
+  quota (a separate read-only search token would help) from a secondary limit (it would not).
 - **Run logs** carry counts only (discovered, truncated/partial shards, verdict counts, outcome
   counts), never a repo name next to a verdict. Truncated or partial shards mean discovery missed
   some repos; the run still finishes.

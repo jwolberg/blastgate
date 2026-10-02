@@ -191,6 +191,58 @@ describe('GitHubClient', () => {
     expect(env.calls).toHaveLength(2);
   });
 
+  it('0085: reports each rate-limited response with its limit headers, never the URL or repo', async () => {
+    const seen: unknown[] = [];
+    const env = makeEnv({
+      data: () => [],
+      intercept: (_req, n) =>
+        n === 0
+          ? json({ message: 'secondary' }, 429, {
+              'retry-after': '30',
+              'x-ratelimit-limit': '10',
+              'x-ratelimit-remaining': '0',
+              'x-ratelimit-used': '10',
+              'x-ratelimit-reset': '1790909850',
+              'x-ratelimit-resource': 'code_search',
+            })
+          : undefined,
+    });
+    const client = createGitHubClient({
+      transport: env.transport,
+      now: env.clock.now,
+      sleep: env.clock.sleep,
+      onRateLimit: (info) => seen.push(info),
+    });
+    await client.get('/search/code', { q: '"secret-org/secret-repo" path:.github/workflows' });
+    await client.get('/repos/secret-org/secret-repo');
+    expect(seen).toEqual([
+      {
+        status: 429,
+        route: 'search',
+        limit: '10',
+        remaining: '0',
+        used: '10',
+        reset: '1790909850',
+        resource: 'code_search',
+        retryAfter: '30',
+      },
+    ]);
+    expect(JSON.stringify(seen)).not.toContain('secret-org');
+  });
+
+  it('0085: a plain 403 without a rate-limit signal is not reported as a rate limit', async () => {
+    const seen: unknown[] = [];
+    const env = makeEnv({ data: () => [], intercept: () => json({ message: 'nope' }, 403) });
+    const client = createGitHubClient({
+      transport: env.transport,
+      now: env.clock.now,
+      sleep: env.clock.sleep,
+      onRateLimit: (info) => seen.push(info),
+    });
+    expect((await client.get('/repos/a/b')).status).toBe(403);
+    expect(seen).toEqual([]);
+  });
+
   it('waits until x-ratelimit-reset when the primary limit is exhausted', async () => {
     const env = makeEnv({
       data: () => [],

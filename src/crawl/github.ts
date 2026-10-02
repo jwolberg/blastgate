@@ -53,6 +53,42 @@ export interface GitHubClientOptions {
   /** Search requests allowed per window (kept under GitHub's 10/min). */
   searchPerWindow?: number;
   searchWindowMs?: number;
+  /**
+   * Called for every rate-limited response (before any wait or give-up) with GitHub's limit
+   * headers. It gets a route class, never the URL: a `/repos/owner/name` path is a repo name, and
+   * run logs must not pair repos with anything (0085).
+   */
+  onRateLimit?: (info: RateLimitInfo) => void;
+}
+
+/** What a rate-limited response said about the limit it hit (header values, verbatim). */
+export interface RateLimitInfo {
+  status: number;
+  route: 'search' | 'core';
+  limit?: string;
+  remaining?: string;
+  used?: string;
+  reset?: string;
+  resource?: string;
+  retryAfter?: string;
+}
+
+function rateLimitInfo(res: HttpResponse, isSearch: boolean): RateLimitInfo {
+  const h = res.headers;
+  const pick: [keyof RateLimitInfo, string][] = [
+    ['limit', 'x-ratelimit-limit'],
+    ['remaining', 'x-ratelimit-remaining'],
+    ['used', 'x-ratelimit-used'],
+    ['reset', 'x-ratelimit-reset'],
+    ['resource', 'x-ratelimit-resource'],
+    ['retryAfter', 'retry-after'],
+  ];
+  const info: RateLimitInfo = { status: res.status, route: isSearch ? 'search' : 'core' };
+  for (const [k, header] of pick) {
+    const v = h[header];
+    if (v !== undefined) (info as unknown as Record<string, string>)[k] = v;
+  }
+  return info;
 }
 
 /** A rate-limit response persisted past the retry cap. */
@@ -172,6 +208,7 @@ export function createGitHubClient(opts: GitHubClientOptions = {}): GitHubClient
       const res = await transportWithRetry(req);
       const wait = rateLimitWait(res, now());
       if (wait === undefined) return res;
+      opts.onRateLimit?.(rateLimitInfo(res, isSearch));
       if (attempt >= maxRetries) {
         throw new GitHubRateLimitError(
           `GitHub rate limit persisted after ${maxRetries} retries (${res.status})`,

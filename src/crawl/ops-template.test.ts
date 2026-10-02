@@ -121,6 +121,16 @@ describe('ops/crawl.yml template', () => {
     expect(run('submit', 'submit')).toContain('--discovery ops/discovery.json');
   });
 
+  it('0085: reports the Actions token rate limits before discovery, with no secret', () => {
+    const steps = wf.jobs.scan?.steps ?? [];
+    const probe = steps.findIndex((s) => s.run?.includes('gh api rate_limit'));
+    const discover = steps.findIndex((s) => s.run?.includes('crawl/index.js scan'));
+    expect(probe).toBeGreaterThanOrEqual(0);
+    expect(probe).toBeLessThan(discover);
+    expect(JSON.stringify(steps[probe])).toContain('github.token');
+    expect(JSON.stringify(steps[probe])).not.toMatch(/\bsecrets\b/);
+  });
+
   it('serializes runs without cancelling an in-flight one', () => {
     expect(wf.concurrency.group).toBe('crawl');
     expect(wf.concurrency['cancel-in-progress']).toBe(false);

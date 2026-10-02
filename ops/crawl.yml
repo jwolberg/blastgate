@@ -50,6 +50,12 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm run build
+      # Telemetry (0085): which quota the read-only Actions token actually has for code search, so
+      # a persistent 429 can be told apart from a secondary limit. Prints limits only.
+      - name: Report the Actions token's rate limits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api rate_limit --jq '.resources | {code_search, search, core}'
       - name: Discover, scan, re-verify
         env:
           # Read-only token for code search and repo metadata; the job grants contents: read only.

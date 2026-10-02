@@ -38,6 +38,7 @@ import {
 import {
   GitHubRateLimitError,
   type GitHubClient,
+  type RateLimitInfo,
   createGitHubClient,
   isPlainRepoName,
 } from './github';
@@ -65,6 +66,14 @@ const MAX_CHECK_FACTOR = 3;
 const REVERIFY_STATUSES = ['still-fails', 'resolved', 'head-mismatch', 'unknown'] as const;
 
 // ---------------------------------------------------------------- result file
+
+/** One log line per rate-limited response: header values only, no URL or repo (0085). */
+export function formatRateLimit(info: RateLimitInfo): string {
+  const fields = (['limit', 'remaining', 'used', 'reset', 'retryAfter'] as const)
+    .filter((k) => info[k] !== undefined)
+    .map((k) => `${k === 'retryAfter' ? 'retry-after' : k}=${info[k]}`);
+  return `crawl: rate limited (${info.status}, ${info.route}, ${info.resource ?? 'resource?'})${fields.length ? ': ' + fields.join(' ') : ''}`;
+}
 
 export interface ScanResultFile {
   /** `<cli version>+<blastgate commit sha>`. */
@@ -297,7 +306,10 @@ export function execOut(
 export function defaultScanDeps(env: NodeJS.ProcessEnv): ScanDeps {
   const runner: Runner = defaultRunner;
   return {
-    client: createGitHubClient({ ...(env.GITHUB_TOKEN ? { token: env.GITHUB_TOKEN } : {}) }),
+    client: createGitHubClient({
+      ...(env.GITHUB_TOKEN ? { token: env.GITHUB_TOKEN } : {}),
+      onRateLimit: (info) => console.error(formatRateLimit(info)),
+    }),
     discover: (client, ctx) =>
       discover({ client, budget: ctx.budget, ...(ctx.state ? { state: ctx.state } : {}) }),
     lsRemoteHeads: (repos) => lsRemoteHeads(repos),
@@ -764,7 +776,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
         ...(values.remote ? { remote: values.remote } : {}),
       },
       {
-        client: createGitHubClient({ ...(env.GITHUB_TOKEN ? { token: env.GITHUB_TOKEN } : {}) }),
+        client: createGitHubClient({
+          ...(env.GITHUB_TOKEN ? { token: env.GITHUB_TOKEN } : {}),
+          onRateLimit: (info) => console.error(formatRateLimit(info)),
+        }),
         persist: gitPersist({
           ledgerPath: ledger,
           ...(values.discovery ? { discoveryPath: values.discovery } : {}),
