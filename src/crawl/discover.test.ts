@@ -187,7 +187,7 @@ describe('GitHubClient', () => {
     });
     const res = await clientFor(env).get('/repos/a/b');
     expect(res.status).toBe(200);
-    expect(env.clock.sleeps).toContain(30_000);
+    expect(env.clock.sleeps).toEqual([60_000]); // 0087: secondary-limit floor
     expect(env.calls).toHaveLength(2);
   });
 
@@ -273,6 +273,93 @@ describe('GitHubClient', () => {
     const res = await clientFor(env).get('/repos/a/b');
     expect(res.status).toBe(403);
     expect(env.calls).toHaveLength(1);
+  });
+});
+
+describe('search pacing and secondary limits (0087)', () => {
+  /** A secondary limit as observed in run 36960100294: 429, quota untouched. */
+  const secondary = (retryAfter?: string): HttpResponse =>
+    json({ message: 'slow down' }, 429, {
+      ...(retryAfter !== undefined ? { 'retry-after': retryAfter } : {}),
+      'x-ratelimit-limit': '10',
+      'x-ratelimit-remaining': '10',
+      'x-ratelimit-used': '0',
+      'x-ratelimit-resource': 'code_search',
+    });
+
+  it('spaces search requests evenly instead of letting them burst', async () => {
+    const env = makeEnv({ data: () => [] });
+    const client = clientFor(env);
+    for (let i = 0; i < 12; i++) await client.get('/search/code', { q: 'x' });
+    const t = env.calls.map((c) => c.at);
+    for (let i = 1; i < t.length; i++) {
+      expect((t[i] ?? 0) - (t[i - 1] ?? 0)).toBeGreaterThanOrEqual(Math.floor(60_000 / 9));
+    }
+  });
+
+  it('waits at least a minute on a secondary limit even when retry-after is shorter', async () => {
+    const env = makeEnv({
+      data: () => [],
+      intercept: (_req, n) => (n === 0 ? secondary('1') : undefined),
+    });
+    expect((await clientFor(env).get('/repos/a/b')).status).toBe(200);
+    expect(env.clock.sleeps).toEqual([60_000]);
+  });
+
+  it('honors a retry-after longer than the backoff', async () => {
+    const env = makeEnv({
+      data: () => [],
+      intercept: (_req, n) => (n === 0 ? secondary('735') : undefined),
+    });
+    await clientFor(env).get('/repos/a/b');
+    expect(env.clock.sleeps).toEqual([735_000]);
+  });
+
+  it('doubles the wait on consecutive secondary hits, across requests, and resets after a success', async () => {
+    const hits = new Set([0, 1, 2, 4, 5]);
+    const env = makeEnv({
+      data: () => [],
+      intercept: (_req, n) => (hits.has(n) ? secondary('1') : undefined),
+    });
+    const client = clientFor(env);
+    await client.get('/repos/a/b'); // calls 0,1,2 limited, 3 succeeds
+    await client.get('/repos/a/c'); // calls 4,5 limited, 6 succeeds
+    expect(env.clock.sleeps).toEqual([60_000, 120_000, 240_000, 60_000, 120_000]);
+  });
+
+  it('treats a 403 that names a secondary rate limit as one, even without retry-after', async () => {
+    const env = makeEnv({
+      data: () => [],
+      intercept: (_req, n) =>
+        n === 0
+          ? json({ message: 'You have exceeded a secondary rate limit. Please wait.' }, 403)
+          : undefined,
+    });
+    expect((await clientFor(env).get('/repos/a/b')).status).toBe(200);
+    expect(env.clock.sleeps).toEqual([60_000]);
+  });
+
+  it('never retries a POST on a bare 429: it is returned for submit to stop the run', async () => {
+    const env = makeEnv({ data: () => [], intercept: () => secondary() });
+    const res = await clientFor(env).post('/repos/a/b/security-advisories/reports', {});
+    expect(res.status).toBe(429);
+    expect(env.calls).toHaveLength(1);
+    expect(env.clock.sleeps).toEqual([]);
+  });
+
+  it('keeps the primary-limit wait (remaining 0: wait for reset, no one-minute floor)', async () => {
+    const env = makeEnv({
+      data: () => [],
+      intercept: (_req, n) =>
+        n === 0
+          ? json({ message: 'rate limit' }, 403, {
+              'x-ratelimit-remaining': '0',
+              'x-ratelimit-reset': String(T0 / 1000 + 5),
+            })
+          : undefined,
+    });
+    await clientFor(env).get('/repos/a/b');
+    expect(env.clock.sleeps).toEqual([6_000]);
   });
 });
 
@@ -651,7 +738,7 @@ describe('discover (cont.)', () => {
     const out = await discover({ client: clientFor(env), actions: [CLAUDE] });
     expect(out.repos).toEqual(['acme/widgets']);
     expect(out.partial).toEqual([]);
-    expect(env.clock.sleeps).toContain(45_000);
+    expect(env.clock.sleeps).toContain(60_000); // 0087: secondary-limit floor over retry-after 45
   });
 
   it('returns a deterministic, sorted list', async () => {

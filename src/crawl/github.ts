@@ -1,8 +1,10 @@
 /**
  * Small GitHub REST client for the public crawler. The transport, clock, and sleep
- * are injectable so tests are instant and offline. Search requests are throttled
+ * are injectable so tests are instant and offline. Search requests are evenly spaced
  * under GitHub's code-search budget (10/min authenticated), and rate-limit
- * responses (`retry-after`, exhausted `x-ratelimit-*`) are waited out and retried.
+ * responses are waited out and retried: an exhausted primary limit until its reset, a
+ * secondary limit for at least a minute, doubling on consecutive hits (GitHub's REST best
+ * practices; 0087).
  * Surface is deliberately generic (`get`/`post`) so the PVR submitter and advisory
  * tracker can reuse it.
  */
@@ -50,9 +52,11 @@ export interface GitHubClientOptions {
   transientRetries?: number;
   /** First backoff for a transient retry; doubles each time. */
   backoffMs?: number;
-  /** Search requests allowed per window (kept under GitHub's 10/min). */
+  /** Search requests allowed per window (kept under GitHub's 10/min), spaced evenly across it. */
   searchPerWindow?: number;
   searchWindowMs?: number;
+  /** First wait on a secondary limit; doubles on each consecutive hit (0087). */
+  secondaryBackoffMs?: number;
   /**
    * Called for every rate-limited response (before any wait or give-up) with GitHub's limit
    * headers. It gets a route class, never the URL: a `/repos/owner/name` path is a repo name, and
@@ -143,16 +147,31 @@ export const fetchTransport: Transport = createFetchTransport();
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Ms to wait before retrying a rate-limited response, or undefined if it is not one. */
-function rateLimitWait(res: HttpResponse, now: number): number | undefined {
+type RateLimit = { kind: 'primary'; waitMs: number } | { kind: 'secondary'; retryAfterMs: number };
+
+/**
+ * Classify a rate-limited response, or undefined if it is not one. Primary: the quota is spent
+ * (`x-ratelimit-remaining: 0`), so wait for `retry-after` or the reset. Secondary: a response
+ * carrying `retry-after` while quota remains, or, for an idempotent GET only, a bare 429 or a 403
+ * naming a secondary rate limit. A POST without a header signal is returned as is: submit stops
+ * the run on it rather than risk a second report.
+ */
+function classifyRateLimit(res: HttpResponse, now: number, isGet: boolean): RateLimit | undefined {
   if (res.status !== 403 && res.status !== 429) return undefined;
-  const retryAfter = Number(res.headers['retry-after']);
-  if (res.headers['retry-after'] !== undefined && Number.isFinite(retryAfter)) {
-    return Math.max(0, retryAfter) * 1000;
-  }
+  const raw = res.headers['retry-after'];
+  const retryAfter = Number(raw);
+  const retryAfterMs =
+    raw !== undefined && Number.isFinite(retryAfter) ? Math.max(0, retryAfter) * 1000 : undefined;
   if (res.headers['x-ratelimit-remaining'] === '0') {
+    if (retryAfterMs !== undefined) return { kind: 'primary', waitMs: retryAfterMs };
     const reset = Number(res.headers['x-ratelimit-reset']);
-    if (Number.isFinite(reset)) return Math.max(0, reset * 1000 - now) + 1000;
+    if (Number.isFinite(reset))
+      return { kind: 'primary', waitMs: Math.max(0, reset * 1000 - now) + 1000 };
+  }
+  const message = (res.json as { message?: unknown } | null)?.message;
+  const namesSecondary = typeof message === 'string' && /secondary rate limit/i.test(message);
+  if (retryAfterMs !== undefined || (isGet && (res.status === 429 || namesSecondary))) {
+    return { kind: 'secondary', retryAfterMs: retryAfterMs ?? 0 };
   }
   return undefined;
 }
@@ -167,21 +186,20 @@ export function createGitHubClient(opts: GitHubClientOptions = {}): GitHubClient
   const backoffMs = opts.backoffMs ?? 1000;
   const searchPerWindow = opts.searchPerWindow ?? 9;
   const searchWindowMs = opts.searchWindowMs ?? 60_000;
-  const searchTimes: number[] = [];
+  const secondaryBackoffMs = opts.secondaryBackoffMs ?? 60_000;
+  /** Even spacing keeps any window under the cap without bursts (GitHub: requests serially). */
+  const searchIntervalMs = Math.ceil(searchWindowMs / searchPerWindow);
+  let lastSearchAt: number | undefined;
+  /** Consecutive secondary-limit hits, client-wide; any non-rate-limited response resets it. */
+  let secondaryStreak = 0;
 
-  /** Block until one more search request fits the sliding window, then record it. */
+  /** Block until the previous search is at least one interval old, then record this one. */
   async function throttleSearch(): Promise<void> {
-    for (;;) {
-      const t = now();
-      while (searchTimes.length > 0 && t - (searchTimes[0] ?? 0) >= searchWindowMs) {
-        searchTimes.shift();
-      }
-      if (searchTimes.length < searchPerWindow) {
-        searchTimes.push(t);
-        return;
-      }
-      await sleep(searchWindowMs - (t - (searchTimes[0] ?? t)));
+    if (lastSearchAt !== undefined) {
+      const wait = lastSearchAt + searchIntervalMs - now();
+      if (wait > 0) await sleep(wait);
     }
+    lastSearchAt = now();
   }
 
   /**
@@ -206,9 +224,16 @@ export function createGitHubClient(opts: GitHubClientOptions = {}): GitHubClient
     for (let attempt = 0; ; attempt++) {
       if (isSearch) await throttleSearch();
       const res = await transportWithRetry(req);
-      const wait = rateLimitWait(res, now());
-      if (wait === undefined) return res;
+      const limit = classifyRateLimit(res, now(), req.method === 'GET');
+      if (limit === undefined) {
+        secondaryStreak = 0;
+        return res;
+      }
       opts.onRateLimit?.(rateLimitInfo(res, isSearch));
+      const wait =
+        limit.kind === 'primary'
+          ? limit.waitMs
+          : Math.max(limit.retryAfterMs, secondaryBackoffMs * 2 ** secondaryStreak++);
       if (attempt >= maxRetries) {
         throw new GitHubRateLimitError(
           `GitHub rate limit persisted after ${maxRetries} retries (${res.status})`,

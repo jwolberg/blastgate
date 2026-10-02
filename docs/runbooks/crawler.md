@@ -116,6 +116,15 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   `crawl: rate limited (<status>, <search|core>, <resource>): limit=… remaining=… used=… reset=…
   retry-after=…` line, headers only, never a URL or repo. Compare the two to tell a low token
   quota (a separate read-only search token would help) from a secondary limit (it would not).
+  **Measured 2026-10-02 (run 36960100294):** the Actions token has the full `code_search` quota
+  (limit 10, remaining 10, used 0), yet its first searches drew 429s with retry-after 16, 1, 22, 1,
+  then 735s. Those are secondary limits, so a separate search token would not help.
+- **Search pacing (0087).** Searches go out evenly spaced (one every ~6.7s, 9/min), never in a
+  burst. A secondary limit (quota left, but a 429 or retry-after) waits at least a minute,
+  doubling on each consecutive hit (60s, 120s, 240s, …) or longer if `retry-after` says so,
+  and resets after the next success. This follows GitHub's REST best practices. After 5 retries
+  the request gives up; discovery then ends for the run and resumes next run from
+  `discovery.json`. A report POST is never retried on a bare 429: submit stops the run instead.
 - **Owner-scoped check run (0086).** `gh workflow run crawl.yml -R jwolberg/blastgate-crawl -f
   owner=<login>` scans only that account's public repos (`user:<login>` on every search) and
   skips the submit job entirely: no reports, no ledger or `discovery.json` commit, no publish.
