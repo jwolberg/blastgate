@@ -307,14 +307,15 @@ jobs:
     expect(a.direct).toBe('missing');
   });
 
-  it('AE3 (revised): a scoped Bash(gh issue view:*) still expands $SECRET → access holds', () => {
-    // PromptPwnd: `gh issue edit --body "$GEMINI_API_KEY"` passes a command-scoped allowlist.
+  it('0084: a scoped Bash(gh issue view:*) cannot expand $SECRET in claude → access missing', () => {
+    // Claude Code 2.1.287 (pinned by v1.0.239) denies any command containing a variable, even
+    // under a matching wildcard allow rule: "Part of this command (a variable) cannot be checked
+    // in advance". Supersedes 0063, which concluded the opposite from the docs alone.
     const scoped = AE1.replace("'--allowedTools Bash'", `'--allowedTools "Bash(gh issue view:*)"'`);
     const a = assess(scoped);
     expect(a.direct).toBe('held');
-    expect(a.access).toBe('held');
-    expect(a.readable.secrets).toContain('ANTHROPIC_API_KEY');
-    expect(a.reasons.access).toMatch(/expan/);
+    expect(a.access).toBe('missing');
+    expect(a.readable.secrets).toEqual([]);
     // A scoped command is not a general shell: it reads no disk credential and is no exfil tool.
     expect(assess(scoped.replace('permissions: { issues: write }', ''), 'unknown').exfil).toBe(
       'missing',
@@ -330,10 +331,10 @@ jobs:
   );
 
   it.each([['Bash(npm test:*)'], ['Bash(npm test *)'], ['Bash(git log * main)']])(
-    '0064: a wildcard %s still admits $SECRET expansion → env read',
+    '0084: a wildcard %s admits no $SECRET expansion in claude → no env read',
     (rule) => {
       const scoped = AE1.replace("'--allowedTools Bash'", `'--allowedTools "${rule}"'`);
-      expect(assess(scoped).access).toBe('held');
+      expect(assess(scoped).access).toBe('missing');
     },
   );
 
