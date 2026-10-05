@@ -297,3 +297,28 @@ export function tierReport(report: Report, tier: ReportTier, repoName: string): 
     severity: tier === 'vulnerability' ? 'high' : 'medium',
   };
 }
+
+// ---------------------------------------------------------------- PVR enable request (0102)
+
+export const PVR_DOCS_URL =
+  'https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository';
+
+/**
+ * The public issue asking an owner to turn on private vulnerability reporting. It is fixed text:
+ * nothing from the repo or the finding (no workflow, secret, file, tier) so nothing about the
+ * vulnerability becomes public before the owner can see it privately.
+ */
+export function pvrEnableRequest(): { title: string; body: string } {
+  return {
+    title: 'Please enable private vulnerability reporting',
+    body: [
+      `Hi! An automated scan of this repository by [Blastgate](https://github.com/jwolberg/blastgate) found what looks like a security vulnerability. I would like to share the details privately rather than in a public issue.`,
+      '',
+      `Could you enable **private vulnerability reporting** for this repository? It is under Settings, in the Security section. GitHub's guide: ${PVR_DOCS_URL}`,
+      '',
+      'Once it is on, the details will be filed as a private report that only maintainers can see. Nothing about the issue will be posted here.',
+      '',
+      'If you would prefer to be contacted another way, reply here with how. If you do not want to hear about it, close this issue; no other public issue will be opened.',
+    ].join('\n'),
+  };
+}

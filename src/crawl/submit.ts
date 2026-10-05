@@ -9,12 +9,15 @@
  * `submitting` entry is never retried automatically.
  */
 
-import { gate, tierReport } from './disclose';
+import { gate, pvrEnableRequest, tierReport } from './disclose';
 import type { CrawlConfig } from './config';
 import { GitHubRateLimitError, isPlainRepoName, type GitHubClient } from './github';
 import {
   REASON_NO_PVR,
+  REASON_NO_PVR_REQUESTED,
   REASON_RATE_LIMITED,
+  reasonPvrRequestFailed,
+  setPvrRequest,
   UNCERTAIN_REASON,
   isRetryableHold,
   createDisclosure,
@@ -37,7 +40,15 @@ export interface SubmitCandidate {
 }
 
 export type SubmitOutcomeKind =
-  'submitted' | 'dry-run' | 'held' | 'deferred' | 'resolved' | 'retry' | 'duplicate' | 'stopped';
+  | 'submitted'
+  | 'dry-run'
+  | 'held'
+  | 'deferred'
+  | 'resolved'
+  | 'retry'
+  | 'duplicate'
+  | 'stopped'
+  | 'requested';
 
 export interface SubmitOutcome {
   repo: string;
@@ -95,6 +106,12 @@ function budgetUsed(ledger: Ledger, now: number): { hour: number; day: number } 
   let hour = 0;
   let day = 0;
   for (const d of ledger.disclosures) {
+    // 0102: a public PVR request counts against the same budget as a report.
+    if (d.pvrRequest) {
+      const age = now - Date.parse(d.pvrRequest.at);
+      if (age < DAY_MS) day++;
+      if (age < HOUR_MS) hour++;
+    }
     if (d.state !== 'submitted' && d.state !== 'submitting') continue;
     const age = now - Date.parse(d.updatedAt);
     if (age < DAY_MS) day++;
@@ -237,6 +254,9 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
 
     // PVR pre-check.
     let pvrEnabled = false;
+    // 0102: only a definite "PVR is off" (200, enabled: false) may lead to asking the owner;
+    // a 401/403/404 says nothing about the repo and must never trigger a public issue.
+    let pvrDefinitelyOff = false;
     let noPvrReason = REASON_NO_PVR;
     try {
       const pvr = await client.get(`/repos/${c.repo}/private-vulnerability-reporting`);
@@ -247,6 +267,7 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       }
       const body = pvr.json as { enabled?: unknown } | null;
       pvrEnabled = pvr.status === 200 && body?.enabled === true;
+      pvrDefinitelyOff = pvr.status === 200 && body?.enabled === false;
       if (pvr.status === 403) noPvrReason = `${REASON_NO_PVR} (HTTP 403)`;
     } catch (e) {
       if (e instanceof GitHubRateLimitError) {
@@ -258,8 +279,46 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       continue;
     }
     if (!pvrEnabled) {
-      hold(noPvrReason);
-      push(c.repo, 'held', noPvrReason);
+      const asked = ledger.disclosures.some((d) => d.repo === c.repo && d.pvrRequest);
+      if (!pvrDefinitelyOff || asked || decision.dryRun) {
+        const reason = asked ? REASON_NO_PVR_REQUESTED : noPvrReason;
+        hold(reason);
+        push(
+          c.repo,
+          'held',
+          decision.dryRun && !asked ? `${reason} (dry run: would ask owner)` : reason,
+        );
+        continue;
+      }
+      // Ask once, publicly, with no details (0102). Recorded BEFORE the POST: a crash can never
+      // post a second issue, and any outcome (even a refusal) means this repo is never asked again.
+      const at = iso();
+      apply(setPvrRequest(ledger, key, { at }, at));
+      await persist(ledger);
+      dirty = false;
+      let status = 0;
+      let url: unknown;
+      try {
+        const r = await client.post(`/repos/${c.repo}/issues`, pvrEnableRequest());
+        status = r.status;
+        url = (r.json as { html_url?: unknown } | null)?.html_url;
+      } catch (e) {
+        status = e instanceof GitHubRateLimitError ? e.status : 0;
+      }
+      if (status === 201 && typeof url === 'string') {
+        apply(setPvrRequest(ledger, key, { at, url }, iso()));
+        hold(REASON_NO_PVR_REQUESTED);
+        push(c.repo, 'requested');
+      } else {
+        apply(setPvrRequest(ledger, key, { at, failedStatus: status }, iso()));
+        const reason = reasonPvrRequestFailed(status);
+        hold(reason);
+        push(c.repo, 'held', reason);
+        if (isRateLimit(status))
+          stoppedReason = `GitHub rate limit (HTTP ${status}) on PVR request`;
+      }
+      await persist(ledger);
+      dirty = false;
       continue;
     }
 

@@ -149,13 +149,113 @@ describe('submitAll (U5)', () => {
     expect(e.posts()).toHaveLength(0);
   });
 
-  it('AE4: PVR disabled holds with "no PVR" and never POSTs', async () => {
+  it('AE4: PVR disabled never files the report; in a dry run it asks nobody either', async () => {
     const e = env(undefined, false);
-    const r = await run(e, [cand('a/one')]);
+    const r = await run(e, [cand('a/one')], { config: { ...live, submitMode: false } });
     expect(e.posts()).toHaveLength(0);
     expect(r.ledger.disclosures[0]?.state).toBe('held');
     expect(r.ledger.disclosures[0]?.reason).toBe('no PVR');
     expect(e.calls[0]?.url).toContain('/repos/a/one/private-vulnerability-reporting');
+  });
+
+  describe('0102: asking an owner with PVR off to enable it', () => {
+    const issuePosts = (e: ReturnType<typeof env>) =>
+      e.posts().filter((p) => p.url.endsWith('/issues'));
+    const reportPosts = (e: ReturnType<typeof env>) =>
+      e.posts().filter((p) => p.url.includes('/security-advisories/'));
+    const issueOk: Handler = (req) =>
+      req.method === 'POST' && req.url.endsWith('/issues')
+        ? res(201, { html_url: 'https://github.com/a/one/issues/7' })
+        : undefined;
+
+    it('opens one detail-free public issue asking for PVR, and never files the report', async () => {
+      const e = env(issueOk, false);
+      const r = await run(e, [cand('a/one')]);
+      expect(reportPosts(e)).toHaveLength(0);
+      expect(issuePosts(e)).toHaveLength(1);
+      expect(issuePosts(e)[0]?.url).toBe('https://api.github.com/repos/a/one/issues');
+      const sent = JSON.parse(issuePosts(e)[0]?.body ?? '{}') as { title: string; body: string };
+      expect(sent.title).toMatch(/private vulnerability reporting/i);
+      expect(sent.body).toMatch(/configure-for-a-repository/);
+      // Nothing about the finding goes public: no report text, ids, workflow, secret or tier.
+      for (const leak of ['sum a/one', 'desc a/one', 'a/one#1', 'workflow', 'secret', 'Possible']) {
+        expect(`${sent.title}\n${sent.body}`).not.toContain(leak);
+      }
+      const d = r.ledger.disclosures[0];
+      expect(d?.state).toBe('held');
+      expect(d?.reason).toBe('no PVR (enable requested)');
+      expect(d?.pvrRequest).toMatchObject({ url: 'https://github.com/a/one/issues/7' });
+      expect(r.outcomes[0]?.outcome).toBe('requested');
+    });
+
+    it('asks at most once per repo, ever', async () => {
+      const e = env(issueOk, false);
+      const r1 = await run(e, [cand('a/one')]);
+      await run(e, [cand('a/one')], {
+        ledger: r1.ledger,
+        now: new Date(NOW.getTime() + 2 * 86_400_000),
+      });
+      expect(issuePosts(e)).toHaveLength(1);
+    });
+
+    it('files the private report once the owner turns PVR on', async () => {
+      const r1 = await run(env(issueOk, false), [cand('a/one')]);
+      const e2 = env(undefined, true);
+      const r2 = await run(e2, [cand('a/one')], { ledger: r1.ledger });
+      expect(reportPosts(e2)).toHaveLength(1);
+      expect(issuePosts(e2)).toHaveLength(0);
+      expect(r2.ledger.disclosures[0]?.state).toBe('submitted');
+    });
+
+    it.each([401, 403, 404])(
+      'never asks when the PVR check itself failed (HTTP %i)',
+      async (status) => {
+        const e = env((req) =>
+          req.method === 'GET' ? res(status, { message: 'x' }) : issueOk(req),
+        );
+        await run(e, [cand('a/one')]);
+        expect(e.posts()).toHaveLength(0);
+      },
+    );
+
+    it('records the request before posting, so a crash can never post it twice', async () => {
+      const e = env(issueOk, false);
+      await run(e, [cand('a/one')]);
+      const persistAt = e.events.findIndex((x) => x.startsWith('persist:'));
+      const postAt = e.events.findIndex((x) => x.startsWith('POST /repos/a/one/issues'));
+      expect(persistAt).toBeGreaterThanOrEqual(0);
+      expect(persistAt).toBeLessThan(postAt);
+    });
+
+    it('a failed request (issues disabled) is recorded and never retried', async () => {
+      const gone: Handler = (req) =>
+        req.method === 'POST' && req.url.endsWith('/issues')
+          ? res(410, { message: 'Issues are disabled' })
+          : undefined;
+      const e = env(gone, false);
+      const r1 = await run(e, [cand('a/one')]);
+      expect(r1.ledger.disclosures[0]?.reason).toBe('no PVR (enable request failed: HTTP 410)');
+      expect(r1.ledger.disclosures[0]?.pvrRequest).toMatchObject({ failedStatus: 410 });
+      await run(e, [cand('a/one')], { ledger: r1.ledger });
+      expect(issuePosts(e)).toHaveLength(1);
+    });
+
+    it('counts requests against the throttle like reports', async () => {
+      const e = env(issueOk, false);
+      await run(e, [cand('o/a'), cand('o/b')], {
+        config: { ...live, throttle: { perHour: 1, perDay: 20 } },
+      });
+      expect(issuePosts(e)).toHaveLength(1);
+    });
+
+    it('stops the run on a 429 from the issue POST', async () => {
+      const limited: Handler = (req) =>
+        req.method === 'POST' && req.url.endsWith('/issues') ? res(429, {}) : undefined;
+      const e = env(limited, false);
+      const r = await run(e, [cand('o/a'), cand('o/b')]);
+      expect(issuePosts(e)).toHaveLength(1);
+      expect(r.summary.stoppedReason).toMatch(/rate limit/);
+    });
   });
 
   it('a non-200 PVR check holds as "no PVR"', async () => {

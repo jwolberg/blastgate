@@ -13,6 +13,7 @@ import {
   recordWouldSend,
   recoverSubmitting,
   serializeLedger,
+  setPvrRequest,
   transition,
   tripArchetype,
   UNCERTAIN_REASON,
@@ -132,6 +133,43 @@ describe('parse / serialize', () => {
     ],
   ])('throws loudly on malformed input: %s', (_name, text) => {
     expect(() => parseLedger(text)).toThrow();
+  });
+});
+
+describe('PVR enable request record (0102)', () => {
+  const key = { repo: 'a/b', findingIds: ['x'] };
+  const l0 = createDisclosure(emptyLedger(), base('a/b', ['x'], 'queued'));
+
+  it('round-trips through serialize/parse, pending then completed', () => {
+    const pending = setPvrRequest(l0, key, { at: T0 }, T0);
+    expect(parseLedger(serializeLedger(pending)).disclosures[0]?.pvrRequest).toEqual({ at: T0 });
+    const done = setPvrRequest(
+      pending,
+      key,
+      { at: T0, url: 'https://github.com/a/b/issues/1' },
+      T1,
+    );
+    expect(parseLedger(serializeLedger(done)).disclosures[0]?.pvrRequest).toEqual({
+      at: T0,
+      url: 'https://github.com/a/b/issues/1',
+    });
+    const failed = setPvrRequest(pending, key, { at: T0, failedStatus: 410 }, T1);
+    expect(parseLedger(serializeLedger(failed)).disclosures[0]?.pvrRequest).toEqual({
+      at: T0,
+      failedStatus: 410,
+    });
+  });
+
+  it('rejects a malformed record', () => {
+    const text = (pvrRequest: unknown) =>
+      JSON.stringify({
+        ...JSON.parse(serializeLedger(l0)),
+        disclosures: [{ ...JSON.parse(serializeLedger(l0)).disclosures[0], pvrRequest }],
+      });
+    expect(() => parseLedger(text({}))).toThrow(/pvrRequest/);
+    expect(() => parseLedger(text({ at: T0, url: 5 }))).toThrow(/pvrRequest/);
+    expect(() => parseLedger(text({ at: T0, failedStatus: 'x' }))).toThrow(/pvrRequest/);
+    expect(() => parseLedger(text({ at: T0, extra: 1 }))).toThrow(/pvrRequest/);
   });
 });
 

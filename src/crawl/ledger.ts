@@ -61,8 +61,21 @@ export interface Disclosure {
   reason?: string;
   /** Dry run only: the exact request body that would have been POSTed. */
   wouldSend?: Record<string, unknown>;
+  /**
+   * The one public "please enable private vulnerability reporting" issue for this repo (0102).
+   * Written before the POST (no url yet), so a crash can never post a second one; `url` once
+   * created, `failedStatus` if GitHub refused it. Any record means: never ask this repo again.
+   */
+  pvrRequest?: PvrRequest;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PvrRequest {
+  /** When the request was made (ISO). */
+  at: string;
+  url?: string;
+  failedStatus?: number;
 }
 
 export interface Ledger {
@@ -78,6 +91,10 @@ export const REASON_NO_PVR = 'no PVR';
 export const REASON_NOT_ALLOWLISTED = 'archetype not allowlisted';
 export const REASON_NOT_APPROVED = 'not approved at this commit';
 export const REASON_POSSIBLE_PAUSED = 'possible vulnerability: sending paused';
+/** PVR is off and the owner has been asked (or asking failed); PVR is re-checked every run. */
+export const REASON_NO_PVR_REQUESTED = `${REASON_NO_PVR} (enable requested)`;
+export const reasonPvrRequestFailed = (status: number): string =>
+  `${REASON_NO_PVR} (enable request failed: HTTP ${status})`;
 export const REASON_RATE_LIMITED = 'rate limited (HTTP';
 
 /**
@@ -91,6 +108,7 @@ export function isRetryableHold(d: Pick<Disclosure, 'reason'>): boolean {
   return (
     r === REASON_NO_PVR ||
     r.startsWith(`${REASON_NO_PVR} (HTTP `) ||
+    r.startsWith(`${REASON_NO_PVR} (enable `) ||
     r === REASON_NOT_ALLOWLISTED ||
     r === REASON_NOT_APPROVED ||
     r === REASON_POSSIBLE_PAUSED ||
@@ -137,6 +155,25 @@ function optObj(
   return v;
 }
 
+function parsePvrRequest(v: unknown, where: string): PvrRequest | undefined {
+  if (v === undefined) return undefined;
+  const w = `${where}.pvrRequest`;
+  if (!isObj(v)) fail(`${w} must be an object`);
+  for (const k of Object.keys(v)) {
+    if (!['at', 'url', 'failedStatus'].includes(k)) fail(`${w} has unknown key "${k}"`);
+  }
+  if (typeof v.at !== 'string' || v.at === '') fail(`${w}.at must be a non-empty string`);
+  if (v.url !== undefined && typeof v.url !== 'string') fail(`${w}.url must be a string`);
+  if (v.failedStatus !== undefined && !Number.isInteger(v.failedStatus)) {
+    fail(`${w}.failedStatus must be an integer`);
+  }
+  return {
+    at: v.at,
+    ...(v.url !== undefined ? { url: v.url as string } : {}),
+    ...(v.failedStatus !== undefined ? { failedStatus: v.failedStatus as number } : {}),
+  };
+}
+
 function parseScan(v: unknown, repo: string): RepoScan {
   const where = `repos["${repo}"]`;
   if (!isObj(v)) fail(`${where} must be an object`);
@@ -176,6 +213,7 @@ function parseDisclosure(v: unknown, i: number): Disclosure {
     ghsaId: optStr(v, 'ghsaId', where),
     reason: optStr(v, 'reason', where),
     wouldSend: optObj(v, 'wouldSend', where),
+    pvrRequest: parsePvrRequest(v.pvrRequest, where),
     createdAt: str(v, 'createdAt', where),
     updatedAt: str(v, 'updatedAt', where),
   });
@@ -225,6 +263,7 @@ function normalizeDisclosure(d: Disclosure): Disclosure {
     ...(d.ghsaId !== undefined ? { ghsaId: d.ghsaId } : {}),
     ...(d.reason !== undefined ? { reason: d.reason } : {}),
     ...(d.wouldSend !== undefined ? { wouldSend: d.wouldSend } : {}),
+    ...(d.pvrRequest !== undefined ? { pvrRequest: d.pvrRequest } : {}),
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
   };
@@ -559,4 +598,18 @@ export async function lsRemoteHeads(
   };
   await Promise.all(Array.from({ length: Math.min(workers, repos.length) }, worker));
   return out;
+}
+
+/** Record (or update) the one PVR enable request on a disclosure (0102). Any state. */
+export function setPvrRequest(
+  ledger: Ledger,
+  key: DisclosureKey,
+  pvrRequest: PvrRequest,
+  now: string,
+): Ledger {
+  const idx = findDisclosure(ledger, key);
+  const cur = ledger.disclosures[idx];
+  if (!cur) throw new Error(`setPvrRequest: no disclosure for ${key.repo}`);
+  const next = normalizeDisclosure({ ...cur, pvrRequest, updatedAt: now });
+  return { ...ledger, disclosures: ledger.disclosures.map((d, i) => (i === idx ? next : d)) };
 }

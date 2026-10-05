@@ -1430,3 +1430,14 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   and the sentence is true for both. No example payload in the text, which keeps reports free of
   attacker.example strings.
 - Verified on the real legacy-ctm repo via `crawl review`: new why/fix text, zero "HTML comment".
+
+## 2026-10-05 — 0102 ask owners with PVR off to enable it
+
+- The one confirmed vulnerability (legacy-ctm) has private vulnerability reporting disabled, so
+  no report could reach it. Jay chose a public, detail-free issue asking the owner to enable PVR.
+- Safety choices: only on a definite "off" answer (200, `enabled: false`), never on 401/403/404
+  (a bad token must not spam strangers); one request per repo ever, written to the ledger before
+  the POST; any failure is final; counts against the same throttle as reports; the text is fixed
+  and names nothing (not even "CI"), so nothing about the vulnerability goes public.
+- Not built: watching the request issue (closed without enabling = owner declined). Today the
+  repo just stays held; a follow-up could mark it declined.
