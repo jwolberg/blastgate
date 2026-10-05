@@ -77,6 +77,7 @@ export const UNCERTAIN_REASON = 'submission state uncertain';
 export const REASON_NO_PVR = 'no PVR';
 export const REASON_NOT_ALLOWLISTED = 'archetype not allowlisted';
 export const REASON_NOT_APPROVED = 'not approved at this commit';
+export const REASON_POSSIBLE_PAUSED = 'possible vulnerability: sending paused';
 export const REASON_RATE_LIMITED = 'rate limited (HTTP';
 
 /**
@@ -92,6 +93,7 @@ export function isRetryableHold(d: Pick<Disclosure, 'reason'>): boolean {
     r.startsWith(`${REASON_NO_PVR} (HTTP `) ||
     r === REASON_NOT_ALLOWLISTED ||
     r === REASON_NOT_APPROVED ||
+    r === REASON_POSSIBLE_PAUSED ||
     r.startsWith(REASON_RATE_LIMITED)
   );
 }

@@ -12,6 +12,7 @@ describe('parseCrawlConfig', () => {
       discoveryBudget: 300,
       discoveryMinutes: 60,
       approved: [],
+      sendPossible: false,
     });
     expect(DEFAULT_CRAWL_CONFIG.allowlist).toEqual([]);
     expect(DEFAULT_CRAWL_CONFIG.approved).toEqual([]);
@@ -36,16 +37,27 @@ describe('parseCrawlConfig', () => {
       discoveryBudget: 300,
       discoveryMinutes: 60,
       approved: [],
+      sendPossible: false,
     });
   });
 
   it('accepts per-fail approvals pinned to a full commit sha, deduplicated (0092)', () => {
-    const a = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'entry:x=>sink:y' };
+    const a = {
+      repo: 'acme/widgets',
+      sha: 'a'.repeat(40),
+      findingId: 'entry:x=>sink:y',
+      skeptic: 'could-not-refute',
+    };
     expect(parseCrawlConfig(JSON.stringify({ approved: [a, { ...a }] })).approved).toEqual([a]);
   });
 
   it('rejects a malformed approval (0092)', () => {
-    const ok = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'f1' };
+    const ok = {
+      repo: 'acme/widgets',
+      sha: 'a'.repeat(40),
+      findingId: 'f1',
+      skeptic: 'could-not-refute',
+    };
     const bad = (v: unknown) => () => parseCrawlConfig(JSON.stringify({ approved: v }));
     expect(bad('f1')).toThrow(/approved/);
     expect(bad([{ ...ok, sha: 'abc123' }])).toThrow(/sha/);
@@ -53,7 +65,23 @@ describe('parseCrawlConfig', () => {
     expect(bad([{ ...ok, repo: '../evil' }])).toThrow(/repo/);
     expect(bad([{ ...ok, findingId: '' }])).toThrow(/findingId/);
     expect(bad([{ ...ok, note: 'x' }])).toThrow(/unknown key "note"/);
-    expect(bad([{ repo: ok.repo, sha: ok.sha }])).toThrow(/findingId/);
+    expect(bad([{ repo: ok.repo, sha: ok.sha, skeptic: ok.skeptic }])).toThrow(/findingId/);
+  });
+
+  it('accepts only skeptic results that may be reported: could-not-refute or doubtful (0100, 0101)', () => {
+    const ok = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'f1' };
+    const parse = (v: unknown) => () => parseCrawlConfig(JSON.stringify({ approved: [v] }));
+    expect(parse(ok)).toThrow(/skeptic/);
+    expect(parse({ ...ok, skeptic: 'refuted' })).toThrow(/skeptic/);
+    expect(parse({ ...ok, skeptic: 'pending' })).toThrow(/skeptic/);
+    expect(parse({ ...ok, skeptic: 'could-not-refute' })).not.toThrow();
+    expect(parse({ ...ok, skeptic: 'doubtful' })).not.toThrow();
+  });
+
+  it('keeps possible-vulnerability reports paused unless sendPossible is on (0101)', () => {
+    expect(parseCrawlConfig('{}').sendPossible).toBe(false);
+    expect(parseCrawlConfig('{"sendPossible":true}').sendPossible).toBe(true);
+    expect(() => parseCrawlConfig('{"sendPossible":"yes"}')).toThrow(/sendPossible/);
   });
 
   it('accepts a positive integer discoveryBudget', () => {

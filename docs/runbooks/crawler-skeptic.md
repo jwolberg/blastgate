@@ -6,24 +6,48 @@ anchor: RB-crawler-skeptic
 
 A false report to a stranger could end the project, and a reader who already believes the engine
 tends to confirm it. The skeptic is a fresh-context agent whose only job is to **disprove** a fail.
-It runs once per review packet from `crawl review` ([crawler runbook §4](crawler.md)), and its
-verdict sorts the review index so disputed fails are read first.
+It is a **required** step (0100), and since 0101 its result decides what is reported:
 
-It is **advisory**. It never edits `verdict:`, never writes `approved`, and a `could-not-refute`
-is not a confirmation. Only Jay's verdict and an `approved` entry release a report (0092).
+| Skeptic result | Report sent | Severity |
+| --- | --- | --- |
+| `could-not-refute` | **Security vulnerability**: confident wording, recommends a fix and secret rotation | high |
+| `doubtful` | **Possible security vulnerability**: asks the owner to investigate; says some steps depend on settings only they can see. Held until `sendPossible` is on (after 0095/0096) | medium |
+| `refuted` | nothing | |
 
-## [1] How to run it
+The scans exist to help owners: a fail the skeptic cannot dismiss is worth telling them about.
+No human verdict is needed. A human can still stop any report by setting `verdict: refuted` in its
+packet; `crawl approve` never overrides that. `crawl approve` writes the approvals, and the config
+parser rejects any approval without a reportable skeptic result.
 
-In Claude Code, from the ops repo checkout with fresh packets in `reviews/`:
+## [1] How to run it (two stages)
 
-```text
-Run the Blastgate fail skeptic (docs/runbooks/crawler-skeptic.md in the blastgate repo) on every
-packet in reviews/ whose skeptic is pending: one fresh-context subagent per packet, in parallel.
-```
+From the ops repo checkout with fresh packets in `reviews/` (`crawl review`), in Claude Code:
 
-The orchestrator gives each subagent **one packet path and the prompt in [2]**, nothing else:
-no summary of the engine, the other packets, or anyone's opinion. Afterwards, rerun
-`crawl review` to re-sort the index (packets for an unchanged commit are kept, skeptic and all).
+1. **Stage one, cheap filter (Sonnet).** One fresh-context subagent per packet whose skeptic is
+   pending, `model: sonnet`, given only the packet path and the prompt in [2].
+2. **Reset.** `node dist/crawl/index.js skeptic-reset --packets reviews`. Every packet stage one
+   did not refute goes back to a blank skeptic slot, so stage two never sees stage one's
+   reasoning. Refuted packets stay refuted: stage one may only remove.
+3. **Stage two, decider (Opus).** One fresh-context subagent per packet whose skeptic is pending,
+   on the top model, same prompt. Its verdict is final.
+4. Rerun `crawl review` to re-sort the index. Optionally set `verdict: refuted` on any packet
+   you want stopped.
+5. `node dist/crawl/index.js approve --packets reviews --config config.json` writes an approval
+   per finding of every `could-not-refute` or `doubtful` packet (the tier rides on the approval),
+   and lists what it skipped and why. Commit `config.json` to the ops repo.
+
+Measured on the 33 packets of 2026-10-05, blind, against Jay's verdicts (0100):
+
+| Setup | Real issues passed (of 2) | False passes (of 31) | Opus runs |
+| --- | --- | --- | --- |
+| Sonnet only | 0 | 0 | 0 |
+| Opus only | 1 | 0 | 33 |
+| Sonnet, then Opus | 1 | 0 | 15 |
+
+Sonnet alone is safe but would block every report, so it is a filter, never the decider.
+Under 0101 the same run gives 1 security vulnerability (legacy-ctm, real) and 11 possible ones
+across 9 repos: 1 real, 2 real but misdescribed, 2 undecidable, 4 most likely not real. That is
+why `sendPossible` stays off until 0095/0096 remove those analyzer false alarms.
 
 ## [2] Prompt (give verbatim, with the packet path)
 

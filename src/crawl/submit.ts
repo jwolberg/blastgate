@@ -9,7 +9,7 @@
  * `submitting` entry is never retried automatically.
  */
 
-import { gate } from './disclose';
+import { gate, tierReport } from './disclose';
 import type { CrawlConfig } from './config';
 import { GitHubRateLimitError, isPlainRepoName, type GitHubClient } from './github';
 import {
@@ -76,11 +76,13 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 
 /** The single place the PVR request body is built. GitHub may require `vulnerabilities`; send it empty. */
-export function buildRequestBody(report: SubmitCandidate['report']): Record<string, unknown> {
+export function buildRequestBody(
+  report: SubmitCandidate['report'] & { severity?: 'high' | 'medium' },
+): Record<string, unknown> {
   return {
     summary: report.summary,
     description: report.description,
-    severity: 'high',
+    severity: report.severity ?? 'high',
     vulnerabilities: [],
   };
 }
@@ -261,7 +263,8 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       continue;
     }
 
-    const body = buildRequestBody(c.report);
+    // Tier (0101): the skeptic's result decides how confidently the report speaks.
+    const body = buildRequestBody(tierReport(c.report, decision.tier ?? 'possible', c.repo));
     queue();
 
     if (decision.dryRun) {

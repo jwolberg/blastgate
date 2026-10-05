@@ -1388,3 +1388,34 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   true fail came back **doubtful**, correctly: my synthetic workflow checked out a hardcoded PR
   number with no `GH_TOKEN`. It errs toward doubt, which is the safe direction. Both edited only
   the allowed lines (diffed against a fresh render).
+
+## 2026-10-05 — 0100 skeptic required for every approval
+
+- Jay: "make the skeptic part of the process so that there are no false positives reported."
+  Chose (Jay): skeptic runs locally in Claude Code; only `could-not-refute` may reach approval.
+- Enforcement is two independent checks: `crawl approve` writes approvals only from packets with
+  `verdict: confirmed` AND `skeptic: could-not-refute`; and the config parser rejects any
+  approval entry without `skeptic: "could-not-refute"`, so a hand-pasted entry fails to load.
+  It is a convention, not a cryptographic proof: someone could type the field by hand. The
+  point is that skipping the skeptic now takes a deliberate act, not an oversight.
+- Measured the cheaper model (Sonnet) blind on the 33 packets of 2026-10-05 against Jay's
+  verdicts: 0 false passes, but also 0 passes: both confirmed real issues came back doubtful.
+  Opus passed 1 of the 2 real ones and 0 false. At the strict bar Sonnet alone would block every
+  report. Jay chose Sonnet then Opus: Sonnet refutes (it may only remove), `crawl skeptic-reset` blanks the rest so Opus reads them unbiased, Opus decides. Simulated on the 33: 1 real passed, 0 false, 15 Opus runs instead of 33.
+- Verified on real data with a throwaway config: approves legacy-ctm (2 findings), skips
+  ai-integr8tor (skeptic doubtful), rejects a hand-pasted entry. Real ops config untouched.
+
+## 2026-10-05 — 0101 two report tiers; the skeptic's result decides
+
+- Jay changed the philosophy: the scans exist to help owners. Skeptic `could-not-refute` is
+  reported as a **security vulnerability** (severity high); `doubtful` as a **possible security
+  vulnerability** (severity medium, asks the owner to investigate). No human verdict needed.
+- Kept one human brake (chose): a packet a human marks `verdict: refuted` is never approved.
+- Chose: the tier is applied at send time (`tierReport`) because the scan job composes reports
+  before the skeptic runs. Only the title, intro and severity change; finding blocks and footer
+  are kept byte for byte. One doubtful finding makes the whole report the possible tier.
+- Jay: possible-tier reports wait for 0095/0096 (`sendPossible: false`). On today's batch that
+  tier would reach 9 repos, 4 of them most likely not vulnerable.
+- Chose: the possible-tier wording names generic unknowns (settings only the owner can see)
+  and never quotes the skeptic's own notes. Those notes come from reading attacker-controlled
+  text and are model output; sending them to a stranger is an injection and accuracy risk.

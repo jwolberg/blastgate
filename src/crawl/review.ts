@@ -147,7 +147,7 @@ export function renderPacket(input: PacketInput): string {
   out.push(
     '## Verdict',
     '',
-    'Set `verdict:` above to `confirmed` or `refuted` after working the checklist against the source. Approve only a confirmed packet, and only by pasting the entries at the bottom into the ops `config.json` `approved` list.',
+    'The skeptic decides (0101): could-not-refute is reported as a security vulnerability, doubtful as a possible one, refuted never. Set `verdict: refuted` above only to stop a report the skeptic would send; `crawl approve` never overrides it.',
     '',
     '## Skeptic',
     '',
@@ -204,13 +204,13 @@ export function renderPacket(input: PacketInput): string {
     composeReport({ repo, sha, findings, blastgateVersion: input.engineVersion }),
   );
   out.push(
-    '## Report that would be sent',
+    '## Report body that would be sent (headline, intro and severity follow the skeptic tier)',
     '',
     fenced(JSON.stringify(body, null, 2), 'json'),
     '',
     '## Approve',
     '',
-    'Only if `verdict: confirmed`. Paste these into `approved` in the ops `config.json`:',
+    'Read by `crawl approve` (do not paste by hand; the config rejects approvals without a reportable skeptic result):',
     '',
     fenced(
       JSON.stringify(
@@ -387,10 +387,10 @@ export async function runReview(args: ReviewArgs, deps: ReviewDeps): Promise<Rev
   const index = [
     '# Held fails: review packets',
     '',
-    "Each packet is one (repo, archetype) fail rescanned at the repo's current HEAD. Work the",
-    'checklist against the quoted source, set `verdict:`, and approve only confirmed packets.',
-    "Sorted by the skeptic's verdict, refuted and doubtful first. The skeptic is advisory: only",
-    'your `verdict:` and an `approved` entry can release a report.',
+    "Each packet is one (repo, archetype) fail rescanned at the repo's current HEAD. The skeptic",
+    'decides (0101): could-not-refute is reported as a security vulnerability, doubtful as a',
+    'possible one (held until sendPossible is on), refuted never. Run `crawl approve` after the',
+    'skeptic; a human `verdict: refuted` always blocks a report.',
     '',
     '| Repo | Archetype | Commit | Findings | Skeptic | Verdict | Packet |',
     '| --- | --- | --- | --- | --- | --- | --- |',
