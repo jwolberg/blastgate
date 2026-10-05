@@ -63,6 +63,7 @@ import {
 import { publishSite } from './publish';
 import { type Runner, archetypeOf, childEnv, defaultRunner, reverify, scanRepos } from './scan';
 import { renderSite } from './site';
+import { runApprove } from './approve';
 import { runReview } from './review';
 import { type SubmitCandidate, submitAll } from './submit';
 import { trackAll } from './track';
@@ -756,7 +757,8 @@ const USAGE = `usage:
   crawl scan    --ledger <path> --config <path> --out <dir> [--cap N] [--discovery <path>] [--owner <login>]
   crawl submit  --ledger <path> --config <path> --in <scan-result.json> --site <dir> [--kill-switch <path>] [--remote <url>] [--discovery <path>]
   crawl publish --config <path> --site <dir> --remote <url>
-  crawl review  --ledger <path> --out <dir outside this repo> [--repo <owner/name>]`;
+  crawl review  --ledger <path> --out <dir outside this repo> [--repo <owner/name>]
+  crawl approve --packets <dir> --config <path>`;
 
 const REGISTRY_AUTHOR = {
   name: 'Blastgate Registry',
@@ -783,6 +785,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
       remote: { type: 'string' },
       owner: { type: 'string' },
       repo: { type: 'string' },
+      packets: { type: 'string' },
     },
   });
   const log = (l: string): void => console.log(l);
@@ -830,6 +833,13 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
         log,
       },
     );
+  }
+  if (cmd === 'approve') {
+    runApprove(
+      { packets: need(values.packets, 'packets'), config: need(values.config, 'config') },
+      { log },
+    );
+    return 0;
   }
   if (cmd === 'review') {
     await runReview(

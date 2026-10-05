@@ -147,7 +147,7 @@ export function renderPacket(input: PacketInput): string {
   out.push(
     '## Verdict',
     '',
-    'Set `verdict:` above to `confirmed` or `refuted` after working the checklist against the source. Approve only a confirmed packet, and only by pasting the entries at the bottom into the ops `config.json` `approved` list.',
+    'Set `verdict:` above to `confirmed` or `refuted` after working the checklist against the source. Then run `crawl approve`: it approves a packet only if you confirmed it AND the skeptic could not refute it.',
     '',
     '## Skeptic',
     '',
@@ -210,7 +210,7 @@ export function renderPacket(input: PacketInput): string {
     '',
     '## Approve',
     '',
-    'Only if `verdict: confirmed`. Paste these into `approved` in the ops `config.json`:',
+    'Read by `crawl approve` (do not paste by hand; the config rejects approvals without the skeptic pass):',
     '',
     fenced(
       JSON.stringify(

@@ -136,17 +136,18 @@ describe('renderPacket (0093)', () => {
     expect(md).toMatch(/^skeptic: pending$/m);
   });
 
-  it('ends with approval entries that the strict config parser accepts', () => {
+  it('ends with the approval block crawl approve reads, which cannot be pasted without a skeptic pass', () => {
     const fs = [real('fork-pr-secret'), { ...real('fork-pr-secret'), id: 'second=>id' }];
     const md = renderPacket(input({ findings: fs }));
     const blocks = [...md.matchAll(/```json\n([\s\S]*?)\n```/g)];
     expect(md.trimEnd().endsWith('```'), 'approval block is last').toBe(true);
     const json = blocks[blocks.length - 1]?.[1];
     expect(json).toBeTruthy();
-    const cfg = parseCrawlConfig(JSON.stringify({ approved: JSON.parse(json!) }));
-    expect(cfg.approved).toEqual(
-      fs.map((f) => ({ repo: 'acme/widgets', sha: SHA, findingId: f.id })),
-    );
+    const entries = JSON.parse(json!) as object[];
+    expect(entries).toEqual(fs.map((f) => ({ repo: 'acme/widgets', sha: SHA, findingId: f.id })));
+    expect(() => parseCrawlConfig(JSON.stringify({ approved: entries }))).toThrow(/skeptic/);
+    const passed = entries.map((e) => ({ ...e, skeptic: 'could-not-refute' }));
+    expect(parseCrawlConfig(JSON.stringify({ approved: passed })).approved).toHaveLength(2);
   });
 
   it('warns when the local engine differs from the one the crawler used', () => {

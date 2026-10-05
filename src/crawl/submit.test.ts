@@ -25,7 +25,12 @@ const REPOS = [
   'o/c',
   ...[0, 1, 2, 3, 4, 5].map((i) => `o/r${i}`),
 ];
-const approvedAll = REPOS.map((repo) => ({ repo, sha: SHA, findingId: `${repo}#1` }));
+const approvedAll = REPOS.map((repo) => ({
+  repo,
+  sha: SHA,
+  findingId: `${repo}#1`,
+  skeptic: 'could-not-refute' as const,
+}));
 
 const live: CrawlConfig = {
   ...DEFAULT_CRAWL_CONFIG,

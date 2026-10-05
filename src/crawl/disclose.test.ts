@@ -33,7 +33,9 @@ const input = {
   findingIds: ['f1'],
 };
 /** Jay's per-fail approval of `input` at SHA (0092). */
-const approvedInput = [{ repo: input.repo, sha: SHA, findingId: 'f1' }];
+const approvedInput = [
+  { repo: input.repo, sha: SHA, findingId: 'f1', skeptic: 'could-not-refute' as const },
+];
 
 describe('gate (KTD6 steps 1, 3, 5)', () => {
   it('holds an allowlisted archetype tripped by a false-positive report', () => {

@@ -20,7 +20,15 @@ export interface Approval {
   /** Full 40-char lowercase commit sha the finding was reviewed at. */
   sha: string;
   findingId: string;
+  /**
+   * The skeptic's verdict on the packet this approval came from (0100). Only a pass is
+   * accepted, so an approval cannot exist without the adversarial check having run.
+   */
+  skeptic: typeof SKEPTIC_PASS;
 }
+
+/** The only skeptic verdict that lets a fail reach approval (0100). */
+export const SKEPTIC_PASS = 'could-not-refute';
 
 export interface CrawlConfig {
   /** Archetypes whose fails are auto-submitted (KTD6.1). Empty = everything is held. */
@@ -100,13 +108,13 @@ const SHA_RE = /^[0-9a-f]{40}$/;
 
 function approvals(v: unknown): Approval[] {
   if (v === undefined) return [];
-  if (!Array.isArray(v)) fail('approved must be an array of {repo, sha, findingId}');
+  if (!Array.isArray(v)) fail('approved must be an array of {repo, sha, findingId, skeptic}');
   const seen = new Map<string, Approval>();
   v.forEach((a: unknown, i) => {
     const where = `approved[${i}]`;
     if (!isObj(a)) fail(`${where} must be an object`);
-    rejectUnknown(a, ['repo', 'sha', 'findingId'], where);
-    const { repo, sha, findingId } = a;
+    rejectUnknown(a, ['repo', 'sha', 'findingId', 'skeptic'], where);
+    const { repo, sha, findingId, skeptic } = a;
     if (typeof repo !== 'string' || !isPlainRepoName(repo))
       fail(`${where}.repo must be owner/name`);
     if (typeof sha !== 'string' || !SHA_RE.test(sha)) {
@@ -115,7 +123,12 @@ function approvals(v: unknown): Approval[] {
     if (typeof findingId !== 'string' || findingId === '') {
       fail(`${where}.findingId must be a non-empty string`);
     }
-    seen.set(JSON.stringify([repo, sha, findingId]), { repo, sha, findingId });
+    if (skeptic !== SKEPTIC_PASS) {
+      fail(
+        `${where}.skeptic must be "${SKEPTIC_PASS}"; only a fail the skeptic could not refute can be approved (use crawl approve)`,
+      );
+    }
+    seen.set(JSON.stringify([repo, sha, findingId]), { repo, sha, findingId, skeptic });
   });
   return [...seen.values()];
 }

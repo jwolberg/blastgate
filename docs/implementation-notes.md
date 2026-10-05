@@ -1388,3 +1388,19 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   true fail came back **doubtful**, correctly: my synthetic workflow checked out a hardcoded PR
   number with no `GH_TOKEN`. It errs toward doubt, which is the safe direction. Both edited only
   the allowed lines (diffed against a fresh render).
+
+## 2026-10-05 — 0100 skeptic required for every approval
+
+- Jay: "make the skeptic part of the process so that there are no false positives reported."
+  Chose (Jay): skeptic runs locally in Claude Code; only `could-not-refute` may reach approval.
+- Enforcement is two independent checks: `crawl approve` writes approvals only from packets with
+  `verdict: confirmed` AND `skeptic: could-not-refute`; and the config parser rejects any
+  approval entry without `skeptic: "could-not-refute"`, so a hand-pasted entry fails to load.
+  It is a convention, not a cryptographic proof: someone could type the field by hand. The
+  point is that skipping the skeptic now takes a deliberate act, not an oversight.
+- Measured the cheaper model (Sonnet) blind on the 33 packets of 2026-10-05 against Jay's
+  verdicts: 0 false passes, but also 0 passes: both confirmed real issues came back doubtful.
+  Opus passed 1 of the 2 real ones and 0 false. At the strict bar Sonnet alone would block every
+  report. Model choice is Jay's call (see runbook).
+- Verified on real data with a throwaway config: approves legacy-ctm (2 findings), skips
+  ai-integr8tor (skeptic doubtful), rejects a hand-pasted entry. Real ops config untouched.

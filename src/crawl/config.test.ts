@@ -40,12 +40,22 @@ describe('parseCrawlConfig', () => {
   });
 
   it('accepts per-fail approvals pinned to a full commit sha, deduplicated (0092)', () => {
-    const a = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'entry:x=>sink:y' };
+    const a = {
+      repo: 'acme/widgets',
+      sha: 'a'.repeat(40),
+      findingId: 'entry:x=>sink:y',
+      skeptic: 'could-not-refute',
+    };
     expect(parseCrawlConfig(JSON.stringify({ approved: [a, { ...a }] })).approved).toEqual([a]);
   });
 
   it('rejects a malformed approval (0092)', () => {
-    const ok = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'f1' };
+    const ok = {
+      repo: 'acme/widgets',
+      sha: 'a'.repeat(40),
+      findingId: 'f1',
+      skeptic: 'could-not-refute',
+    };
     const bad = (v: unknown) => () => parseCrawlConfig(JSON.stringify({ approved: v }));
     expect(bad('f1')).toThrow(/approved/);
     expect(bad([{ ...ok, sha: 'abc123' }])).toThrow(/sha/);
@@ -53,7 +63,16 @@ describe('parseCrawlConfig', () => {
     expect(bad([{ ...ok, repo: '../evil' }])).toThrow(/repo/);
     expect(bad([{ ...ok, findingId: '' }])).toThrow(/findingId/);
     expect(bad([{ ...ok, note: 'x' }])).toThrow(/unknown key "note"/);
-    expect(bad([{ repo: ok.repo, sha: ok.sha }])).toThrow(/findingId/);
+    expect(bad([{ repo: ok.repo, sha: ok.sha, skeptic: ok.skeptic }])).toThrow(/findingId/);
+  });
+
+  it('rejects an approval the skeptic did not pass (0100)', () => {
+    const ok = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'f1' };
+    const bad = (v: unknown) => () => parseCrawlConfig(JSON.stringify({ approved: [v] }));
+    expect(bad(ok)).toThrow(/skeptic/);
+    expect(bad({ ...ok, skeptic: 'doubtful' })).toThrow(/skeptic/);
+    expect(bad({ ...ok, skeptic: 'refuted' })).toThrow(/skeptic/);
+    expect(bad({ ...ok, skeptic: 'pending' })).toThrow(/skeptic/);
   });
 
   it('accepts a positive integer discoveryBudget', () => {

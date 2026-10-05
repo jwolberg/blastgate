@@ -550,7 +550,7 @@ const REPORT = composeReport({
 });
 
 /** Jay's approval of the fixture fail at SHA (0092). */
-const APPROVED = [{ repo: 'acme/fail', sha: SHA, findingId: 'f1' }];
+const APPROVED = [{ repo: 'acme/fail', sha: SHA, findingId: 'f1', skeptic: 'could-not-refute' }];
 
 function scanResult(over: Partial<ScanResultFile> = {}): ScanResultFile {
   return {
