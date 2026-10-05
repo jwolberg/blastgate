@@ -26,7 +26,14 @@ const cfg = (over: Partial<CrawlConfig> = {}): CrawlConfig => ({
   ...DEFAULT_CRAWL_CONFIG,
   ...over,
 });
-const input = { repo: 'acme/widgets', archetype: 'untrusted-text-injection', findingIds: ['f1'] };
+const input = {
+  repo: 'acme/widgets',
+  sha: SHA,
+  archetype: 'untrusted-text-injection',
+  findingIds: ['f1'],
+};
+/** Jay's per-fail approval of `input` at SHA (0092). */
+const approvedInput = [{ repo: input.repo, sha: SHA, findingId: 'f1' }];
 
 describe('gate (KTD6 steps 1, 3, 5)', () => {
   it('holds an allowlisted archetype tripped by a false-positive report', () => {
@@ -44,12 +51,20 @@ describe('gate (KTD6 steps 1, 3, 5)', () => {
   });
 
   it('allows an allowlisted archetype as a dry run while submitMode is off', () => {
-    const r = gate(input, cfg({ allowlist: [input.archetype] }), emptyLedger());
+    const r = gate(
+      input,
+      cfg({ allowlist: [input.archetype], approved: approvedInput }),
+      emptyLedger(),
+    );
     expect(r).toEqual({ decision: 'allowed', dryRun: true });
   });
 
   it('is live (dryRun false) only when submitMode is on', () => {
-    const r = gate(input, cfg({ allowlist: [input.archetype], submitMode: true }), emptyLedger());
+    const r = gate(
+      input,
+      cfg({ allowlist: [input.archetype], approved: approvedInput, submitMode: true }),
+      emptyLedger(),
+    );
     expect(r).toEqual({ decision: 'allowed', dryRun: false });
   });
 
@@ -61,7 +76,7 @@ describe('gate (KTD6 steps 1, 3, 5)', () => {
       state: 'queued',
       now: NOW,
     });
-    const r = gate(input, cfg({ allowlist: [input.archetype] }), ledger);
+    const r = gate(input, cfg({ allowlist: [input.archetype], approved: approvedInput }), ledger);
     expect(r).toMatchObject({ decision: 'held', reason: 'duplicate' });
   });
 
@@ -73,7 +88,7 @@ describe('gate (KTD6 steps 1, 3, 5)', () => {
       state: 'held',
       now: NOW,
     });
-    const c = cfg({ allowlist: [input.archetype] });
+    const c = cfg({ allowlist: [input.archetype], approved: approvedInput });
     expect(gate(input, c, other).decision).toBe('allowed');
     const resolved = {
       ...other,
@@ -86,6 +101,61 @@ describe('gate (KTD6 steps 1, 3, 5)', () => {
       ],
     };
     expect(gate(input, c, resolved).decision).toBe('allowed');
+  });
+});
+
+describe('gate: per-fail approval (0092)', () => {
+  const allow = (approved: CrawlConfig['approved']) =>
+    cfg({ allowlist: [input.archetype], approved, submitMode: true });
+
+  it('holds an allowlisted fail nobody approved', () => {
+    expect(gate(input, allow([]), emptyLedger())).toMatchObject({
+      decision: 'held',
+      reason: 'not approved at this commit',
+    });
+  });
+
+  it('holds a fail approved at a different commit (the repo moved after review)', () => {
+    const stale = [{ ...approvedInput[0]!, sha: 'c'.repeat(40) }];
+    expect(gate(input, allow(stale), emptyLedger())).toMatchObject({
+      decision: 'held',
+      reason: 'not approved at this commit',
+    });
+  });
+
+  it('holds when only some of the reported finding ids are approved', () => {
+    const two = { ...input, findingIds: ['f1', 'f2'] };
+    expect(gate(two, allow(approvedInput), emptyLedger())).toMatchObject({
+      decision: 'held',
+      reason: 'not approved at this commit',
+    });
+  });
+
+  it('does not let an approval for another repo release this one', () => {
+    const other = [{ ...approvedInput[0]!, repo: 'acme/other' }];
+    expect(gate(input, allow(other), emptyLedger()).decision).toBe('held');
+  });
+
+  it('never replaces the allowlist: an approved fail of a non-allowlisted archetype is held', () => {
+    const c = cfg({ approved: approvedInput, submitMode: true });
+    expect(gate(input, c, emptyLedger())).toMatchObject({
+      decision: 'held',
+      reason: 'archetype not allowlisted',
+    });
+  });
+
+  it('never overrides the tripwire', () => {
+    const tripped = { ...emptyLedger(), trippedArchetypes: [input.archetype] };
+    expect(gate(input, allow(approvedInput), tripped)).toMatchObject({
+      decision: 'held',
+      reason: 'archetype tripped by a false-positive report',
+    });
+  });
+
+  it('allows a fail whose every finding id is approved at that exact commit', () => {
+    const two = { ...input, findingIds: ['f1', 'f2'] };
+    const both = [...approvedInput, { ...approvedInput[0]!, findingId: 'f2' }];
+    expect(gate(two, allow(both), emptyLedger())).toEqual({ decision: 'allowed', dryRun: false });
   });
 });
 

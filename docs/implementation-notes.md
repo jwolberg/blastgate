@@ -1343,3 +1343,48 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   triggering it. Crediting it for fork-pr findings would create false passes.
 - Verified: the refuted dry-run fail drops to warn (the agent reading the bot's text, legs
   incomplete). The other four are unchanged. The 50-repo sample has identical findings vs main.
+
+## 2026-10-05 — 0092 per-fail approval before any report is sent
+
+- Why: the allowlist released a whole archetype, so after go-live every new fail of that class
+  would be filed unseen. Jay: a single false report could end the project.
+- Chose: approval is required **in addition to** the allowlist and tripwire, not instead of them.
+  The allowlist stays as a per-class kill switch; the tripwire still wins over an approval.
+- Chose: approvals pin to the full commit sha the report names (its footer), per finding id.
+  A moved HEAD means a new sha and so no approval. Stricter than per-repo, but the report text
+  quotes file:line at that commit, so an approval of a different commit is not an approval of it.
+- Change: the scan job's candidates now carry `sha`, and the submit job drops any candidate whose
+  sha differs from its scan row. Scan-result artifacts from older engines are dropped (they are
+  run-local and live a day, and both jobs run the same `BLASTGATE_SHA`).
+- Tradeoff: approvals must be re-done if a repo pushes between review and send. Accepted; that is
+  exactly the case where the reviewed lines may no longer be the reported ones.
+
+## 2026-10-05 — 0093 review packets (`crawl review`)
+
+- Chose: rescan at current HEAD, not the ledger's old sha. The approval pins to the sha that will
+  actually be reported, and the crawler only reports HEAD (reverify refuses a stale head), so
+  reviewing an older commit would approve something that can never be sent.
+- Chose: quote the **whole** cited workflow, numbered, cited lines marked. Both refuted dry-run
+  fails turned on a guard far from the cited line (a job `if:` and an early `exit`), so an
+  excerpt around the line would have hidden them.
+- Safety: packets are refused inside this public repo; clones live in a temp dir that is always
+  deleted; quoted files are read only if they are regular files whose real path stays inside the
+  clone (a hostile repo cannot symlink a packet into quoting local files). Payloads never appear.
+- Rerun keeps a packet whose sha is unchanged so a verdict is not lost; a moved repo's packet is
+  replaced with `verdict: pending`. Limitation: a kept packet is not refreshed if only the local
+  engine changed. The packet flags an engine that differs from the crawler's.
+- Ran the full suite with `--testTimeout=60000`: the machine's load average was ~250 from other
+  apps and git-backed tests on `main` timed out at the 5s default the same way. Assertions unchanged.
+
+## 2026-10-05 — 0094 adversarial fail skeptic
+
+- Chose: the skeptic is a runbook prompt (docs/runbooks/crawler-skeptic.md) run as one
+  fresh-context subagent per packet, not code. `.claude/` is untracked here, and the prompt is the
+  product. Code side: the review index sorts refuted, doubtful, pending, could-not-refute.
+- Advisory only: it edits `skeptic:` and its own section, never `verdict:` or approvals. A hostile
+  repo that talks it out of a refutation can only cost a second look, never send a report.
+- Checked on two synthetic packets with blind names (2026-10-05): the false fail (fork-pr blocked
+  by a same-repo job `if:`, no checkout) came back **refuted** for the right reasons. The intended
+  true fail came back **doubtful**, correctly: my synthetic workflow checked out a hardcoded PR
+  number with no `GH_TOKEN`. It errs toward doubt, which is the safe direction. Both edited only
+  the allowed lines (diffed against a fresh render).

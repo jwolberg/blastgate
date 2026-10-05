@@ -11,8 +11,10 @@ describe('parseCrawlConfig', () => {
       throttle: { perHour: 5, perDay: 20 },
       discoveryBudget: 300,
       discoveryMinutes: 60,
+      approved: [],
     });
     expect(DEFAULT_CRAWL_CONFIG.allowlist).toEqual([]);
+    expect(DEFAULT_CRAWL_CONFIG.approved).toEqual([]);
   });
 
   it('accepts a full valid config and a partial throttle', () => {
@@ -33,7 +35,25 @@ describe('parseCrawlConfig', () => {
       throttle: { perHour: 2, perDay: 20 },
       discoveryBudget: 300,
       discoveryMinutes: 60,
+      approved: [],
     });
+  });
+
+  it('accepts per-fail approvals pinned to a full commit sha, deduplicated (0092)', () => {
+    const a = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'entry:x=>sink:y' };
+    expect(parseCrawlConfig(JSON.stringify({ approved: [a, { ...a }] })).approved).toEqual([a]);
+  });
+
+  it('rejects a malformed approval (0092)', () => {
+    const ok = { repo: 'acme/widgets', sha: 'a'.repeat(40), findingId: 'f1' };
+    const bad = (v: unknown) => () => parseCrawlConfig(JSON.stringify({ approved: v }));
+    expect(bad('f1')).toThrow(/approved/);
+    expect(bad([{ ...ok, sha: 'abc123' }])).toThrow(/sha/);
+    expect(bad([{ ...ok, sha: 'A'.repeat(40) }])).toThrow(/sha/);
+    expect(bad([{ ...ok, repo: '../evil' }])).toThrow(/repo/);
+    expect(bad([{ ...ok, findingId: '' }])).toThrow(/findingId/);
+    expect(bad([{ ...ok, note: 'x' }])).toThrow(/unknown key "note"/);
+    expect(bad([{ repo: ok.repo, sha: ok.sha }])).toThrow(/findingId/);
   });
 
   it('accepts a positive integer discoveryBudget', () => {

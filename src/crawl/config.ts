@@ -1,12 +1,25 @@
 /**
  * Crawler ops config (U4, KTD6) — the knobs that gate outbound writes. Strict: unknown keys
  * are rejected so a typo (`submitmode`) can never silently leave a safety default in place or
- * flip one. Every default is the safe one: empty allowlist, dry run, site unpublished.
+ * flip one. Every default is the safe one: empty allowlist, no approvals, dry run, site unpublished.
  */
+
+import { isPlainRepoName } from './github';
 
 export interface CrawlThrottle {
   perHour: number;
   perDay: number;
+}
+
+/**
+ * Jay's hand verdict that one fail-tier finding is real, pinned to the exact commit he reviewed
+ * (0092). A report is sent only when every finding in it carries one for the commit it names.
+ */
+export interface Approval {
+  repo: string;
+  /** Full 40-char lowercase commit sha the finding was reviewed at. */
+  sha: string;
+  findingId: string;
 }
 
 export interface CrawlConfig {
@@ -27,6 +40,8 @@ export interface CrawlConfig {
    * starts and the run moves on to scanning.
    */
   discoveryMinutes: number;
+  /** Per-fail approvals (0092). Required on top of `allowlist`; empty = nothing is sent. */
+  approved: Approval[];
 }
 
 /** Upper bound: well above what a 5 hour job can spend at the 9/min search throttle (~2,700). */
@@ -43,6 +58,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   throttle: { perHour: 5, perDay: 20 },
   discoveryBudget: 300,
   discoveryMinutes: 60,
+  approved: [],
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -80,6 +96,30 @@ function posInt(
   return v;
 }
 
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+function approvals(v: unknown): Approval[] {
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) fail('approved must be an array of {repo, sha, findingId}');
+  const seen = new Map<string, Approval>();
+  v.forEach((a: unknown, i) => {
+    const where = `approved[${i}]`;
+    if (!isObj(a)) fail(`${where} must be an object`);
+    rejectUnknown(a, ['repo', 'sha', 'findingId'], where);
+    const { repo, sha, findingId } = a;
+    if (typeof repo !== 'string' || !isPlainRepoName(repo))
+      fail(`${where}.repo must be owner/name`);
+    if (typeof sha !== 'string' || !SHA_RE.test(sha)) {
+      fail(`${where}.sha must be a full 40-char lowercase commit sha`);
+    }
+    if (typeof findingId !== 'string' || findingId === '') {
+      fail(`${where}.findingId must be a non-empty string`);
+    }
+    seen.set(JSON.stringify([repo, sha, findingId]), { repo, sha, findingId });
+  });
+  return [...seen.values()];
+}
+
 /** Parse the ops config JSON. Throws on invalid JSON, unknown keys, or wrong types. */
 export function parseCrawlConfig(text: string): CrawlConfig {
   let raw: unknown;
@@ -99,6 +139,7 @@ export function parseCrawlConfig(text: string): CrawlConfig {
       'throttle',
       'discoveryBudget',
       'discoveryMinutes',
+      'approved',
     ],
     '',
   );
@@ -152,5 +193,6 @@ export function parseCrawlConfig(text: string): CrawlConfig {
       'discoveryMinutes',
       MAX_DISCOVERY_MINUTES,
     ),
+    approved: approvals(raw.approved),
   };
 }

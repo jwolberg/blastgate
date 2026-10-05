@@ -214,6 +214,7 @@ describe('runScan', () => {
     expect(res.candidates).toHaveLength(1);
     const c = res.candidates[0];
     expect(c?.repo).toBe('acme/fail');
+    expect(c?.sha).toBe(failHead);
     expect(c?.archetype).toBe(ARCH);
     expect(c?.reverify).toBe('still-fails');
     expect(c?.findingIds).toEqual(res.currentFails['acme/fail']);
@@ -548,6 +549,9 @@ const REPORT = composeReport({
   blastgateVersion: ENGINE,
 });
 
+/** Jay's approval of the fixture fail at SHA (0092). */
+const APPROVED = [{ repo: 'acme/fail', sha: SHA, findingId: 'f1' }];
+
 function scanResult(over: Partial<ScanResultFile> = {}): ScanResultFile {
   return {
     engineVersion: '9.9.9+abc',
@@ -573,6 +577,7 @@ function scanResult(over: Partial<ScanResultFile> = {}): ScanResultFile {
     candidates: [
       {
         repo: 'acme/fail',
+        sha: SHA,
         archetype: ARCH,
         findingIds: ['f1'],
         report: REPORT,
@@ -692,7 +697,7 @@ describe('runSubmit', () => {
   });
 
   it('allowlisted but submitMode off: dry run records the body, still zero POSTs', async () => {
-    setup({ allowlist: [ARCH] }, scanResult());
+    setup({ allowlist: [ARCH], approved: APPROVED }, scanResult());
     const h = harness();
     await runSubmit(submitArgs(), h.deps);
     expect(h.net.reqs.filter((r) => r.method === 'POST')).toEqual([]);
@@ -702,8 +707,17 @@ describe('runSubmit', () => {
     expect(d?.wouldSend).toMatchObject(REPORT);
   });
 
-  it('submitMode on: persists `submitting` before the POST, then the URL', async () => {
+  it('0092: allowlisted and live but unapproved: held, zero POSTs', async () => {
     setup({ allowlist: [ARCH], submitMode: true }, scanResult());
+    const h = harness();
+    await runSubmit(submitArgs(), h.deps);
+    expect(h.net.reqs.filter((r) => r.method === 'POST')).toEqual([]);
+    const d = h.persisted[h.persisted.length - 1]?.disclosures[0];
+    expect(d).toMatchObject({ state: 'held', reason: 'not approved at this commit' });
+  });
+
+  it('submitMode on: persists `submitting` before the POST, then the URL', async () => {
+    setup({ allowlist: [ARCH], approved: APPROVED, submitMode: true }, scanResult());
     const net = fakeNet();
     const states: string[] = [];
     const h = harness(
@@ -737,7 +751,7 @@ describe('runSubmit', () => {
   });
 
   it('kill switch file stops every outbound write whatever the config says', async () => {
-    setup({ allowlist: [ARCH], submitMode: true }, scanResult());
+    setup({ allowlist: [ARCH], approved: APPROVED, submitMode: true }, scanResult());
     writeFileSync(p('KILL'), '');
     const h = harness();
     await runSubmit({ ...submitArgs(), killSwitch: p('KILL') }, h.deps);
@@ -758,7 +772,7 @@ describe('runSubmit', () => {
   });
 
   it('summary is counts only: no repo names, no repo/verdict pairs', async () => {
-    setup({ allowlist: [ARCH] }, scanResult());
+    setup({ allowlist: [ARCH], approved: APPROVED }, scanResult());
     const h = harness();
     await runSubmit(submitArgs(), h.deps);
     const out = h.logs.join('\n');
@@ -796,6 +810,8 @@ describe('forged scan-job artifacts (review #6)', () => {
     ['empty finding ids', (r) => (cand(r).findingIds = [])],
     ['finding id the scan never failed', (r) => (cand(r).findingIds = ['f1', 'invented'])],
     ['archetype that differs from the scan', (r) => (cand(r).archetype = 'other->thing')],
+    ['sha that differs from the scan (0092)', (r) => (cand(r).sha = 'c'.repeat(40))],
+    ['missing sha (0092)', (r) => delete (cand(r) as { sha?: string }).sha],
     ['scan verdict that is not fail', (r) => (scan(r).verdict = 'warn')],
     [
       'summary over 1024',
@@ -846,7 +862,7 @@ describe('forged scan-job artifacts (review #6)', () => {
     const r = valid();
     cand(r).repo = 'acme/..';
     cand(r).report.description = 'FORGED: click http://evil.example';
-    setup({ allowlist: [ARCH], submitMode: true }, r);
+    setup({ allowlist: [ARCH], approved: APPROVED, submitMode: true }, r);
     const h = harness();
     await runSubmit(submitArgs(), h.deps);
     expect(h.net.reqs.filter((q) => q.method === 'POST')).toEqual([]);

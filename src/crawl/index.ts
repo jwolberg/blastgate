@@ -63,6 +63,7 @@ import {
 import { publishSite } from './publish';
 import { type Runner, archetypeOf, childEnv, defaultRunner, reverify, scanRepos } from './scan';
 import { renderSite } from './site';
+import { runReview } from './review';
 import { type SubmitCandidate, submitAll } from './submit';
 import { trackAll } from './track';
 
@@ -155,10 +156,12 @@ function validCandidate(
   engineVersion: string,
 ): c is SubmitCandidate {
   if (!isObj(c)) return false;
-  const { repo, archetype, findingIds, report, reverify } = c;
+  const { repo, sha, archetype, findingIds, report, reverify } = c;
   if (typeof repo !== 'string' || !isPlainRepoName(repo) || !discovered.has(repo)) return false;
   const scan = scans[repo];
   if (scan?.verdict !== 'fail') return false;
+  // The sha approvals are checked against must be the one the report's footer names (0092).
+  if (sha !== scan.fullSha) return false;
   if (typeof archetype !== 'string' || !isStrArr(findingIds) || findingIds.length === 0) {
     return false;
   }
@@ -485,6 +488,7 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
           : status;
       candidates.push({
         repo,
+        sha: scan.fullSha,
         archetype,
         findingIds,
         report: composeReport({
@@ -751,7 +755,8 @@ export async function runPublish(
 const USAGE = `usage:
   crawl scan    --ledger <path> --config <path> --out <dir> [--cap N] [--discovery <path>] [--owner <login>]
   crawl submit  --ledger <path> --config <path> --in <scan-result.json> --site <dir> [--kill-switch <path>] [--remote <url>] [--discovery <path>]
-  crawl publish --config <path> --site <dir> --remote <url>`;
+  crawl publish --config <path> --site <dir> --remote <url>
+  crawl review  --ledger <path> --out <dir outside this repo> [--repo <owner/name>]`;
 
 const REGISTRY_AUTHOR = {
   name: 'Blastgate Registry',
@@ -777,6 +782,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
       'kill-switch': { type: 'string' },
       remote: { type: 'string' },
       owner: { type: 'string' },
+      repo: { type: 'string' },
     },
   });
   const log = (l: string): void => console.log(l);
@@ -824,6 +830,17 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
         log,
       },
     );
+  }
+  if (cmd === 'review') {
+    await runReview(
+      {
+        ledger: need(values.ledger, 'ledger'),
+        out: need(values.out, 'out'),
+        ...(values.repo !== undefined ? { repo: values.repo } : {}),
+      },
+      { log },
+    );
+    return 0;
   }
   if (cmd === 'publish') {
     return runPublish(

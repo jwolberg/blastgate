@@ -21,3 +21,4 @@ Anchor steps with `[N]` so a specific step is greppable / referenceable
 
 - [`release.md`](./release.md): cut a release (npm + GitHub Marketplace Action).
 - [`crawler.md`](./crawler.md): set up, operate, and respond to incidents on the public crawler.
+- [`crawler-skeptic.md`](./crawler-skeptic.md): adversarial agent that tries to refute each held fail before Jay reviews it.

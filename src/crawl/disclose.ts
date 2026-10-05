@@ -10,7 +10,7 @@
 import { markdownFinding } from '../cli/render';
 import { type Finding, withoutPayload } from '../findings/finding';
 import type { CrawlConfig } from './config';
-import type { Ledger } from './ledger';
+import { REASON_NOT_ALLOWLISTED, REASON_NOT_APPROVED, type Ledger } from './ledger';
 
 export const THREAT_MODEL_URL =
   'https://github.com/jwolberg/blastgate/blob/main/docs/threat-model.md';
@@ -20,6 +20,8 @@ export const THREAT_MODEL_URL =
 /** What the gate needs to know about one fail to be reported. */
 export interface GateInput {
   repo: string;
+  /** Full sha of the commit the report names; approvals are pinned to it (0092). */
+  sha: string;
   archetype: string;
   findingIds: readonly string[];
 }
@@ -43,7 +45,14 @@ export function gate(input: GateInput, config: CrawlConfig, ledger: Ledger): Gat
     return { decision: 'held', dryRun, reason: 'archetype tripped by a false-positive report' };
   }
   if (!config.allowlist.includes(input.archetype)) {
-    return { decision: 'held', dryRun, reason: 'archetype not allowlisted' };
+    return { decision: 'held', dryRun, reason: REASON_NOT_ALLOWLISTED };
+  }
+  // Per-fail approval (0092): every finding, this repo, this exact commit. A moved HEAD means a
+  // new sha and so no approval: the fail is held until Jay re-reviews it.
+  const approved = (id: string): boolean =>
+    config.approved.some((a) => a.repo === input.repo && a.sha === input.sha && a.findingId === id);
+  if (input.findingIds.length === 0 || !input.findingIds.every(approved)) {
+    return { decision: 'held', dryRun, reason: REASON_NOT_APPROVED };
   }
   const ids = new Set(input.findingIds);
   const dup = ledger.disclosures.some(
