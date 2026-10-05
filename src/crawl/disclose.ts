@@ -9,8 +9,13 @@
 
 import { markdownFinding } from '../cli/render';
 import { type Finding, withoutPayload } from '../findings/finding';
-import type { CrawlConfig } from './config';
-import { REASON_NOT_ALLOWLISTED, REASON_NOT_APPROVED, type Ledger } from './ledger';
+import { type CrawlConfig, SKEPTIC_PASS } from './config';
+import {
+  REASON_NOT_ALLOWLISTED,
+  REASON_NOT_APPROVED,
+  REASON_POSSIBLE_PAUSED,
+  type Ledger,
+} from './ledger';
 
 export const THREAT_MODEL_URL =
   'https://github.com/jwolberg/blastgate/blob/main/docs/threat-model.md';
@@ -26,8 +31,13 @@ export interface GateInput {
   findingIds: readonly string[];
 }
 
+/** Report tier (0101): the skeptic could not refute it, or could not settle it either way. */
+export type ReportTier = 'vulnerability' | 'possible';
+
 export interface GateDecision {
   decision: 'allowed' | 'held';
+  /** Set when allowed: which report to send. */
+  tier?: ReportTier;
   /** True while `submitMode` is off: the report is recorded, never sent. */
   dryRun: boolean;
   reason?: string;
@@ -48,11 +58,19 @@ export function gate(input: GateInput, config: CrawlConfig, ledger: Ledger): Gat
     return { decision: 'held', dryRun, reason: REASON_NOT_ALLOWLISTED };
   }
   // Per-fail approval (0092): every finding, this repo, this exact commit. A moved HEAD means a
-  // new sha and so no approval: the fail is held until Jay re-reviews it.
-  const approved = (id: string): boolean =>
-    config.approved.some((a) => a.repo === input.repo && a.sha === input.sha && a.findingId === id);
-  if (input.findingIds.length === 0 || !input.findingIds.every(approved)) {
+  // new sha and so no approval: the fail is held until it is re-checked.
+  const approvals = input.findingIds.map((id) =>
+    config.approved.find((a) => a.repo === input.repo && a.sha === input.sha && a.findingId === id),
+  );
+  if (input.findingIds.length === 0 || approvals.some((a) => a === undefined)) {
     return { decision: 'held', dryRun, reason: REASON_NOT_APPROVED };
+  }
+  // Tier (0101): one finding the skeptic only doubted makes the whole report "possible".
+  const tier: ReportTier = approvals.every((a) => a?.skeptic === SKEPTIC_PASS)
+    ? 'vulnerability'
+    : 'possible';
+  if (tier === 'possible' && !config.sendPossible) {
+    return { decision: 'held', dryRun, reason: REASON_POSSIBLE_PAUSED };
   }
   const ids = new Set(input.findingIds);
   const dup = ledger.disclosures.some(
@@ -62,7 +80,7 @@ export function gate(input: GateInput, config: CrawlConfig, ledger: Ledger): Gat
       d.findingIds.some((id) => ids.has(id)),
   );
   if (dup) return { decision: 'held', dryRun, reason: 'duplicate' };
-  return { decision: 'allowed', dryRun };
+  return { decision: 'allowed', dryRun, tier };
 }
 
 // ---------------------------------------------------------------- neutralizing repo text
@@ -227,4 +245,55 @@ export function composeReport(input: ReportInput): Report {
     footer(input.blastgateVersion, input.sha),
   ].join('\n\n---\n\n');
   return { summary, description };
+}
+
+// ---------------------------------------------------------------- report tier (0101)
+
+export interface TieredReport extends Report {
+  severity: 'high' | 'medium';
+}
+
+/**
+ * Re-head a composed report for its tier at send time. The scan job composes the findings; the
+ * skeptic's result, known only once approved, decides how confidently the report speaks. Only the
+ * summary prefix and the header change: every finding block and the commit footer are kept.
+ */
+export function tierReport(report: Report, tier: ReportTier, repoName: string): TieredReport {
+  const cut = report.description.indexOf('\n\n---\n\n');
+  const rest = cut === -1 ? '' : report.description.slice(cut);
+  const repo = inert(repoName, CAPS.repo);
+  const n = (rest.match(/\n\n---\n\n### /g) ?? []).length;
+  const paths = `${n} path${n === 1 ? '' : 's'}`;
+  const at = report.summary.indexOf(' reaches ');
+  const detail = `attacker-controlled input ${at === -1 ? 'reaches a secret' : report.summary.slice(at + 1)}`;
+  const label =
+    tier === 'vulnerability' ? 'Security vulnerability' : 'Possible security vulnerability';
+  const lead =
+    tier === 'vulnerability'
+      ? [
+          `Blastgate, an automated scanner for CI workflows, found ${paths} in \`${repo}\` from attacker-controllable input to a secret or credential that we believe an outside attacker can use today. Before filing, an independent review tried to disprove each one against your workflow source and could not disprove it.`,
+          '',
+          `Each path below lists where the input enters, what it reaches, why, and how to break it. How the scanner decides what is reportable: ${THREAT_MODEL_URL}`,
+          '',
+          '**What we recommend:** fix it by breaking any edge on each path (the fix lines below). If the workflow has already run on untrusted input, rotate the named secret. If this is wrong, or you accept the risk, reply here or close this report; no further report will be filed for these findings.',
+        ]
+      : [
+          `Blastgate, an automated scanner for CI workflows, found ${paths} in \`${repo}\` that may let an outside attacker reach a secret or credential. An independent review checked each one against your workflow source and could not rule it out, but could not confirm every step either: some steps depend on things only you can see, such as repository or environment settings, or another workflow.`,
+          '',
+          `Each path below lists where the input enters, what it reaches, why, and how to break it. How the scanner decides what is reportable: ${THREAT_MODEL_URL}`,
+          '',
+          '**Please investigate:** check each path below against your settings. If it holds, break any edge on it (the fix lines below). If it does not apply, close this report; no further report will be filed for these findings.',
+        ];
+  const head = [
+    `## ${label} in \`${repo}\` (automated report)`,
+    '',
+    ...lead,
+    '',
+    '**Disclosure:** we suggest a 90-day coordinated-disclosure window from the date of this report. Blastgate does not publish this finding; any advisory is yours to publish.',
+  ].join('\n');
+  return {
+    summary: capSummary(`${label} in ${repo}: ${detail}`),
+    description: `${head}${rest}`,
+    severity: tier === 'vulnerability' ? 'high' : 'medium',
+  };
 }

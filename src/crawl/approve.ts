@@ -1,15 +1,20 @@
 /**
- * `crawl approve` (0100): the only intended way to write approvals. It reads review packets and
- * adds an `approved` entry to the ops config for each finding of a packet that BOTH passed the
- * adversarial skeptic (`skeptic: could-not-refute`) AND Jay confirmed (`verdict: confirmed`).
- * Every confirmed packet it does not approve is reported with the reason. It only adds; it never
- * removes an approval. The config parser independently rejects any approval without the skeptic
- * pass, so a hand-pasted entry cannot skip the skeptic either.
+ * `crawl approve` (0100, 0101): the only intended way to write approvals. The skeptic's result
+ * decides: `could-not-refute` is approved as a security vulnerability, `doubtful` as a possible
+ * one (sent only while `sendPossible` is on), `refuted` never. A packet a human marked
+ * `verdict: refuted` is never approved, whatever the skeptic said. It only adds; it never removes
+ * an approval. The config parser independently rejects an approval without a reportable skeptic
+ * result, so a hand-pasted entry cannot skip the skeptic either.
  */
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type Approval, SKEPTIC_PASS, parseCrawlConfig } from './config';
+import {
+  type Approval,
+  REPORTABLE_SKEPTIC,
+  type ReportableSkeptic,
+  parseCrawlConfig,
+} from './config';
 
 export interface ApproveArgs {
   /** Directory of review packets from `crawl review`. */
@@ -54,9 +59,17 @@ export function runApprove(args: ApproveArgs, deps: { log: (l: string) => void }
   for (const file of files) {
     const md = readFileSync(join(args.packets, file), 'utf8');
     const fm = front(md);
-    if (fm.verdict !== 'confirmed') continue;
-    if (fm.skeptic !== SKEPTIC_PASS) {
-      result.skipped.push({ packet: file, reason: `skeptic: ${fm.skeptic ?? 'missing'}` });
+    // 0101: the skeptic's result decides. A human `refuted` still always wins.
+    if (fm.verdict === 'refuted') {
+      result.skipped.push({ packet: file, reason: 'marked refuted by a human' });
+      continue;
+    }
+    if (fm.skeptic === 'refuted') continue;
+    const skeptic = (REPORTABLE_SKEPTIC as readonly string[]).includes(fm.skeptic ?? '')
+      ? (fm.skeptic as ReportableSkeptic)
+      : undefined;
+    if (skeptic === undefined) {
+      result.skipped.push({ packet: file, reason: 'skeptic has not run' });
       continue;
     }
     let entries: unknown;
@@ -88,7 +101,7 @@ export function runApprove(args: ApproveArgs, deps: { log: (l: string) => void }
         repo: e.repo,
         sha: e.sha,
         findingId: e.findingId,
-        skeptic: SKEPTIC_PASS,
+        skeptic,
       };
       if (have.has(key(a))) continue;
       have.add(key(a));
@@ -107,9 +120,7 @@ export function runApprove(args: ApproveArgs, deps: { log: (l: string) => void }
   }
   for (const a of result.added) deps.log(`approve: ${a.repo}@${a.sha.slice(0, 7)} ${a.findingId}`);
   for (const s of result.skipped) deps.log(`approve: skipped ${s.packet} (${s.reason})`);
-  deps.log(
-    `approve: ${result.added.length} added, ${result.skipped.length} confirmed but not approved`,
-  );
+  deps.log(`approve: ${result.added.length} added, ${result.skipped.length} skipped`);
   return result;
 }
 

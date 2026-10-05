@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Finding } from '../findings/finding';
-import { composeReport } from './disclose';
+import { composeReport, tierReport } from './disclose';
 import { discover } from './discover';
 import { type DiscoveryState, serializeDiscoveryState } from './discovery-state';
 import type { HttpRequest, HttpResponse } from './github';
@@ -704,7 +704,10 @@ describe('runSubmit', () => {
     expect(h.net.reqs.some((r) => r.method === 'GET')).toBe(true);
     const d = h.persisted[h.persisted.length - 1]?.disclosures[0];
     expect(d?.state).toBe('queued');
-    expect(d?.wouldSend).toMatchObject(REPORT);
+    expect(d?.wouldSend).toMatchObject({
+      ...tierReport(REPORT, 'vulnerability', 'acme/fail'),
+      severity: 'high',
+    });
   });
 
   it('0092: allowlisted and live but unapproved: held, zero POSTs', async () => {

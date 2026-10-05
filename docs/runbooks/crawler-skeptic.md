@@ -6,13 +6,18 @@ anchor: RB-crawler-skeptic
 
 A false report to a stranger could end the project, and a reader who already believes the engine
 tends to confirm it. The skeptic is a fresh-context agent whose only job is to **disprove** a fail.
-It is a **required** step (0100): an approval can only be written for a packet the skeptic
-**could not refute** and Jay confirmed. `crawl approve` enforces that, and the config parser
-rejects any approval entry without `skeptic: "could-not-refute"`.
+It is a **required** step (0100), and since 0101 its result decides what is reported:
 
-The skeptic can only ever remove a fail: it never edits `verdict:`, never writes `approved`, and
-`could-not-refute` is not a confirmation. Only Jay's verdict plus the skeptic pass release a
-report.
+| Skeptic result | Report sent | Severity |
+| --- | --- | --- |
+| `could-not-refute` | **Security vulnerability**: confident wording, recommends a fix and secret rotation | high |
+| `doubtful` | **Possible security vulnerability**: asks the owner to investigate; says some steps depend on settings only they can see. Held until `sendPossible` is on (after 0095/0096) | medium |
+| `refuted` | nothing | |
+
+The scans exist to help owners: a fail the skeptic cannot dismiss is worth telling them about.
+No human verdict is needed. A human can still stop any report by setting `verdict: refuted` in its
+packet; `crawl approve` never overrides that. `crawl approve` writes the approvals, and the config
+parser rejects any approval without a reportable skeptic result.
 
 ## [1] How to run it (two stages)
 
@@ -25,10 +30,11 @@ From the ops repo checkout with fresh packets in `reviews/` (`crawl review`), in
    reasoning. Refuted packets stay refuted: stage one may only remove.
 3. **Stage two, decider (Opus).** One fresh-context subagent per packet whose skeptic is pending,
    on the top model, same prompt. Its verdict is final.
-4. Rerun `crawl review` to re-sort the index; read and set `verdict:` on what is left.
-5. `node dist/crawl/index.js approve --packets reviews --config config.json` writes approvals for
-   packets that are `confirmed` and `could-not-refute`, and lists every confirmed packet it
-   refused and why. Commit `config.json` to the ops repo.
+4. Rerun `crawl review` to re-sort the index. Optionally set `verdict: refuted` on any packet
+   you want stopped.
+5. `node dist/crawl/index.js approve --packets reviews --config config.json` writes an approval
+   per finding of every `could-not-refute` or `doubtful` packet (the tier rides on the approval),
+   and lists what it skipped and why. Commit `config.json` to the ops repo.
 
 Measured on the 33 packets of 2026-10-05, blind, against Jay's verdicts (0100):
 
@@ -39,6 +45,9 @@ Measured on the 33 packets of 2026-10-05, blind, against Jay's verdicts (0100):
 | Sonnet, then Opus | 1 | 0 | 15 |
 
 Sonnet alone is safe but would block every report, so it is a filter, never the decider.
+Under 0101 the same run gives 1 security vulnerability (legacy-ctm, real) and 11 possible ones
+across 9 repos: 1 real, 2 real but misdescribed, 2 undecidable, 4 most likely not real. That is
+why `sendPossible` stays off until 0095/0096 remove those analyzer false alarms.
 
 ## [2] Prompt (give verbatim, with the packet path)
 

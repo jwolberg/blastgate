@@ -21,14 +21,18 @@ export interface Approval {
   sha: string;
   findingId: string;
   /**
-   * The skeptic's verdict on the packet this approval came from (0100). Only a pass is
-   * accepted, so an approval cannot exist without the adversarial check having run.
+   * The skeptic's verdict on the packet this approval came from (0100). It sets the report tier
+   * (0101): could-not-refute is a security vulnerability, doubtful a possible one. A refuted or
+   * unchecked fail can never be approved.
    */
-  skeptic: typeof SKEPTIC_PASS;
+  skeptic: ReportableSkeptic;
 }
 
-/** The only skeptic verdict that lets a fail reach approval (0100). */
+/** The skeptic verdict for a vulnerability it tried and failed to disprove (0100). */
 export const SKEPTIC_PASS = 'could-not-refute';
+/** Skeptic verdicts that may be reported, most confident first (0101). */
+export const REPORTABLE_SKEPTIC = [SKEPTIC_PASS, 'doubtful'] as const;
+export type ReportableSkeptic = (typeof REPORTABLE_SKEPTIC)[number];
 
 export interface CrawlConfig {
   /** Archetypes whose fails are auto-submitted (KTD6.1). Empty = everything is held. */
@@ -50,6 +54,11 @@ export interface CrawlConfig {
   discoveryMinutes: number;
   /** Per-fail approvals (0092). Required on top of `allowlist`; empty = nothing is sent. */
   approved: Approval[];
+  /**
+   * Send possible-vulnerability (skeptic: doubtful) reports (0101). Off until the analyzer's
+   * guard and wrong-line bugs (0095/0096) are fixed; those reports are held meanwhile.
+   */
+  sendPossible: boolean;
 }
 
 /** Upper bound: well above what a 5 hour job can spend at the 9/min search throttle (~2,700). */
@@ -67,6 +76,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   discoveryBudget: 300,
   discoveryMinutes: 60,
   approved: [],
+  sendPossible: false,
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -123,12 +133,17 @@ function approvals(v: unknown): Approval[] {
     if (typeof findingId !== 'string' || findingId === '') {
       fail(`${where}.findingId must be a non-empty string`);
     }
-    if (skeptic !== SKEPTIC_PASS) {
+    if (!(REPORTABLE_SKEPTIC as readonly unknown[]).includes(skeptic)) {
       fail(
-        `${where}.skeptic must be "${SKEPTIC_PASS}"; only a fail the skeptic could not refute can be approved (use crawl approve)`,
+        `${where}.skeptic must be one of ${REPORTABLE_SKEPTIC.join(', ')}; a refuted or unchecked fail cannot be approved (use crawl approve)`,
       );
     }
-    seen.set(JSON.stringify([repo, sha, findingId]), { repo, sha, findingId, skeptic });
+    seen.set(JSON.stringify([repo, sha, findingId]), {
+      repo,
+      sha,
+      findingId,
+      skeptic: skeptic as ReportableSkeptic,
+    });
   });
   return [...seen.values()];
 }
@@ -153,6 +168,7 @@ export function parseCrawlConfig(text: string): CrawlConfig {
       'discoveryBudget',
       'discoveryMinutes',
       'approved',
+      'sendPossible',
     ],
     '',
   );
@@ -207,5 +223,6 @@ export function parseCrawlConfig(text: string): CrawlConfig {
       MAX_DISCOVERY_MINUTES,
     ),
     approved: approvals(raw.approved),
+    sendPossible: bool(raw, 'sendPossible', DEFAULT_CRAWL_CONFIG.sendPossible),
   };
 }

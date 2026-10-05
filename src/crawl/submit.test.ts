@@ -9,6 +9,7 @@ import {
   transition,
   type Ledger,
 } from './ledger';
+import { tierReport } from './disclose';
 import { submitAll, type SubmitCandidate } from './submit';
 
 const NOW = new Date('2026-10-01T12:00:00.000Z');
@@ -106,8 +107,8 @@ describe('submitAll (U5)', () => {
     const post = e.posts()[0] as HttpRequest;
     expect(post.url).toBe('https://api.github.com/repos/a/one/security-advisories/reports');
     expect(JSON.parse(post.body ?? '')).toEqual({
-      summary: 'sum a/one',
-      description: 'desc a/one',
+      summary: 'Security vulnerability in a/one: attacker-controlled input reaches a secret',
+      description: tierReport(cand('a/one').report, 'vulnerability', 'a/one').description,
       severity: 'high',
       vulnerabilities: [],
     });
@@ -323,13 +324,34 @@ describe('submitAll (U5)', () => {
     expect(e.posts()).toHaveLength(0);
     const d = r.ledger.disclosures[0];
     expect(d?.state).toBe('queued');
-    expect(d?.wouldSend).toEqual({
-      summary: 'sum a/one',
-      description: 'desc a/one',
+    expect(d?.wouldSend).toMatchObject({
+      summary: 'Security vulnerability in a/one: attacker-controlled input reaches a secret',
       severity: 'high',
       vulnerabilities: [],
     });
+    expect(String(d?.wouldSend?.description)).toMatch(/^## Security vulnerability in `a\/one`/);
     expect(r.outcomes[0]?.outcome).toBe('dry-run');
+  });
+
+  it('0101: a doubtful approval goes out as a possible vulnerability, severity medium, only with sendPossible', async () => {
+    const doubtful = {
+      ...live,
+      approved: approvedAll.map((a) => ({ ...a, skeptic: 'doubtful' as const })),
+    };
+    const e = env();
+    const held = await run(e, [cand('a/one')], { config: doubtful });
+    expect(e.posts()).toHaveLength(0);
+    expect(held.ledger.disclosures[0]?.reason).toBe('possible vulnerability: sending paused');
+    const r = await run(e, [cand('a/one')], {
+      ledger: held.ledger,
+      config: { ...doubtful, sendPossible: true },
+    });
+    expect(e.posts()).toHaveLength(1);
+    expect(r.ledger.disclosures[0]?.state).toBe('submitted');
+    const sent = JSON.parse(String(e.posts()[0]?.body)) as Record<string, unknown>;
+    expect(sent.summary).toMatch(/^Possible security vulnerability in a\/one: /);
+    expect(sent.severity).toBe('medium');
+    expect(String(sent.description)).toMatch(/please investigate/i);
   });
 
   it('reverify resolved moves the disclosure to resolved-before-report with no requests', async () => {

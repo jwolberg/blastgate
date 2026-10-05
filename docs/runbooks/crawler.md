@@ -64,7 +64,8 @@ Strict JSON; unknown keys are rejected so a typo cannot silently flip a safety d
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `allowlist` | `[]` | Archetypes (`<entry kind>-><sink kind>`) eligible to be submitted. Empty means everything is held. Necessary, not sufficient: each fail also needs an `approved` entry. |
-| `approved` | `[]` | Per-fail hand approvals, `{"repo": "owner/name", "sha": "<40-char commit>", "findingId": "<id>"}` (0092). A report is sent only when **every** finding in it is approved for that repo **at the exact commit the report names**. If the repo's HEAD moves, the new commit has no approval and the fail is held again until re-reviewed. |
+| `sendPossible` | `false` | Send possible-vulnerability reports (skeptic `doubtful`, 0101). Off until the analyzer fixes 0095/0096 land; until then those reports are held as `possible vulnerability: sending paused`. |
+| `approved` | `[]` | Per-fail approvals written by `crawl approve`, `{"repo", "sha", "findingId", "skeptic"}` (0092, 0100). `skeptic` is `could-not-refute` (sent as a security vulnerability) or `doubtful` (sent as a possible one); nothing else loads. A report is sent only when **every** finding in it is approved for that repo **at the exact commit the report names**. If the repo's HEAD moves, the new commit has no approval and the fail is held again until re-reviewed. |
 | `submitMode` | `false` | Off is dry run: the exact request body is recorded on the disclosure (`wouldSend`), nothing is sent. |
 | `publishSite` | `false` | Off builds the site but never pushes it. |
 | `reporterLogin` | `""` | Login the reports are filed as. Empty skips advisory tracking. |
@@ -181,8 +182,9 @@ Do not set `allowlist`, `submitMode`, or `publishSite` until all of this holds:
   has zero false passes.
 - Each archetype to allowlist has at least 20 hand-confirmed fails across at least 10 owners and
   zero refuted.
-- Even then, every individual report still needs its own `approved` entry (0092). The archetype
-  bar decides whether a class is trustworthy; the approval decides whether this one report is.
+- Even then, every individual report still needs its own `approved` entry (0092), written by
+  `crawl approve` from the two-stage skeptic's result (0100, 0101). Keep `sendPossible` off until
+  0095/0096 are fixed and a fresh dry run shows the possible tier is mostly real.
 - The result and your approval are written to `docs/evaluations/<date>-crawler-dry-run.md` **in
   the private ops repo** (`jwolberg/blastgate-crawl`), never in this public repo. The review
   names third-party repos with unfixed vulnerabilities, and unsolicited fails are only ever

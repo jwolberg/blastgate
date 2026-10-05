@@ -48,8 +48,8 @@ describe('crawl approve (0100)', () => {
     mkdirSync(join(dir, 'packets'), { recursive: true });
   });
 
-  it('approves a confirmed packet the skeptic could not refute, recording the skeptic pass', () => {
-    packet('a__fork.md', { verdict: 'confirmed', skeptic: 'could-not-refute' });
+  it('approves a packet the skeptic could not refute, with no human verdict needed (0101)', () => {
+    packet('a__fork.md', { skeptic: 'could-not-refute' });
     const cfg = config({ allowlist: ['fork-pr->credential'] });
     const r = run(cfg);
     expect(r.added).toHaveLength(1);
@@ -59,29 +59,35 @@ describe('crawl approve (0100)', () => {
     expect(parseCrawlConfig(readFileSync(cfg, 'utf8')).allowlist).toEqual(['fork-pr->credential']);
   });
 
-  it.each(['doubtful', 'refuted', 'pending'])(
-    'refuses a confirmed packet whose skeptic said %s, and says why',
-    (skeptic) => {
-      packet('a__fork.md', { verdict: 'confirmed', skeptic });
-      const cfg = config();
-      const r = run(cfg);
-      expect(r.added).toEqual([]);
-      expect(r.skipped).toEqual([{ packet: 'a__fork.md', reason: `skeptic: ${skeptic}` }]);
-      expect(approvedIn(cfg)).toEqual([]);
-    },
-  );
-
-  it('ignores packets Jay did not confirm, even if the skeptic passed them', () => {
-    packet('a.md', { verdict: 'refuted', skeptic: 'could-not-refute' });
-    packet('b.md', { verdict: 'unsure', skeptic: 'could-not-refute' });
-    packet('c.md', { verdict: 'pending', skeptic: 'could-not-refute' });
+  it('approves a doubtful packet as a possible vulnerability (0101)', () => {
+    packet('a.md', { skeptic: 'doubtful' });
     const cfg = config();
-    expect(run(cfg)).toEqual({ added: [], skipped: [] });
+    run(cfg);
+    expect(approvedIn(cfg)).toEqual([
+      { repo: 'acme/widgets', sha: SHA, findingId: F.id, skeptic: 'doubtful' },
+    ]);
+  });
+
+  it('never approves what the skeptic refuted, and flags packets it has not checked', () => {
+    packet('a.md', { skeptic: 'refuted' });
+    packet('b.md', { skeptic: 'pending' });
+    const cfg = config();
+    const r = run(cfg);
+    expect(r.added).toEqual([]);
+    expect(r.skipped).toEqual([{ packet: 'b.md', reason: 'skeptic has not run' }]);
     expect(approvedIn(cfg)).toEqual([]);
   });
 
+  it('never approves a packet Jay marked refuted, whatever the skeptic said', () => {
+    packet('a.md', { verdict: 'refuted', skeptic: 'could-not-refute' });
+    const cfg = config();
+    const r = run(cfg);
+    expect(r.added).toEqual([]);
+    expect(r.skipped).toEqual([{ packet: 'a.md', reason: 'marked refuted by a human' }]);
+  });
+
   it('refuses a packet whose approval block names a different repo or commit', () => {
-    packet('a.md', { verdict: 'confirmed', skeptic: 'could-not-refute' });
+    packet('a.md', { skeptic: 'could-not-refute' });
     const p = join(dir, 'packets', 'a.md');
     writeFileSync(
       p,
@@ -93,7 +99,7 @@ describe('crawl approve (0100)', () => {
   });
 
   it('keeps existing approvals and does not duplicate them on a rerun', () => {
-    packet('a.md', { verdict: 'confirmed', skeptic: 'could-not-refute' });
+    packet('a.md', { skeptic: 'could-not-refute' });
     const prior = { repo: 'x/y', sha: 'b'.repeat(40), findingId: 'p', skeptic: 'could-not-refute' };
     const cfg = config({ approved: [prior] });
     run(cfg);

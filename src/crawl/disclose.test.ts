@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { Finding } from '../findings/finding';
 import { type CrawlConfig, DEFAULT_CRAWL_CONFIG } from './config';
-import { composeReport, gate } from './disclose';
+import { composeReport, gate, tierReport } from './disclose';
 import { createDisclosure, emptyLedger } from './ledger';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'disclose');
@@ -58,7 +58,7 @@ describe('gate (KTD6 steps 1, 3, 5)', () => {
       cfg({ allowlist: [input.archetype], approved: approvedInput }),
       emptyLedger(),
     );
-    expect(r).toEqual({ decision: 'allowed', dryRun: true });
+    expect(r).toEqual({ decision: 'allowed', dryRun: true, tier: 'vulnerability' });
   });
 
   it('is live (dryRun false) only when submitMode is on', () => {
@@ -67,7 +67,7 @@ describe('gate (KTD6 steps 1, 3, 5)', () => {
       cfg({ allowlist: [input.archetype], approved: approvedInput, submitMode: true }),
       emptyLedger(),
     );
-    expect(r).toEqual({ decision: 'allowed', dryRun: false });
+    expect(r).toEqual({ decision: 'allowed', dryRun: false, tier: 'vulnerability' });
   });
 
   it('holds finding ids already disclosed on that repo as a duplicate', () => {
@@ -157,7 +157,78 @@ describe('gate: per-fail approval (0092)', () => {
   it('allows a fail whose every finding id is approved at that exact commit', () => {
     const two = { ...input, findingIds: ['f1', 'f2'] };
     const both = [...approvedInput, { ...approvedInput[0]!, findingId: 'f2' }];
-    expect(gate(two, allow(both), emptyLedger())).toEqual({ decision: 'allowed', dryRun: false });
+    expect(gate(two, allow(both), emptyLedger())).toEqual({
+      decision: 'allowed',
+      dryRun: false,
+      tier: 'vulnerability',
+    });
+  });
+});
+
+describe('gate: report tier from the skeptic result (0101)', () => {
+  const doubtfulOnly = [{ ...approvedInput[0]!, skeptic: 'doubtful' as const }];
+  const cfgP = (sendPossible: boolean, approved: CrawlConfig['approved'] = doubtfulOnly) =>
+    cfg({ allowlist: [input.archetype], approved, submitMode: true, sendPossible });
+
+  it('holds a doubtful (possible) report while sendPossible is off', () => {
+    expect(gate(input, cfgP(false), emptyLedger())).toMatchObject({
+      decision: 'held',
+      reason: 'possible vulnerability: sending paused',
+    });
+  });
+
+  it('sends a doubtful report as the possible tier once sendPossible is on', () => {
+    expect(gate(input, cfgP(true), emptyLedger())).toEqual({
+      decision: 'allowed',
+      dryRun: false,
+      tier: 'possible',
+    });
+  });
+
+  it('a report with any doubtful finding is the possible tier', () => {
+    const two = { ...input, findingIds: ['f1', 'f2'] };
+    const mixed = [approvedInput[0]!, { ...doubtfulOnly[0]!, findingId: 'f2' }];
+    expect(gate(two, cfgP(true, mixed), emptyLedger())).toMatchObject({ tier: 'possible' });
+  });
+});
+
+describe('tierReport (0101)', () => {
+  const base = composeReport({
+    repo: 'acme/widgets',
+    sha: SHA,
+    findings: [real('untrusted-text-shell')],
+    blastgateVersion: '9.9.9',
+  });
+
+  it('labels a could-not-refute report a security vulnerability, confidently', () => {
+    const r = tierReport(base, 'vulnerability', 'acme/widgets');
+    expect(r.summary).toMatch(
+      /^Security vulnerability in acme\/widgets: attacker-controlled input reaches /,
+    );
+    expect(r.description).toMatch(/^## Security vulnerability in `acme\/widgets`/);
+    expect(r.description).toMatch(/could not disprove/i);
+    expect(r.description).not.toMatch(/possible/i);
+    expect(r.severity).toBe('high');
+  });
+
+  it('labels a doubtful report a possible vulnerability and asks the owner to investigate', () => {
+    const r = tierReport(base, 'possible', 'acme/widgets');
+    expect(r.summary).toMatch(/^Possible security vulnerability in acme\/widgets: /);
+    expect(r.description).toMatch(/^## Possible security vulnerability in `acme\/widgets`/);
+    expect(r.description).toMatch(/please investigate/i);
+    expect(r.description).toMatch(/could not confirm every step/i);
+    expect(r.description).not.toMatch(/proven path/i);
+    expect(r.severity).toBe('medium');
+  });
+
+  it('keeps every finding block and the commit footer unchanged', () => {
+    for (const t of ['vulnerability', 'possible'] as const) {
+      const r = tierReport(base, t, 'acme/widgets');
+      const tail = (d: string) => d.slice(d.indexOf('\n\n---\n\n'));
+      expect(tail(r.description)).toBe(tail(base.description));
+      expect(r.description).toContain(SHA);
+      expect(r.summary.length).toBeLessThanOrEqual(1024);
+    }
   });
 });
 
