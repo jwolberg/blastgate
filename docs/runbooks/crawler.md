@@ -108,6 +108,14 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
 - **Dry-run bodies.** Disclosures with `wouldSend` hold the exact JSON that would be POSTed. Read a
   sample for each archetype before enabling `submitMode`: the summary, the description, and that
   no payload text appears.
+- **Owners without private vulnerability reporting (0102).** When a fail would be reported but
+  the repo's PVR is definitely off (the API answers 200 with `enabled: false`), the crawler opens
+  **one** public issue, "Please enable private vulnerability reporting", with fixed text and no
+  details (no workflow, secret, file or tier). The request is recorded on the disclosure
+  (`pvrRequest`) before it is posted, so it is never posted twice, and a repo is never asked
+  again, even if the request failed. The disclosure stays held (`no PVR (enable requested)`) and
+  PVR is re-checked every run; once the owner turns it on, the private report is filed. Requests
+  count against the throttle. Dry runs ask nobody.
 - **Tripped archetypes.** A submitted report whose advisory is closed or withdrawn becomes
   `declined` and puts its archetype in `trippedArchetypes`; the gate then holds it even if
   allowlisted. Re-admit it by removing it from that list by hand once you have judged the cause.
