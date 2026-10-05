@@ -228,6 +228,21 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
           `${sink.identity} from the untrusted-triggered job ${where}.`,
       };
     }
+    // 0099: text expanded with ${{ }} into a `run:` script or `github-script` code is code
+    // injection, not prompt injection: say what actually happens and give the standard fix.
+    if (cls === 'execution') {
+      return {
+        reason:
+          `${path.entry.label} — job ${where} expands attacker-written event text with \`\${{ }}\` ` +
+          `directly into code the job runs (a \`run:\` shell script or \`github-script\`), before ` +
+          `that code starts. Text that closes the surrounding quote or string runs as code in the job, ` +
+          `which holds ${sink.sinkKind} ${sink.identity} and can send it out.`,
+        remediation:
+          `Pass the text through an environment variable and use it quoted (\`env: VAR: \${{ … }}\` ` +
+          `then \`"$VAR"\`) instead of expanding \`\${{ }}\` inside the script; remove ` +
+          `${sink.identity} from the untrusted-triggered job ${where} if it is not needed there.`,
+      };
+    }
     return {
       reason:
         `${path.entry.label} — attacker-authored text from an untrusted event is read by job ${where}, ` +

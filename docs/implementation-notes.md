@@ -1419,3 +1419,14 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Chose: the possible-tier wording names generic unknowns (settings only the owner can see)
   and never quotes the skeptic's own notes. Those notes come from reading attacker-controlled
   text and are model output; sending them to a stranger is an injection and accuracy risk.
+
+## 2026-10-05 — 0099 shell/script injection described accurately
+
+- Text spliced with `${{ }}` into `run:` or `github-script` (sinkClass `execution`) now says what
+  happens: the text runs as code in the job. The fix recommends the env-var + `"$VAR"` pattern.
+  The old prompt-injection wording ("e.g. an HTML comment invisible on the rendered page") stays
+  only on the generic branch, where no execution sink is classified.
+- Chose one sentence for both `run:` and `github-script`; the entry does not record which one,
+  and the sentence is true for both. No example payload in the text, which keeps reports free of
+  attacker.example strings.
+- Verified on the real legacy-ctm repo via `crawl review`: new why/fix text, zero "HTML comment".

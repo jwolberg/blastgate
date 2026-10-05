@@ -86,6 +86,12 @@ const CHECKS: CheckSpec[] = [
       expect(f!.sink.identity).toBe('DEPLOY_KEY');
       expect(f!.evidence).toMatchObject({ file: '.github/workflows/triage.yml', line: 12 });
       expect(f!.labels).toContain('ASI01:2026');
+      // 0099: describe what actually happens (code injection via ${{ }}), not prompt injection.
+      expect(f!.reason).toMatch(/directly into code the job runs/);
+      expect(f!.reason).toMatch(/runs as code/);
+      expect(f!.reason).not.toMatch(/HTML comment|prompt/i);
+      expect(f!.remediation).toMatch(/environment variable/);
+      expect(f!.remediation).toMatch(/"\$VAR"/);
     },
   },
   {
