@@ -79,10 +79,24 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
 - **Kill switch.** Create a file named `KILL_SWITCH` at the ops repo root (any content) and push.
   The next run stops all outbound reports regardless of config. It is separate from `submitMode`
   so an emergency stop needs no config edit. Delete the file to resume.
-- **Reviewing held fails.** Open `ledger.json` and look at disclosures in state `held`; `reason`
-  says why (`archetype not allowlisted`, `not approved at this commit`, `no PVR`, `submission
-  state uncertain`, ...). Read the fail by hand (the ledger keeps archetype and finding ids;
-  re-scan the repo locally with `blastgate <path> --json` for the evidence). Nothing is sent on an
+- **Reviewing held fails.** Generate one packet per held (repo, archetype) fail (0093), from a
+  checkout of this repo built at the ops repo's `BLASTGATE_SHA` (`npm run build` first):
+
+  ```bash
+  gh api repos/jwolberg/blastgate-crawl/contents/ledger.json -q .content | base64 -d > /tmp/ledger.json
+  npx tsx src/crawl/index.ts review --ledger /tmp/ledger.json --out ../blastgate-crawl/reviews
+  ```
+
+  It rescans each repo at its current HEAD (clones go to a temp dir and are deleted) and writes
+  `reviews/README.md` (index) plus a packet per fail: the findings, the whole cited workflow at
+  that commit with cited lines marked `>>`, the other workflows to open, an archetype checklist,
+  the exact report that would be sent, and the `approved` entries to paste. It refuses to write
+  inside this public repo. A rerun keeps a packet whose commit is unchanged (your verdict
+  survives) and replaces one whose repo moved (a new commit needs a new review). Work the
+  checklist against the source, set `verdict:` to `confirmed` or `refuted`, and commit the
+  packets to the ops repo. `reason` in the ledger says why each is held (`archetype not
+  allowlisted`, `not approved at this commit`, `no PVR`, `submission state uncertain`, ...).
+  Nothing is sent on an
   archetype alone (0092): to release one fail, add an `approved` entry per finding id at the
   commit you reviewed, and its archetype to `allowlist`. Held entries return to `queued` on a
   later run. Approve only what you have read line by line; an approval is your name on the report.

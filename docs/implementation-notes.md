@@ -1358,3 +1358,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   run-local and live a day, and both jobs run the same `BLASTGATE_SHA`).
 - Tradeoff: approvals must be re-done if a repo pushes between review and send. Accepted; that is
   exactly the case where the reviewed lines may no longer be the reported ones.
+
+## 2026-10-05 — 0093 review packets (`crawl review`)
+
+- Chose: rescan at current HEAD, not the ledger's old sha. The approval pins to the sha that will
+  actually be reported, and the crawler only reports HEAD (reverify refuses a stale head), so
+  reviewing an older commit would approve something that can never be sent.
+- Chose: quote the **whole** cited workflow, numbered, cited lines marked. Both refuted dry-run
+  fails turned on a guard far from the cited line (a job `if:` and an early `exit`), so an
+  excerpt around the line would have hidden them.
+- Safety: packets are refused inside this public repo; clones live in a temp dir that is always
+  deleted; quoted files are read only if they are regular files whose real path stays inside the
+  clone (a hostile repo cannot symlink a packet into quoting local files). Payloads never appear.
+- Rerun keeps a packet whose sha is unchanged so a verdict is not lost; a moved repo's packet is
+  replaced with `verdict: pending`. Limitation: a kept packet is not refreshed if only the local
+  engine changed. The packet flags an engine that differs from the crawler's.
+- Ran the full suite with `--testTimeout=60000`: the machine's load average was ~250 from other
+  apps and git-backed tests on `main` timed out at the 5s default the same way. Assertions unchanged.
