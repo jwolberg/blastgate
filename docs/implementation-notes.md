@@ -1343,3 +1343,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   triggering it. Crediting it for fork-pr findings would create false passes.
 - Verified: the refuted dry-run fail drops to warn (the agent reading the bot's text, legs
   incomplete). The other four are unchanged. The 50-repo sample has identical findings vs main.
+
+## 2026-10-05 — 0092 per-fail approval before any report is sent
+
+- Why: the allowlist released a whole archetype, so after go-live every new fail of that class
+  would be filed unseen. Jay: a single false report could end the project.
+- Chose: approval is required **in addition to** the allowlist and tripwire, not instead of them.
+  The allowlist stays as a per-class kill switch; the tripwire still wins over an approval.
+- Chose: approvals pin to the full commit sha the report names (its footer), per finding id.
+  A moved HEAD means a new sha and so no approval. Stricter than per-repo, but the report text
+  quotes file:line at that commit, so an approval of a different commit is not an approval of it.
+- Change: the scan job's candidates now carry `sha`, and the submit job drops any candidate whose
+  sha differs from its scan row. Scan-result artifacts from older engines are dropped (they are
+  run-local and live a day, and both jobs run the same `BLASTGATE_SHA`).
+- Tradeoff: approvals must be re-done if a repo pushes between review and send. Accepted; that is
+  exactly the case where the reviewed lines may no longer be the reported ones.

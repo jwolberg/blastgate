@@ -14,10 +14,29 @@ import { submitAll, type SubmitCandidate } from './submit';
 const NOW = new Date('2026-10-01T12:00:00.000Z');
 const ARCH = 'pr-title-injection';
 
-const live: CrawlConfig = { ...DEFAULT_CRAWL_CONFIG, allowlist: [ARCH], submitMode: true };
+const SHA = 'd'.repeat(40);
+/** Every repo these tests file for, approved at SHA for its default finding id (0092). */
+const REPOS = [
+  'a/one',
+  'b/two',
+  'c/three',
+  'o/a',
+  'o/b',
+  'o/c',
+  ...[0, 1, 2, 3, 4, 5].map((i) => `o/r${i}`),
+];
+const approvedAll = REPOS.map((repo) => ({ repo, sha: SHA, findingId: `${repo}#1` }));
+
+const live: CrawlConfig = {
+  ...DEFAULT_CRAWL_CONFIG,
+  allowlist: [ARCH],
+  approved: approvedAll,
+  submitMode: true,
+};
 
 const cand = (repo: string, over: Partial<SubmitCandidate> = {}): SubmitCandidate => ({
   repo,
+  sha: SHA,
   archetype: ARCH,
   findingIds: [`${repo}#1`],
   report: { summary: `sum ${repo}`, description: `desc ${repo}` },
@@ -148,6 +167,27 @@ describe('submitAll (U5)', () => {
       state: 'held',
       reason: 'archetype not allowlisted',
     });
+  });
+
+  it('0092: an allowlisted but unapproved fail is held without a POST, then sent once approved', async () => {
+    const e = env();
+    const unapproved = { ...live, approved: [] };
+    const r1 = await run(e, [cand('a/one')], { config: unapproved });
+    expect(e.calls).toHaveLength(0);
+    expect(r1.ledger.disclosures[0]).toMatchObject({
+      state: 'held',
+      reason: 'not approved at this commit',
+    });
+    const r2 = await run(e, [cand('a/one')], { ledger: r1.ledger });
+    expect(e.posts()).toHaveLength(1);
+    expect(r2.ledger.disclosures[0]?.state).toBe('submitted');
+  });
+
+  it('0092: an approval for an older commit does not release the fail at the new one', async () => {
+    const e = env();
+    const r = await run(e, [cand('a/one', { sha: 'e'.repeat(40) })]);
+    expect(e.posts()).toHaveLength(0);
+    expect(r.ledger.disclosures[0]?.reason).toBe('not approved at this commit');
   });
 
   it('kill switch: zero requests, nothing created, reason in the summary', async () => {

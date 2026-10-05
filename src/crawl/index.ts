@@ -155,10 +155,12 @@ function validCandidate(
   engineVersion: string,
 ): c is SubmitCandidate {
   if (!isObj(c)) return false;
-  const { repo, archetype, findingIds, report, reverify } = c;
+  const { repo, sha, archetype, findingIds, report, reverify } = c;
   if (typeof repo !== 'string' || !isPlainRepoName(repo) || !discovered.has(repo)) return false;
   const scan = scans[repo];
   if (scan?.verdict !== 'fail') return false;
+  // The sha approvals are checked against must be the one the report's footer names (0092).
+  if (sha !== scan.fullSha) return false;
   if (typeof archetype !== 'string' || !isStrArr(findingIds) || findingIds.length === 0) {
     return false;
   }
@@ -485,6 +487,7 @@ export async function runScan(args: ScanArgs, deps: ScanDeps): Promise<ScanResul
           : status;
       candidates.push({
         repo,
+        sha: scan.fullSha,
         archetype,
         findingIds,
         report: composeReport({

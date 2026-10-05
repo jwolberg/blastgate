@@ -28,6 +28,8 @@ import type { ReverifyStatus } from './scan';
 
 export interface SubmitCandidate {
   repo: string;
+  /** Full sha of the scanned commit the report names (its footer); approvals pin to it (0092). */
+  sha: string;
   archetype: string;
   findingIds: string[];
   report: { summary: string; description: string };
@@ -213,13 +215,14 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       continue;
     }
 
-    // Gate (allowlist + once-per-finding), evaluated without this entry's own record.
+    // Gate (tripwire, allowlist, per-fail approval, once-per-finding), evaluated without this
+    // entry's own record.
     const others: Ledger = {
       ...ledger,
       disclosures: ledger.disclosures.filter((d) => d !== current()),
     };
     const decision = gate(
-      { repo: c.repo, archetype: c.archetype, findingIds: c.findingIds },
+      { repo: c.repo, sha: c.sha, archetype: c.archetype, findingIds: c.findingIds },
       config,
       others,
     );

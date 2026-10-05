@@ -63,7 +63,8 @@ Strict JSON; unknown keys are rejected so a typo cannot silently flip a safety d
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `allowlist` | `[]` | Archetypes (`<entry kind>-><sink kind>`) whose fails are auto-submitted. Empty means everything is held. |
+| `allowlist` | `[]` | Archetypes (`<entry kind>-><sink kind>`) eligible to be submitted. Empty means everything is held. Necessary, not sufficient: each fail also needs an `approved` entry. |
+| `approved` | `[]` | Per-fail hand approvals, `{"repo": "owner/name", "sha": "<40-char commit>", "findingId": "<id>"}` (0092). A report is sent only when **every** finding in it is approved for that repo **at the exact commit the report names**. If the repo's HEAD moves, the new commit has no approval and the fail is held again until re-reviewed. |
 | `submitMode` | `false` | Off is dry run: the exact request body is recorded on the disclosure (`wouldSend`), nothing is sent. |
 | `publishSite` | `false` | Off builds the site but never pushes it. |
 | `reporterLogin` | `""` | Login the reports are filed as. Empty skips advisory tracking. |
@@ -79,10 +80,12 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   The next run stops all outbound reports regardless of config. It is separate from `submitMode`
   so an emergency stop needs no config edit. Delete the file to resume.
 - **Reviewing held fails.** Open `ledger.json` and look at disclosures in state `held`; `reason`
-  says why (`archetype not allowlisted`, `no PVR`, `submission state uncertain`, ...). Read the
-  fail by hand (the ledger keeps archetype and finding ids; re-scan the repo locally with
-  `blastgate <path> --json` for the evidence). To release an archetype, add it to `allowlist`; held
-  entries for it return to `queued` on a later run.
+  says why (`archetype not allowlisted`, `not approved at this commit`, `no PVR`, `submission
+  state uncertain`, ...). Read the fail by hand (the ledger keeps archetype and finding ids;
+  re-scan the repo locally with `blastgate <path> --json` for the evidence). Nothing is sent on an
+  archetype alone (0092): to release one fail, add an `approved` entry per finding id at the
+  commit you reviewed, and its archetype to `allowlist`. Held entries return to `queued` on a
+  later run. Approve only what you have read line by line; an approval is your name on the report.
 - **Dry-run bodies.** Disclosures with `wouldSend` hold the exact JSON that would be POSTed. Read a
   sample for each archetype before enabling `submitMode`: the summary, the description, and that
   no payload text appears.
@@ -160,6 +163,8 @@ Do not set `allowlist`, `submitMode`, or `publishSite` until all of this holds:
   has zero false passes.
 - Each archetype to allowlist has at least 20 hand-confirmed fails across at least 10 owners and
   zero refuted.
+- Even then, every individual report still needs its own `approved` entry (0092). The archetype
+  bar decides whether a class is trustworthy; the approval decides whether this one report is.
 - The result and your approval are written to `docs/evaluations/<date>-crawler-dry-run.md` **in
   the private ops repo** (`jwolberg/blastgate-crawl`), never in this public repo. The review
   names third-party repos with unfixed vulnerabilities, and unsolicited fails are only ever
