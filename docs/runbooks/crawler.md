@@ -84,7 +84,7 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
 
   ```bash
   gh api repos/jwolberg/blastgate-crawl/contents/ledger.json -q .content | base64 -d > /tmp/ledger.json
-  npx tsx src/crawl/index.ts review --ledger /tmp/ledger.json --out ../blastgate-crawl/reviews
+  node dist/crawl/index.js review --ledger /tmp/ledger.json --out ../blastgate-crawl/reviews
   ```
 
   It rescans each repo at its current HEAD (clones go to a temp dir and are deleted) and writes
