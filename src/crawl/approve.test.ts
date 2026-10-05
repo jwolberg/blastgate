@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Finding } from '../findings/finding';
-import { runApprove } from './approve';
+import { resetSkeptic, runApprove } from './approve';
 import { parseCrawlConfig } from './config';
 import { renderPacket } from './review';
 
@@ -109,5 +109,52 @@ describe('crawl approve (0100)', () => {
     );
     writeFileSync(join(dir, 'packets', 'SUMMARY.md'), '# summary');
     expect(run(config())).toEqual({ added: [], skipped: [] });
+  });
+});
+
+describe('crawl skeptic-reset between the two skeptic stages (0100)', () => {
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'bg-reset-'));
+    mkdirSync(join(dir, 'packets'), { recursive: true });
+  });
+  const withReasoning = (name: string, skeptic: string): string => {
+    packet(name, { skeptic });
+    const p = join(dir, 'packets', name);
+    writeFileSync(
+      p,
+      readFileSync(p, 'utf8').replace(
+        '## Skeptic\n\nNot run yet.',
+        '## Skeptic\n\nStage-one reasoning that must not reach stage two.',
+      ),
+    );
+    return p;
+  };
+
+  it('clears every non-refuted packet back to a blank skeptic slot, so stage two reads it unbiased', () => {
+    const doubtful = withReasoning('a.md', 'doubtful');
+    const passed = withReasoning('b.md', 'could-not-refute');
+    const refuted = withReasoning('c.md', 'refuted');
+    const r = resetSkeptic(join(dir, 'packets'));
+    expect(r).toEqual({ reset: ['a.md', 'b.md'], kept: ['c.md'] });
+    for (const p of [doubtful, passed]) {
+      const md = readFileSync(p, 'utf8');
+      expect(md).toMatch(/^skeptic: pending$/m);
+      expect(md).toContain('## Skeptic\n\nNot run yet.');
+      expect(md).not.toContain('Stage-one reasoning');
+    }
+    expect(readFileSync(refuted, 'utf8')).toMatch(/^skeptic: refuted$/m);
+    expect(readFileSync(refuted, 'utf8')).toContain('Stage-one reasoning');
+  });
+
+  it('never touches a verdict or the approval block', () => {
+    const p = withReasoning('a.md', 'doubtful');
+    writeFileSync(p, readFileSync(p, 'utf8').replace('verdict: pending', 'verdict: confirmed'));
+    const before = readFileSync(p, 'utf8');
+    resetSkeptic(join(dir, 'packets'));
+    const after = readFileSync(p, 'utf8');
+    expect(after).toMatch(/^verdict: confirmed$/m);
+    expect(after.slice(after.indexOf('## Findings'))).toBe(
+      before.slice(before.indexOf('## Findings')),
+    );
   });
 });

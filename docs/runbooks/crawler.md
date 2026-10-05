@@ -94,13 +94,15 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   inside this public repo. A rerun keeps a packet whose commit is unchanged (your verdict
   survives) and replaces one whose repo moved (a new commit needs a new review). Work the
   checklist against the source, set `verdict:` to `confirmed` or `refuted`, and commit the
-  packets to the ops repo. Before your own read, run the adversarial skeptic on each packet
-  ([crawler-skeptic.md](crawler-skeptic.md), 0094); rerun `crawl review` and read its refuted
-  and doubtful packets first. It is advisory and cannot approve. `reason` in the ledger says why each is held (`archetype not
+  packets to the ops repo. Before your own read, run the two-stage skeptic on every packet
+  ([crawler-skeptic.md](crawler-skeptic.md)); it is required (0100). Then approve with
+  `crawl approve`, which only approves packets you confirmed AND the skeptic could not refute;
+  never paste approvals by hand (the config rejects them without the skeptic pass). `reason` in the ledger says why each is held (`archetype not
   allowlisted`, `not approved at this commit`, `no PVR`, `submission state uncertain`, ...).
   Nothing is sent on an
-  archetype alone (0092): to release one fail, add an `approved` entry per finding id at the
-  commit you reviewed, and its archetype to `allowlist`. Held entries return to `queued` on a
+  archetype alone (0092): to release one fail, run `crawl approve` (it writes an `approved`
+  entry per finding id at the reviewed commit, with the skeptic pass, 0100), and add its
+  archetype to `allowlist`. Held entries return to `queued` on a
   later run. Approve only what you have read line by line; an approval is your name on the report.
 - **Dry-run bodies.** Disclosures with `wouldSend` hold the exact JSON that would be POSTed. Read a
   sample for each archetype before enabling `submitMode`: the summary, the description, and that

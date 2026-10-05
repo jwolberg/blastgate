@@ -6,24 +6,39 @@ anchor: RB-crawler-skeptic
 
 A false report to a stranger could end the project, and a reader who already believes the engine
 tends to confirm it. The skeptic is a fresh-context agent whose only job is to **disprove** a fail.
-It runs once per review packet from `crawl review` ([crawler runbook §4](crawler.md)), and its
-verdict sorts the review index so disputed fails are read first.
+It is a **required** step (0100): an approval can only be written for a packet the skeptic
+**could not refute** and Jay confirmed. `crawl approve` enforces that, and the config parser
+rejects any approval entry without `skeptic: "could-not-refute"`.
 
-It is **advisory**. It never edits `verdict:`, never writes `approved`, and a `could-not-refute`
-is not a confirmation. Only Jay's verdict and an `approved` entry release a report (0092).
+The skeptic can only ever remove a fail: it never edits `verdict:`, never writes `approved`, and
+`could-not-refute` is not a confirmation. Only Jay's verdict plus the skeptic pass release a
+report.
 
-## [1] How to run it
+## [1] How to run it (two stages)
 
-In Claude Code, from the ops repo checkout with fresh packets in `reviews/`:
+From the ops repo checkout with fresh packets in `reviews/` (`crawl review`), in Claude Code:
 
-```text
-Run the Blastgate fail skeptic (docs/runbooks/crawler-skeptic.md in the blastgate repo) on every
-packet in reviews/ whose skeptic is pending: one fresh-context subagent per packet, in parallel.
-```
+1. **Stage one, cheap filter (Sonnet).** One fresh-context subagent per packet whose skeptic is
+   pending, `model: sonnet`, given only the packet path and the prompt in [2].
+2. **Reset.** `node dist/crawl/index.js skeptic-reset --packets reviews`. Every packet stage one
+   did not refute goes back to a blank skeptic slot, so stage two never sees stage one's
+   reasoning. Refuted packets stay refuted: stage one may only remove.
+3. **Stage two, decider (Opus).** One fresh-context subagent per packet whose skeptic is pending,
+   on the top model, same prompt. Its verdict is final.
+4. Rerun `crawl review` to re-sort the index; read and set `verdict:` on what is left.
+5. `node dist/crawl/index.js approve --packets reviews --config config.json` writes approvals for
+   packets that are `confirmed` and `could-not-refute`, and lists every confirmed packet it
+   refused and why. Commit `config.json` to the ops repo.
 
-The orchestrator gives each subagent **one packet path and the prompt in [2]**, nothing else:
-no summary of the engine, the other packets, or anyone's opinion. Afterwards, rerun
-`crawl review` to re-sort the index (packets for an unchanged commit are kept, skeptic and all).
+Measured on the 33 packets of 2026-10-05, blind, against Jay's verdicts (0100):
+
+| Setup | Real issues passed (of 2) | False passes (of 31) | Opus runs |
+| --- | --- | --- | --- |
+| Sonnet only | 0 | 0 | 0 |
+| Opus only | 1 | 0 | 33 |
+| Sonnet, then Opus | 1 | 0 | 15 |
+
+Sonnet alone is safe but would block every report, so it is a filter, never the decider.
 
 ## [2] Prompt (give verbatim, with the packet path)
 

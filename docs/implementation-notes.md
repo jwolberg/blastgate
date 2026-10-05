@@ -1401,6 +1401,6 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Measured the cheaper model (Sonnet) blind on the 33 packets of 2026-10-05 against Jay's
   verdicts: 0 false passes, but also 0 passes: both confirmed real issues came back doubtful.
   Opus passed 1 of the 2 real ones and 0 false. At the strict bar Sonnet alone would block every
-  report. Model choice is Jay's call (see runbook).
+  report. Jay chose Sonnet then Opus: Sonnet refutes (it may only remove), `crawl skeptic-reset` blanks the rest so Opus reads them unbiased, Opus decides. Simulated on the 33: 1 real passed, 0 false, 15 Opus runs instead of 33.
 - Verified on real data with a throwaway config: approves legacy-ctm (2 findings), skips
   ai-integr8tor (skeptic doubtful), rejects a hand-pasted entry. Real ops config untouched.

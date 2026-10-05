@@ -112,3 +112,30 @@ export function runApprove(args: ApproveArgs, deps: { log: (l: string) => void }
   );
   return result;
 }
+
+/**
+ * Between the two skeptic stages (0100): stage one (cheap model) may only remove fails, so every
+ * packet it did not refute goes to stage two. Reset those to a blank skeptic slot first, so stage
+ * two never reads stage one's reasoning and cannot simply agree with it. Refuted packets are kept
+ * as they are. Verdicts, findings, source and the approval block are never touched.
+ */
+export function resetSkeptic(packets: string): { reset: string[]; kept: string[] } {
+  const out = { reset: [] as string[], kept: [] as string[] };
+  const files = readdirSync(packets)
+    .filter((f) => f.endsWith('.md') && !NOT_PACKETS.has(f))
+    .sort();
+  for (const file of files) {
+    const p = join(packets, file);
+    const md = readFileSync(p, 'utf8');
+    if (front(md).skeptic === 'refuted') {
+      out.kept.push(file);
+      continue;
+    }
+    const next = md
+      .replace(/^skeptic: .*$/m, 'skeptic: pending')
+      .replace(/(\n## Skeptic\n\n)[\s\S]*?(\n## Findings\n)/, '$1Not run yet.\n$2');
+    writeFileSync(p, next);
+    out.reset.push(file);
+  }
+  return out;
+}
