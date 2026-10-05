@@ -23,8 +23,8 @@
         "kind": "credential",
         "identity": "DEPLOY_KEY"
       },
-      "reason": "untrusted issues text reaches job triage (github.event.issue.title) — attacker-authored text from an untrusted event is read by job .github/workflows/triage.yml#triage, which holds credential DEPLOY_KEY. A prompt/command injection in that text (e.g. an HTML comment invisible on the rendered page but read via the API) can drive the job to exfiltrate it.",
-      "remediation": "Do not pass untrusted event text (issue/PR/comment body) into a privileged step; restrict the workflow to trusted actors (author_association / github.actor) and remove DEPLOY_KEY from the untrusted-triggered job.",
+      "reason": "untrusted issues text reaches job triage (github.event.issue.title) — job .github/workflows/triage.yml#triage expands attacker-written event text with `${{ }}` directly into code the job runs (a `run:` shell script or `github-script`), before that code starts. Text that closes the surrounding quote or string runs as code in the job, which holds credential DEPLOY_KEY and can send it out.",
+      "remediation": "Pass the text through an environment variable and use it quoted (`env: VAR: ${{ … }}` then `\"$VAR\"`) instead of expanding `${{ }}` inside the script; remove DEPLOY_KEY from the untrusted-triggered job .github/workflows/triage.yml#triage if it is not needed there.",
       "owasp": {
         "agentic": "ASI01",
         "mcp": "MCP10"
