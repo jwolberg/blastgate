@@ -289,6 +289,17 @@ function listWorkflows(clone: string): string[] {
   }
 }
 
+/**
+ * Skeptic verdicts (0094), most urgent first: what it disproved or doubted needs Jay's eyes
+ * before anything it could not refute. Anything unrecognized sorts with `pending`.
+ */
+export const SKEPTIC_VERDICTS = ['refuted', 'doubtful', 'pending', 'could-not-refute'] as const;
+
+function skepticRank(v: string): number {
+  const i = (SKEPTIC_VERDICTS as readonly string[]).indexOf(v);
+  return i === -1 ? SKEPTIC_VERDICTS.indexOf('pending') : i;
+}
+
 function frontField(md: string, key: string): string | undefined {
   return new RegExp(`^${key}: (.*)$`, 'm').exec(md.split('\n---\n')[0] ?? '')?.[1];
 }
@@ -310,7 +321,7 @@ export async function runReview(args: ReviewArgs, deps: ReviewDeps): Promise<Rev
   const work = mkdtempSync(join(tmpdir(), 'blastgate-review-'));
   deps.onWorkdir?.(work);
   const summary: ReviewSummary = { packets: 0, resolved: [], unscannable: [] };
-  const rows: string[] = [];
+  const rows: Array<{ skeptic: string; line: string }> = [];
   try {
     const scans = await (deps.scanRepos ?? defaultScanRepos)(repos, {
       workdir: join(work, 'clones'),
@@ -362,9 +373,11 @@ export async function runReview(args: ReviewArgs, deps: ReviewDeps): Promise<Rev
           writeFileSync(file, md);
         }
         summary.packets++;
-        rows.push(
-          `| ${repo} | ${archetype} | \`${scan.fullSha.slice(0, 7)}\` | ${findings.length} | ${frontField(md, 'skeptic') ?? '?'} | ${frontField(md, 'verdict') ?? '?'} | [packet](${packetName(repo, archetype)}) |`,
-        );
+        const skeptic = frontField(md, 'skeptic') ?? '?';
+        rows.push({
+          skeptic,
+          line: `| ${repo} | ${archetype} | \`${scan.fullSha.slice(0, 7)}\` | ${findings.length} | ${skeptic} | ${frontField(md, 'verdict') ?? '?'} | [packet](${packetName(repo, archetype)}) |`,
+        });
       }
     }
   } finally {
@@ -376,10 +389,15 @@ export async function runReview(args: ReviewArgs, deps: ReviewDeps): Promise<Rev
     '',
     "Each packet is one (repo, archetype) fail rescanned at the repo's current HEAD. Work the",
     'checklist against the quoted source, set `verdict:`, and approve only confirmed packets.',
+    "Sorted by the skeptic's verdict, refuted and doubtful first. The skeptic is advisory: only",
+    'your `verdict:` and an `approved` entry can release a report.',
     '',
     '| Repo | Archetype | Commit | Findings | Skeptic | Verdict | Packet |',
     '| --- | --- | --- | --- | --- | --- | --- |',
-    ...rows,
+    ...rows
+      .map((r, i) => ({ ...r, i }))
+      .sort((a, b) => skepticRank(a.skeptic) - skepticRank(b.skeptic) || a.i - b.i)
+      .map((r) => r.line),
     '',
   ];
   if (summary.resolved.length > 0) {

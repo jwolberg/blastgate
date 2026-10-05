@@ -1375,3 +1375,16 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   engine changed. The packet flags an engine that differs from the crawler's.
 - Ran the full suite with `--testTimeout=60000`: the machine's load average was ~250 from other
   apps and git-backed tests on `main` timed out at the 5s default the same way. Assertions unchanged.
+
+## 2026-10-05 — 0094 adversarial fail skeptic
+
+- Chose: the skeptic is a runbook prompt (docs/runbooks/crawler-skeptic.md) run as one
+  fresh-context subagent per packet, not code. `.claude/` is untracked here, and the prompt is the
+  product. Code side: the review index sorts refuted, doubtful, pending, could-not-refute.
+- Advisory only: it edits `skeptic:` and its own section, never `verdict:` or approvals. A hostile
+  repo that talks it out of a refutation can only cost a second look, never send a report.
+- Checked on two synthetic packets with blind names (2026-10-05): the false fail (fork-pr blocked
+  by a same-repo job `if:`, no checkout) came back **refuted** for the right reasons. The intended
+  true fail came back **doubtful**, correctly: my synthetic workflow checked out a hardcoded PR
+  number with no `GH_TOKEN`. It errs toward doubt, which is the safe direction. Both edited only
+  the allowed lines (diffed against a fresh render).

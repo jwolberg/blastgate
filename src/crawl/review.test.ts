@@ -297,6 +297,36 @@ describe('runReview (0093)', () => {
   }, 90_000);
 });
 
+describe('review index order (0094)', () => {
+  it('puts packets the skeptic refuted or doubted first, could-not-refute last', async () => {
+    root = mkdtempSync(join(tmpdir(), 'bg-review-'));
+    const repos = ['acme/a', 'acme/b', 'acme/c', 'acme/d'];
+    let ledger = emptyLedger();
+    for (const r of repos) {
+      makeRemote(r, 'fail');
+      ledger = held(ledger, r, ['x']);
+    }
+    writeFileSync(p('ledger.json'), serializeLedger(ledger));
+    const deps = {
+      env: { EVAL_REMOTE_BASE: `file://${p('remote')}`, BLASTGATE_CLI: writeStub(), JOBS: '1' },
+      log: () => {},
+    };
+    const args = { ledger: p('ledger.json'), out: p('packets') };
+    await runReview(args, deps);
+    const skeptic = { 'acme/a': 'could-not-refute', 'acme/b': 'doubtful', 'acme/d': 'refuted' };
+    for (const [r, v] of Object.entries(skeptic)) {
+      const f = p('packets', `${r.replace('/', '__')}__fork-pr--credential.md`);
+      writeFileSync(f, readFileSync(f, 'utf8').replace('skeptic: pending', `skeptic: ${v}`));
+    }
+    await runReview(args, deps);
+    const order = readFileSync(p('packets', 'README.md'), 'utf8')
+      .split('\n')
+      .filter((l) => l.startsWith('| acme/'))
+      .map((l) => l.split(' | ')[0]!.slice(2));
+    expect(order).toEqual(['acme/d', 'acme/b', 'acme/c', 'acme/a']);
+  }, 120_000);
+});
+
 describe('cloneReader (0093)', () => {
   it('never follows a symlink or a path out of the clone (a repo cannot make us quote local files)', () => {
     const base = mkdtempSync(join(tmpdir(), 'bg-reader-'));
