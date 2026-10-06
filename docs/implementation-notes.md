@@ -1450,3 +1450,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   happens even when the repo is not rescanned.
 - Chose 90 days to match the usual disclosure window. Skipped the optional back-off (rescan daily
   instead of every run inside the TTL): one rescan per run is cheap next to the 90-day cutoff.
+
+## 2026-10-06 — 0104 honor a closed PVR request issue, surface owner replies
+
+- Decided the open question from the ticket: closed counts as "declined" only while PVR is still
+  off. An owner who turns PVR on and then closes the issue did what we asked, so the report goes
+  out. Closed with PVR off is final (`declined (request issue closed)`) even if PVR is turned on
+  later, which keeps the issue text's promise ("close this issue" = do not want to hear).
+- Deviation: the ticket asked for a HITL item per reply. The crawler runs in GitHub Actions,
+  where the local HITL helper does not exist, and the run log is counts-only by design (no repo
+  names). So replies are counted (`owner replies N` in the submit log) and the newest counted
+  reply's time is stored as `pvrRequest.repliesSeenAt`. GitHub already notifies Jay of replies,
+  since the issues are filed from his account; that is the primary channel.
+- The issue is read only when a candidate for that repo reaches the PVR check (rescanned, still
+  failing, gate passed). A repo held for another reason (e.g. not approved) is not checked; a
+  missed close then takes effect the first time it does reach the check.
+- A 403/5xx/transport error on the lookup changes nothing; a rate limit stops the run like the
+  PVR pre-check does.

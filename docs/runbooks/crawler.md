@@ -118,6 +118,14 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   PVR is re-checked every run; once the owner turns it on, the private report is filed. Requests
   count against the throttle. Dry runs ask nobody. After `pvrRequestTtlDays` (default 90) with
   PVR still off, the hold becomes final as `no PVR (request expired)` (0106).
+- **Watching the request issue (0104).** Each run that reaches the PVR check for an asked repo
+  reads the request issue. Closed (by anyone) while PVR is still off means the owner declined:
+  the hold becomes final as `declined (request issue closed)` and nothing is ever filed. Closed
+  with PVR on means they did what we asked, and the report is filed. A deleted issue (404/410)
+  while PVR is off is final too (`declined (request issue gone: HTTP …)`). Replies by anyone but
+  us are counted once (`pvrRequest.repliesSeenAt`) and the run log says `owner replies N`. The
+  log never names repos, so when N > 0 find the thread in your GitHub notifications (you are the
+  issue author) or by `repliesSeenAt` in the ledger, and answer by hand.
 - **Tripped archetypes.** A submitted report whose advisory is closed or withdrawn becomes
   `declined` and puts its archetype in `trippedArchetypes`; the gate then holds it even if
   allowlisted. Re-admit it by removing it from that list by hand once you have judged the cause.

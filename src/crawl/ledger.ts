@@ -76,6 +76,8 @@ export interface PvrRequest {
   at: string;
   url?: string;
   failedStatus?: number;
+  /** `created_at` of the newest owner reply already counted (0104). Absent = none seen yet. */
+  repliesSeenAt?: string;
 }
 
 export interface Ledger {
@@ -95,6 +97,11 @@ export const REASON_POSSIBLE_PAUSED = 'possible vulnerability: sending paused';
 export const REASON_NO_PVR_REQUESTED = `${REASON_NO_PVR} (enable requested)`;
 export const reasonPvrRequestFailed = (status: number): string =>
   `${REASON_NO_PVR} (enable request failed: HTTP ${status})`;
+/** PVR is still off and the owner closed the request issue: they do not want to hear (0104). Final. */
+export const REASON_REQUEST_DECLINED = 'declined (request issue closed)';
+/** The request issue (or the repo's issues) is gone while PVR is still off (0104). Final. */
+export const reasonRequestGone = (status: number): string =>
+  `declined (request issue gone: HTTP ${status})`;
 /** The owner was asked longer ago than `pvrRequestTtlDays` and never turned PVR on (0106). Final. */
 export const REASON_NO_PVR_EXPIRED = `${REASON_NO_PVR} (request expired)`;
 export const REASON_RATE_LIMITED = 'rate limited (HTTP';
@@ -162,17 +169,23 @@ function parsePvrRequest(v: unknown, where: string): PvrRequest | undefined {
   const w = `${where}.pvrRequest`;
   if (!isObj(v)) fail(`${w} must be an object`);
   for (const k of Object.keys(v)) {
-    if (!['at', 'url', 'failedStatus'].includes(k)) fail(`${w} has unknown key "${k}"`);
+    if (!['at', 'url', 'failedStatus', 'repliesSeenAt'].includes(k)) {
+      fail(`${w} has unknown key "${k}"`);
+    }
   }
   if (typeof v.at !== 'string' || v.at === '') fail(`${w}.at must be a non-empty string`);
   if (v.url !== undefined && typeof v.url !== 'string') fail(`${w}.url must be a string`);
   if (v.failedStatus !== undefined && !Number.isInteger(v.failedStatus)) {
     fail(`${w}.failedStatus must be an integer`);
   }
+  if (v.repliesSeenAt !== undefined && typeof v.repliesSeenAt !== 'string') {
+    fail(`${w}.repliesSeenAt must be a string`);
+  }
   return {
     at: v.at,
     ...(v.url !== undefined ? { url: v.url as string } : {}),
     ...(v.failedStatus !== undefined ? { failedStatus: v.failedStatus as number } : {}),
+    ...(v.repliesSeenAt !== undefined ? { repliesSeenAt: v.repliesSeenAt as string } : {}),
   };
 }
 

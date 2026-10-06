@@ -161,6 +161,13 @@ describe('PVR enable request record (0102)', () => {
       at: T0,
       failedStatus: 410,
     });
+    const url = 'https://github.com/a/b/issues/1';
+    const seen = setPvrRequest(pending, key, { at: T0, url, repliesSeenAt: T1 }, T1);
+    expect(parseLedger(serializeLedger(seen)).disclosures[0]?.pvrRequest).toEqual({
+      at: T0,
+      url,
+      repliesSeenAt: T1,
+    });
   });
 
   it('rejects a malformed record', () => {
@@ -173,6 +180,7 @@ describe('PVR enable request record (0102)', () => {
     expect(() => parseLedger(text({ at: T0, url: 5 }))).toThrow(/pvrRequest/);
     expect(() => parseLedger(text({ at: T0, failedStatus: 'x' }))).toThrow(/pvrRequest/);
     expect(() => parseLedger(text({ at: T0, extra: 1 }))).toThrow(/pvrRequest/);
+    expect(() => parseLedger(text({ at: T0, repliesSeenAt: 1 }))).toThrow(/pvrRequest/);
   });
 });
 

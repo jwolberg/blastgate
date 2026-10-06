@@ -16,7 +16,9 @@ import {
   REASON_NO_PVR,
   REASON_NO_PVR_REQUESTED,
   REASON_RATE_LIMITED,
+  REASON_REQUEST_DECLINED,
   reasonPvrRequestFailed,
+  reasonRequestGone,
   setPvrRequest,
   UNCERTAIN_REASON,
   isRetryableHold,
@@ -26,6 +28,7 @@ import {
   type Disclosure,
   type DisclosureKey,
   type Ledger,
+  type PvrRequest,
 } from './ledger';
 import type { ReverifyStatus } from './scan';
 
@@ -60,6 +63,8 @@ export interface SubmitSummary {
   counts: Record<string, number>;
   /** Set when the run halted early (kill switch, GitHub rate limit). */
   stoppedReason?: string;
+  /** New comments by someone other than us on PVR request issues (0104); read them by hand. */
+  ownerReplies: number;
 }
 
 export interface SubmitOptions {
@@ -120,6 +125,60 @@ function budgetUsed(ledger: Ledger, now: number): { hour: number; day: number } 
   return { hour, day };
 }
 
+const ISSUE_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/(\d+)$/;
+
+interface IssueCheck {
+  /** `unknown` = the lookup failed or said nothing usable; change nothing. */
+  state: 'open' | 'closed' | 'gone' | 'unknown';
+  status: number;
+  /** New replies by anyone but the issue's author (us), and the newest one's `created_at`. */
+  replies: number;
+  repliesSeenAt?: string;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Read the PVR request issue (0104): its state, and replies newer than the last ones counted.
+ * Rate limits surface as a 429 status or a thrown GitHubRateLimitError; the caller stops.
+ */
+async function checkRequestIssue(
+  client: GitHubClient,
+  repo: string,
+  req: PvrRequest,
+): Promise<IssueCheck> {
+  const n = ISSUE_URL.exec(req.url ?? '')?.[1];
+  if (n === undefined) return { state: 'unknown', status: 0, replies: 0 };
+  const r = await client.get(`/repos/${repo}/issues/${n}`);
+  if (r.status === 404 || r.status === 410) return { state: 'gone', status: r.status, replies: 0 };
+  const issue = r.json;
+  if (r.status !== 200 || !isObj(issue) || (issue.state !== 'open' && issue.state !== 'closed')) {
+    return { state: 'unknown', status: r.status, replies: 0 };
+  }
+  const author = isObj(issue.user) ? String(issue.user.login ?? '').toLowerCase() : '';
+  const c = await client.get(`/repos/${repo}/issues/${n}/comments`, {
+    per_page: 100,
+    ...(req.repliesSeenAt ? { since: req.repliesSeenAt } : {}),
+  });
+  if (isRateLimit(c.status)) return { state: 'unknown', status: c.status, replies: 0 };
+  let replies = 0;
+  let newest = req.repliesSeenAt;
+  for (const x of c.status === 200 && Array.isArray(c.json) ? c.json : []) {
+    if (!isObj(x) || !isObj(x.user) || typeof x.created_at !== 'string') continue;
+    if (String(x.user.login ?? '').toLowerCase() === author) continue;
+    if (req.repliesSeenAt !== undefined && x.created_at <= req.repliesSeenAt) continue;
+    replies++;
+    if (newest === undefined || x.created_at > newest) newest = x.created_at;
+  }
+  return {
+    state: issue.state,
+    status: r.status,
+    replies,
+    ...(newest !== undefined ? { repliesSeenAt: newest } : {}),
+  };
+}
+
 /**
  * Only a 429 stops the run. A header-signalled 403 never reaches here: the client waits it out
  * and throws GitHubRateLimitError. A plain 403 is a permission answer for that one repo.
@@ -134,6 +193,7 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
   const outcomes: SubmitOutcome[] = [];
   let stoppedReason: string | undefined;
   let dirty = false;
+  let ownerReplies = 0;
 
   const iso = (): string => opts.now().toISOString();
   const push = (repo: string, outcome: SubmitOutcomeKind, reason?: string): void => {
@@ -278,6 +338,43 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       push(c.repo, 'retry', `PVR pre-check failed: ${(e as Error).message}`);
       continue;
     }
+    // 0104: read the request issue, if this repo was asked. Closed (or gone) while PVR is still
+    // off means the owner declined; closed with PVR on means they did what we asked.
+    const holder = ledger.disclosures.find((d) => d.repo === c.repo && d.pvrRequest?.url);
+    if (holder?.pvrRequest) {
+      let check: IssueCheck = { state: 'unknown', status: 0, replies: 0 };
+      let limited: number | undefined;
+      try {
+        check = await checkRequestIssue(client, c.repo, holder.pvrRequest);
+        if (isRateLimit(check.status)) limited = check.status;
+      } catch (e) {
+        if (e instanceof GitHubRateLimitError) limited = e.status;
+        // Any other failure says nothing about the issue: carry on as if it were not checked.
+      }
+      if (limited !== undefined) {
+        stoppedReason = `GitHub rate limit (HTTP ${limited}) on PVR request issue`;
+        push(c.repo, 'stopped', stoppedReason);
+        continue;
+      }
+      if (check.replies > 0) {
+        ownerReplies += check.replies;
+        apply(
+          setPvrRequest(
+            ledger,
+            { repo: holder.repo, findingIds: holder.findingIds },
+            { ...holder.pvrRequest, repliesSeenAt: check.repliesSeenAt as string },
+            iso(),
+          ),
+        );
+      }
+      if (!pvrEnabled && (check.state === 'closed' || check.state === 'gone')) {
+        const reason =
+          check.state === 'closed' ? REASON_REQUEST_DECLINED : reasonRequestGone(check.status);
+        hold(reason);
+        push(c.repo, 'held', reason);
+        continue;
+      }
+    }
     if (!pvrEnabled) {
       const asked = ledger.disclosures.some((d) => d.repo === c.repo && d.pvrRequest);
       if (!pvrDefinitelyOff || asked || decision.dryRun) {
@@ -394,7 +491,7 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
   for (const o of outcomes) counts[o.outcome] = (counts[o.outcome] ?? 0) + 1;
   return {
     ledger,
-    summary: { counts, ...(stoppedReason !== undefined ? { stoppedReason } : {}) },
+    summary: { counts, ownerReplies, ...(stoppedReason !== undefined ? { stoppedReason } : {}) },
     outcomes,
   };
 }
