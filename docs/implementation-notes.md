@@ -1483,3 +1483,17 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Close-out counts against the throttle as one action (comment + close). An issue found already
   closed is marked `closedOutAt` without posting; that still counts toward the budget. Rare, so
   kept simple.
+
+## 2026-10-06 — 0103 carry an approval across an unrelated commit
+
+- Done in the submit job with GitHub's compare API (`/compare/<approved>...<head>`), since the
+  submit job never clones. The approval carries only when: every finding id has an approval at
+  one common older commit; compare says `ahead` (not diverged/behind); the file list is complete
+  (< 300 files, GitHub's cap); and no changed path (or rename source) is under `.github/` or is an
+  `action.yml`/`action.yaml` anywhere. Anything else falls back to `not approved at this commit`.
+- Deviation from the ticket: it asked for "the cited workflow file is byte-identical". Chose the
+  whole `.github/` tree plus local actions instead, because a finding can depend on a reusable
+  workflow or local action the finding id does not name. Stricter, never looser.
+- Not recorded in the ledger (no schema change): the run log has `approvals carried N`, and the
+  report footer already names the new commit. Up to 3 older commits are tried per fail.
+- The carried approval keeps its skeptic verdict, so the report tier (0101) is unchanged.

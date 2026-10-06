@@ -724,7 +724,7 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
   deps.log(
     `submit: ${counts || 'no candidates'}${sub.summary.stoppedReason ? `; stopped: ${sub.summary.stoppedReason}` : ''}; ` +
       `mode ${config.submitMode ? 'live' : 'dry-run'}; kill switch ${killSwitch ? 'on' : 'off'}; flagged ${flagged}; ` +
-      `owner replies ${sub.summary.ownerReplies}`,
+      `owner replies ${sub.summary.ownerReplies}; approvals carried ${sub.summary.carried}`,
   );
 
   try {

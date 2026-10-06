@@ -540,6 +540,86 @@ describe('submitAll (U5)', () => {
     expect(r.ledger.disclosures[0]?.reason).toBe('not approved at this commit');
   });
 
+  describe('0103: carrying an approval across an unrelated commit', () => {
+    const NEW = 'e'.repeat(40);
+    const compareUrl = `/repos/a/one/compare/${SHA}...${NEW}`;
+    const compare =
+      (status: number, json: unknown): Handler =>
+      (req) =>
+        req.method === 'GET' && req.url.endsWith(compareUrl) ? res(status, json) : undefined;
+    const ahead = (...files: Array<{ filename: string; previous_filename?: string }>) =>
+      compare(200, { status: 'ahead', files });
+    const reportPosts = (e: ReturnType<typeof env>) =>
+      e.posts().filter((p) => p.url.includes('/security-advisories/'));
+
+    it('no change to workflows or actions: the approval carries, and the report names the new commit', async () => {
+      const e = env(ahead({ filename: 'README.md' }, { filename: 'src/app.ts' }));
+      const r = await run(e, [cand('a/one', { sha: NEW })]);
+      expect(reportPosts(e)).toHaveLength(1);
+      expect(r.ledger.disclosures[0]?.state).toBe('submitted');
+      expect(r.summary.carried).toBe(1);
+    });
+
+    it('keeps the original skeptic tier', async () => {
+      const doubtful = {
+        ...live,
+        sendPossible: true,
+        approved: approvedAll.map((a) => ({ ...a, skeptic: 'doubtful' as const })),
+      };
+      const e = env(ahead({ filename: 'README.md' }));
+      await run(e, [cand('a/one', { sha: NEW })], { config: doubtful });
+      const sent = JSON.parse(String(reportPosts(e)[0]?.body)) as Record<string, unknown>;
+      expect(sent.severity).toBe('medium');
+    });
+
+    it.each([
+      ['a workflow file changed', [{ filename: '.github/workflows/ci.yml' }]],
+      ['anything under .github changed', [{ filename: '.github/actions/x/run.sh' }]],
+      ['a local action changed', [{ filename: 'tools/deploy/action.yml' }]],
+      [
+        'a workflow was renamed away',
+        [{ filename: 'old.yml', previous_filename: '.github/workflows/ci.yml' }],
+      ],
+    ])('%s: held, not approved', async (_label, files) => {
+      const e = env(ahead(...files));
+      const r = await run(e, [cand('a/one', { sha: NEW })]);
+      expect(e.posts()).toHaveLength(0);
+      expect(r.ledger.disclosures[0]?.reason).toBe('not approved at this commit');
+      expect(r.summary.carried).toBe(0);
+    });
+
+    it.each([
+      ['history was rewritten (diverged)', compare(200, { status: 'diverged', files: [] })],
+      ['the old commit is gone (404)', compare(404, { message: 'Not Found' })],
+      [
+        'the diff is truncated (300 files)',
+        ahead(...Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` }))),
+      ],
+      ['the answer is malformed', compare(200, { status: 'ahead' })],
+    ])('%s: held, not approved', async (_label, handler) => {
+      const e = env(handler);
+      const r = await run(e, [cand('a/one', { sha: NEW })]);
+      expect(e.posts()).toHaveLength(0);
+      expect(r.ledger.disclosures[0]?.reason).toBe('not approved at this commit');
+    });
+
+    it('a finding id with no approval at any commit is never covered', async () => {
+      const e = env(ahead({ filename: 'README.md' }));
+      const r = await run(e, [cand('a/one', { sha: NEW, findingIds: ['a/one#1', 'a/one#2'] })]);
+      expect(e.calls.some((c) => c.url.includes('/compare/'))).toBe(false);
+      expect(e.posts()).toHaveLength(0);
+      expect(r.ledger.disclosures[0]?.reason).toBe('not approved at this commit');
+    });
+
+    it('a rate limit on the compare stops the run', async () => {
+      const e = env(compare(429, null));
+      const r = await run(e, [cand('a/one', { sha: NEW }), cand('b/two')]);
+      expect(e.posts()).toHaveLength(0);
+      expect(r.summary.stoppedReason).toMatch(/rate limit/);
+      expect(r.outcomes.find((o) => o.repo === 'b/two')?.outcome).toBe('stopped');
+    });
+  });
+
   it('kill switch: zero requests, nothing created, reason in the summary', async () => {
     const e = env();
     const r = await run(e, [cand('a/one'), cand('b/two')], { killSwitch: true });

@@ -782,6 +782,7 @@ describe('runSubmit', () => {
     const out = h.logs.join('\n');
     expect(out).toMatch(/\d/);
     expect(out).toMatch(/owner replies \d+/);
+    expect(out).toMatch(/approvals carried \d+/);
     expect(out).not.toContain('acme');
     expect(out).not.toMatch(/\S+\/\S+\s*[:=]\s*(pass|fail|warn|unknown|held|submitted)/);
   });

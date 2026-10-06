@@ -10,11 +10,12 @@
  */
 
 import { gate, pvrCloseOutComment, pvrEnableRequest, tierReport } from './disclose';
-import type { CrawlConfig } from './config';
+import type { Approval, CrawlConfig } from './config';
 import { GitHubRateLimitError, isPlainRepoName, type GitHubClient } from './github';
 import {
   REASON_NO_PVR,
   REASON_NO_PVR_REQUESTED,
+  REASON_NOT_APPROVED,
   REASON_RATE_LIMITED,
   REASON_REQUEST_DECLINED,
   reasonPvrRequestFailed,
@@ -65,6 +66,8 @@ export interface SubmitSummary {
   stoppedReason?: string;
   /** New comments by someone other than us on PVR request issues (0104); read them by hand. */
   ownerReplies: number;
+  /** Fails released by an approval carried from an earlier commit (0103). */
+  carried: number;
 }
 
 export interface SubmitOptions {
@@ -180,6 +183,59 @@ async function checkRequestIssue(
   };
 }
 
+/** GitHub's compare API lists at most 300 files; a full list may be truncated. */
+const COMPARE_FILE_CAP = 300;
+/** Older reviewed commits tried per fail; each costs one compare request. */
+const MAX_CARRY_TRIES = 3;
+
+/**
+ * Paths whose change can alter what a workflow does: anything under `.github/` (workflows and
+ * the local actions kept there) and any `action.yml`/`action.yaml`, the entry point of a local
+ * action wherever it lives.
+ */
+export function touchesWorkflowSurface(path: string): boolean {
+  return path.startsWith('.github/') || /(^|\/)action\.ya?ml$/.test(path);
+}
+
+/**
+ * 0103: approvals for `c` carried forward from an earlier reviewed commit, or undefined. Needs
+ * an approval for EVERY finding id at one common commit, from which `c.sha` is strictly ahead,
+ * with a complete file list that touches no workflow surface. The skeptic tier is kept. A
+ * GitHubRateLimitError propagates (the caller stops the run).
+ */
+async function carryApprovals(
+  client: GitHubClient,
+  config: CrawlConfig,
+  c: SubmitCandidate,
+): Promise<Approval[] | undefined> {
+  const mine = config.approved.filter((a) => a.repo === c.repo && a.sha !== c.sha);
+  const shas = [...new Set(mine.map((a) => a.sha))]
+    .filter((sha) =>
+      c.findingIds.every((id) => mine.some((a) => a.sha === sha && a.findingId === id)),
+    )
+    .sort()
+    .slice(0, MAX_CARRY_TRIES);
+  for (const sha of shas) {
+    const r = await client.get(`/repos/${c.repo}/compare/${sha}...${c.sha}`);
+    if (isRateLimit(r.status)) throw new GitHubRateLimitError('compare rate limited', r.status);
+    const cmp = r.json;
+    if (r.status !== 200 || !isObj(cmp) || cmp.status !== 'ahead' || !Array.isArray(cmp.files)) {
+      continue;
+    }
+    const files = cmp.files as unknown[];
+    if (files.length >= COMPARE_FILE_CAP) continue;
+    const paths = files.flatMap((f) =>
+      isObj(f) ? [f.filename, f.previous_filename].filter((p) => typeof p === 'string') : [null],
+    );
+    if (paths.some((p) => typeof p !== 'string' || touchesWorkflowSurface(p))) continue;
+    return c.findingIds.map((id) => {
+      const a = mine.find((x) => x.sha === sha && x.findingId === id) as Approval;
+      return { ...a, sha: c.sha };
+    });
+  }
+  return undefined;
+}
+
 /**
  * Whether a repo's PVR request issue can be closed out (0105), and with which text: `filed` once
  * a report went out, `resolved` once every disclosure was resolved before reporting. Anything
@@ -216,6 +272,7 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
   let stoppedReason: string | undefined;
   let dirty = false;
   let ownerReplies = 0;
+  let carriedCount = 0;
 
   const iso = (): string => opts.now().toISOString();
   const push = (repo: string, outcome: SubmitOutcomeKind, reason?: string): void => {
@@ -322,11 +379,25 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       ...ledger,
       disclosures: ledger.disclosures.filter((d) => d !== current()),
     };
-    const decision = gate(
-      { repo: c.repo, sha: c.sha, archetype: c.archetype, findingIds: c.findingIds },
-      config,
-      others,
-    );
+    const input = { repo: c.repo, sha: c.sha, archetype: c.archetype, findingIds: c.findingIds };
+    let decision = gate(input, config, others);
+    // 0103: HEAD moved since the review. If nothing that can change a workflow's behaviour
+    // changed in between, the approval at the reviewed commit still stands for this one.
+    if (decision.decision === 'held' && decision.reason === REASON_NOT_APPROVED) {
+      let carried: Approval[] | undefined;
+      try {
+        carried = await carryApprovals(client, config, c);
+      } catch (e) {
+        if (!(e instanceof GitHubRateLimitError)) throw e;
+        stoppedReason = `GitHub rate limit (HTTP ${e.status}) on approval carry-forward`;
+        push(c.repo, 'stopped', stoppedReason);
+        continue;
+      }
+      if (carried) {
+        decision = gate(input, { ...config, approved: [...config.approved, ...carried] }, others);
+        if (decision.decision === 'allowed') carriedCount++;
+      }
+    }
     if (decision.decision === 'held') {
       const reason = decision.reason ?? 'held by gate';
       hold(reason);
@@ -588,7 +659,12 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
   for (const o of outcomes) counts[o.outcome] = (counts[o.outcome] ?? 0) + 1;
   return {
     ledger,
-    summary: { counts, ownerReplies, ...(stoppedReason !== undefined ? { stoppedReason } : {}) },
+    summary: {
+      counts,
+      ownerReplies,
+      carried: carriedCount,
+      ...(stoppedReason !== undefined ? { stoppedReason } : {}),
+    },
     outcomes,
   };
 }
