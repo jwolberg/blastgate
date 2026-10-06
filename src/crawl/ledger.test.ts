@@ -15,6 +15,7 @@ import {
   parseLedger,
   recordWouldSend,
   recoverSubmitting,
+  resolveStale,
   serializeLedger,
   setPvrRequest,
   transition,
@@ -721,5 +722,32 @@ describe('expirePvrRequests (0106)', () => {
       now: T0,
     });
     expect(expirePvrRequests(l, at(400), 90)).toBe(l);
+  });
+});
+
+describe('resolveStale (0105)', () => {
+  const held = (reason: string, state: 'held' | 'queued' = 'held'): Ledger =>
+    createDisclosure(emptyLedger(), {
+      repo: 'o/r',
+      findingIds: ['f1', 'f2'],
+      archetype: 'a',
+      state,
+      ...(state === 'held' ? { reason } : {}),
+      now: T0,
+    });
+
+  it('a rescan where none of the ids still fail resolves a queued or retryable-held entry', () => {
+    for (const l of [held('no PVR (enable requested)'), held('', 'queued')]) {
+      const x = resolveStale(l, new Map([['o/r', new Set(['other'])]]), T1);
+      expect(x.disclosures[0]).toMatchObject({ state: 'resolved-before-report', updatedAt: T1 });
+    }
+  });
+
+  it('leaves it when any id still fails, when the repo was not rescanned, or when the hold is final', () => {
+    const l = held('no PVR (enable requested)');
+    expect(resolveStale(l, new Map([['o/r', new Set(['f2'])]]), T1)).toBe(l);
+    expect(resolveStale(l, new Map(), T1)).toBe(l);
+    const final = held(UNCERTAIN_REASON);
+    expect(resolveStale(final, new Map([['o/r', new Set<string>()]]), T1)).toBe(final);
   });
 });

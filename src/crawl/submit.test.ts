@@ -372,6 +372,136 @@ describe('submitAll (U5)', () => {
     });
   });
 
+  describe('0105: closing out the PVR request issue', () => {
+    const ISSUE = 'https://github.com/a/one/issues/7';
+    const issueOk: Handler = (req) =>
+      req.method === 'POST' && req.url.endsWith('/issues')
+        ? res(201, { html_url: ISSUE })
+        : undefined;
+    async function asked(): Promise<Ledger> {
+      return (await run(env(issueOk, false), [cand('a/one')])).ledger;
+    }
+    /** The request issue is in `state`; comment and close calls succeed unless overridden. */
+    const thread =
+      (state: string, over: Handler = () => undefined): Handler =>
+      (req) => {
+        const o = over(req);
+        if (o) return o;
+        if (req.method === 'GET' && /\/issues\/7$/.test(req.url)) {
+          return res(200, { state, user: { login: 'reporter' } });
+        }
+        if (req.method === 'GET' && /\/issues\/7\/comments/.test(req.url)) return res(200, []);
+        if (req.method === 'POST' && req.url.endsWith('/issues/7/comments')) return res(201, {});
+        if (req.method === 'PATCH') return res(200, { state: 'closed' });
+        return undefined;
+      };
+    const comments = (e: ReturnType<typeof env>) =>
+      e.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/issues/7/comments'));
+    const closes = (e: ReturnType<typeof env>) => e.calls.filter((c) => c.method === 'PATCH');
+
+    it('after the report is filed: one detail-free comment, then the issue is closed, once', async () => {
+      const l = await asked();
+      const e = env(thread('open'), true);
+      const r = await run(e, [cand('a/one')], { ledger: l });
+      expect(r.ledger.disclosures[0]?.state).toBe('submitted');
+      expect(comments(e)).toHaveLength(1);
+      const body = String(JSON.parse(comments(e)[0]?.body ?? '{}').body);
+      expect(body).toMatch(/private/i);
+      for (const leak of ['sum a/one', 'desc a/one', 'a/one#1', 'workflow', 'secret', 'GHSA']) {
+        expect(body).not.toContain(leak);
+      }
+      expect(closes(e)).toHaveLength(1);
+      expect(closes(e)[0]?.url).toBe('https://api.github.com/repos/a/one/issues/7');
+      expect(JSON.parse(closes(e)[0]?.body ?? '{}')).toMatchObject({ state: 'closed' });
+      expect(r.ledger.disclosures[0]?.pvrRequest?.closedOutAt).toBe(NOW.toISOString());
+      // Recorded before the comment goes out.
+      const commentAt = e.events.indexOf('POST /repos/a/one/issues/7/comments');
+      expect(e.events[commentAt - 1]).toMatch(/^persist:/);
+
+      const e2 = env(thread('open'), true);
+      await run(e2, [], { ledger: r.ledger });
+      expect(comments(e2)).toHaveLength(0);
+      expect(closes(e2)).toHaveLength(0);
+    });
+
+    it('when the problem went away before reporting: a "no longer finds" comment and close', async () => {
+      const l = await asked();
+      const e = env(thread('open'), false);
+      const r = await run(e, [cand('a/one', { reverify: 'resolved' })], { ledger: l });
+      expect(r.ledger.disclosures[0]?.state).toBe('resolved-before-report');
+      expect(comments(e)).toHaveLength(1);
+      expect(String(JSON.parse(comments(e)[0]?.body ?? '{}').body)).toMatch(/no longer/i);
+      expect(closes(e)).toHaveLength(1);
+    });
+
+    it('never comments while the report is still pending', async () => {
+      const l = await asked();
+      const e = env(thread('open'), false);
+      await run(e, [cand('a/one')], { ledger: l });
+      expect(comments(e)).toHaveLength(0);
+      expect(closes(e)).toHaveLength(0);
+    });
+
+    it('an issue the owner already closed gets no comment', async () => {
+      const l = await asked();
+      const e = env(thread('closed'), true);
+      const r = await run(e, [cand('a/one')], { ledger: l });
+      expect(r.ledger.disclosures[0]?.state).toBe('submitted');
+      expect(comments(e)).toHaveLength(0);
+      expect(closes(e)).toHaveLength(0);
+    });
+
+    it('dry run and kill switch close out nothing', async () => {
+      const l = await asked();
+      const filed = (await run(env(thread('open'), true), [cand('a/one')], { ledger: l })).ledger;
+      // Drop the close-out record so only the switch under test decides.
+      const reopened: Ledger = {
+        ...filed,
+        disclosures: filed.disclosures.map((d) =>
+          d.pvrRequest ? { ...d, pvrRequest: { at: d.pvrRequest.at, url: ISSUE } } : d,
+        ),
+      };
+      const dry = env(thread('open'), true);
+      await run(dry, [], { ledger: reopened, config: { ...live, submitMode: false } });
+      expect(dry.calls).toHaveLength(0);
+      const killed = env(thread('open'), true);
+      await run(killed, [], { ledger: reopened, killSwitch: true });
+      expect(killed.calls).toHaveLength(0);
+    });
+
+    it('a refused comment is recorded and never retried, and the issue is left alone', async () => {
+      const l = await asked();
+      const refuse: Handler = (req) =>
+        req.method === 'POST' && req.url.endsWith('/issues/7/comments')
+          ? res(403, { message: 'locked' })
+          : undefined;
+      const e = env(thread('open', refuse), true);
+      const r = await run(e, [cand('a/one')], { ledger: l });
+      expect(closes(e)).toHaveLength(0);
+      expect(r.ledger.disclosures[0]?.pvrRequest).toMatchObject({ closeOutFailedStatus: 403 });
+      const e2 = env(thread('open'), true);
+      await run(e2, [], { ledger: r.ledger });
+      expect(comments(e2)).toHaveLength(0);
+    });
+
+    it('waits for throttle room, then closes out on a later run', async () => {
+      const l = await asked();
+      const tight = { ...live, throttle: { perHour: 2, perDay: 20 } };
+      // The request and the report use the hour's budget of 2.
+      const e = env(thread('open'), true);
+      const r = await run(e, [cand('a/one')], { ledger: l, config: tight });
+      expect(r.ledger.disclosures[0]?.state).toBe('submitted');
+      expect(comments(e)).toHaveLength(0);
+      const e2 = env(thread('open'), true);
+      await run(e2, [], {
+        ledger: r.ledger,
+        config: tight,
+        now: new Date(NOW.getTime() + 2 * 3_600_000),
+      });
+      expect(comments(e2)).toHaveLength(1);
+    });
+  });
+
   it('a non-200 PVR check holds as "no PVR"', async () => {
     const e = env((req) => (req.method === 'GET' ? res(404, { message: 'nope' }) : undefined));
     const r = await run(e, [cand('a/one')]);

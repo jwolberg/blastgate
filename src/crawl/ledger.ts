@@ -78,6 +78,12 @@ export interface PvrRequest {
   failedStatus?: number;
   /** `created_at` of the newest owner reply already counted (0104). Absent = none seen yet. */
   repliesSeenAt?: string;
+  /**
+   * When the issue was closed out (0105): one comment, then closed. Written before the comment
+   * is posted, so it is never posted twice; `closeOutFailedStatus` if GitHub refused it.
+   */
+  closedOutAt?: string;
+  closeOutFailedStatus?: number;
 }
 
 export interface Ledger {
@@ -169,7 +175,16 @@ function parsePvrRequest(v: unknown, where: string): PvrRequest | undefined {
   const w = `${where}.pvrRequest`;
   if (!isObj(v)) fail(`${w} must be an object`);
   for (const k of Object.keys(v)) {
-    if (!['at', 'url', 'failedStatus', 'repliesSeenAt'].includes(k)) {
+    if (
+      ![
+        'at',
+        'url',
+        'failedStatus',
+        'repliesSeenAt',
+        'closedOutAt',
+        'closeOutFailedStatus',
+      ].includes(k)
+    ) {
       fail(`${w} has unknown key "${k}"`);
     }
   }
@@ -181,11 +196,21 @@ function parsePvrRequest(v: unknown, where: string): PvrRequest | undefined {
   if (v.repliesSeenAt !== undefined && typeof v.repliesSeenAt !== 'string') {
     fail(`${w}.repliesSeenAt must be a string`);
   }
+  if (v.closedOutAt !== undefined && typeof v.closedOutAt !== 'string') {
+    fail(`${w}.closedOutAt must be a string`);
+  }
+  if (v.closeOutFailedStatus !== undefined && !Number.isInteger(v.closeOutFailedStatus)) {
+    fail(`${w}.closeOutFailedStatus must be an integer`);
+  }
   return {
     at: v.at,
     ...(v.url !== undefined ? { url: v.url as string } : {}),
     ...(v.failedStatus !== undefined ? { failedStatus: v.failedStatus as number } : {}),
     ...(v.repliesSeenAt !== undefined ? { repliesSeenAt: v.repliesSeenAt as string } : {}),
+    ...(v.closedOutAt !== undefined ? { closedOutAt: v.closedOutAt as string } : {}),
+    ...(v.closeOutFailedStatus !== undefined
+      ? { closeOutFailedStatus: v.closeOutFailedStatus as number }
+      : {}),
   };
 }
 
@@ -653,6 +678,41 @@ export function expirePvrRequests(ledger: Ledger, now: string, ttlDays: number):
     ...ledger,
     disclosures: ledger.disclosures.map((d) =>
       hit(d) ? normalizeDisclosure({ ...d, reason: REASON_NO_PVR_EXPIRED, updatedAt: now }) : d,
+    ),
+  };
+}
+
+/**
+ * 0105: a queued or retryable-held disclosure whose repo was rescanned and none of whose finding
+ * ids still fail is `resolved-before-report`. Without this, a repo that turns `pass` leaves its
+ * pending entry (and any PVR request issue) open forever, since `delta` only rechecks fails.
+ * `currentFails` holds every rescanned repo's failing ids; a repo absent from it is left alone.
+ */
+export function resolveStale(
+  ledger: Ledger,
+  currentFails: ReadonlyMap<string, ReadonlySet<string>>,
+  now: string,
+): Ledger {
+  const stale = (d: Disclosure): boolean => {
+    const fails = currentFails.get(d.repo);
+    return (
+      fails !== undefined &&
+      (d.state === 'queued' || (d.state === 'held' && isRetryableHold(d))) &&
+      !d.findingIds.some((id) => fails.has(id))
+    );
+  };
+  if (!ledger.disclosures.some(stale)) return ledger;
+  return {
+    ...ledger,
+    disclosures: ledger.disclosures.map((d) =>
+      stale(d)
+        ? normalizeDisclosure({
+            ...d,
+            state: 'resolved-before-report',
+            reason: undefined,
+            updatedAt: now,
+          })
+        : d,
     ),
   };
 }

@@ -56,6 +56,7 @@ import {
   SCAN_VERDICTS,
   emptyLedger,
   expirePvrRequests,
+  resolveStale,
   lsRemoteHeads,
   parseLedger,
   recoverSubmitting,
@@ -674,6 +675,11 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
   for (const [repo, scan] of Object.entries(result.scans)) ledger = applyScan(ledger, repo, scan);
   // 0106: a request the owner never acted on stops holding the repo open.
   ledger = expirePvrRequests(ledger, iso(), config.pvrRequestTtlDays);
+  const currentFails = new Map(
+    Object.entries(result.currentFails).map(([r, ids]) => [r, new Set(ids)]),
+  );
+  // 0105: a pending entry whose repo was rescanned without those fails is resolved before report.
+  ledger = resolveStale(ledger, currentFails, iso());
 
   const killSwitch = args.killSwitch !== undefined && existsSync(args.killSwitch);
   const sub = await (deps.submitAll ?? submitAll)({
@@ -691,9 +697,6 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
   let flagged = 0;
   if (config.reporterLogin !== '') {
     try {
-      const currentFails = new Map(
-        Object.entries(result.currentFails).map(([r, ids]) => [r, new Set(ids)]),
-      );
       const t = await (deps.trackAll ?? trackAll)({
         ledger,
         client: deps.client,

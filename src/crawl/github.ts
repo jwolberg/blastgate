@@ -18,7 +18,7 @@ export function isPlainRepoName(name: string): boolean {
 }
 
 export interface HttpRequest {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PATCH';
   url: string;
   headers: Record<string, string>;
   body?: string;
@@ -36,6 +36,8 @@ export type Transport = (req: HttpRequest) => Promise<HttpResponse>;
 export interface GitHubClient {
   get(path: string, query?: Record<string, string | number>): Promise<HttpResponse>;
   post(path: string, body: unknown): Promise<HttpResponse>;
+  /** Sent once, never retried, like a POST. */
+  patch(path: string, body: unknown): Promise<HttpResponse>;
 }
 
 export interface GitHubClientOptions {
@@ -270,6 +272,17 @@ export function createGitHubClient(opts: GitHubClientOptions = {}): GitHubClient
           body: JSON.stringify(body),
         },
         path.startsWith('/search/'),
+      );
+    },
+    patch(path, body) {
+      return send(
+        {
+          method: 'PATCH',
+          url: `${base}${path}`,
+          headers: { ...headers(), 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+        false,
       );
     },
   };

@@ -126,6 +126,14 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   us are counted once (`pvrRequest.repliesSeenAt`) and the run log says `owner replies N`. The
   log never names repos, so when N > 0 find the thread in your GitHub notifications (you are the
   issue author) or by `repliesSeenAt` in the ledger, and answer by hand.
+- **Closing out the request issue (0105).** Once nothing is pending for an asked repo, the
+  crawler posts one fixed comment on the request issue and closes it: "filed as a private
+  report" after a report went out, or "a later scan no longer finds the problem" when every
+  disclosure was resolved before reporting. Recorded as `pvrRequest.closedOutAt` before the
+  comment, so it never repeats; a refusal is kept as `closeOutFailedStatus` and not retried. An
+  issue the owner already closed gets no comment. Counts against the throttle; dry runs and the
+  kill switch skip it. A queued or retryable-held entry whose repo was rescanned without those
+  fails (for example, the repo now passes) becomes `resolved-before-report`.
 - **Tripped archetypes.** A submitted report whose advisory is closed or withdrawn becomes
   `declined` and puts its archetype in `trippedArchetypes`; the gate then holds it even if
   allowlisted. Re-admit it by removing it from that list by hand once you have judged the cause.

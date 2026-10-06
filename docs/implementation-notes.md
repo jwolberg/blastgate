@@ -1467,3 +1467,19 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   missed close then takes effect the first time it does reach the check.
 - A 403/5xx/transport error on the lookup changes nothing; a rate limit stops the run like the
   PVR pre-check does.
+
+## 2026-10-06 — 0105 close out the PVR request issue
+
+- One comment, then `PATCH state: closed` (added `patch()` to the crawler's GitHub client; sent
+  once, never retried, like a POST). `closedOutAt` is written and persisted before the comment.
+  A refused comment or close is recorded as `closeOutFailedStatus` and not retried.
+- Chose repo-level conditions, since one request issue covers every disclosure on the repo:
+  "filed" once any disclosure there has a report URL and none is still pending; "resolved" only
+  when every disclosure there is `resolved-before-report`. Final holds (declined, expired,
+  uncertain) leave the issue as it is.
+- Added scope: `resolveStale` in `runSubmit`. Before this, a pending entry whose repo was
+  rescanned and passed stayed pending forever (`delta` only revisits fails and changed passes),
+  so neither the "resolved" close-out nor the ledger would ever reflect the fix.
+- Close-out counts against the throttle as one action (comment + close). An issue found already
+  closed is marked `closedOutAt` without posting; that still counts toward the budget. Rare, so
+  kept simple.

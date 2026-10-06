@@ -807,6 +807,24 @@ describe('runSubmit', () => {
     expect(h.net.reqs).toEqual([]);
   });
 
+  it('0105: a pending entry whose repo now passes is resolved before report', async () => {
+    const key = { repo: 'acme/pass', findingIds: ['gone'] };
+    const l = createDisclosure(emptyLedger(), {
+      ...key,
+      archetype: ARCH,
+      state: 'held',
+      reason: 'no PVR (enable requested)',
+      now: NOW.toISOString(),
+    });
+    setup({}, scanResult({ candidates: [], currentFails: { 'acme/pass': [] } }), l);
+    const h = harness();
+    await runSubmit(submitArgs(), h.deps);
+    const last = h.persisted[h.persisted.length - 1];
+    expect(last?.disclosures.find((d) => d.repo === 'acme/pass')?.state).toBe(
+      'resolved-before-report',
+    );
+  });
+
   it('a malformed scan result is refused before any write', async () => {
     mkdirSync(p('in'), { recursive: true });
     writeFileSync(p('in', 'scan-result.json'), '{"candidates":"nope"}');
