@@ -71,6 +71,7 @@ Strict JSON; unknown keys are rejected so a typo cannot silently flip a safety d
 | `reporterLogin` | `""` | Login the reports are filed as. Empty skips advisory tracking. |
 | `throttle` | `{perHour: 5, perDay: 20}` | Submission budget per trailing hour and day. |
 | `discoveryBudget` | `300` | Max code-search requests one run spends on discovery (1 to 5000). Searches are paced at 9/min, so 300 is about 35 minutes when GitHub does not push back. |
+| `pvrRequestTtlDays` | `90` | Days a PVR enable request (0102) stays open (1 to 365). Past it, every `no PVR` hold on that repo becomes final (`no PVR (request expired)`) and the repo is no longer rescanned for it (0106). A later fail with new finding ids still gets the PVR check, but never a second issue. |
 | `discoveryMinutes` | `60` | Wall-clock limit on discovery per run (1 to 240). Past it no new search starts and the run scans known repos; a request already in flight may finish its retries first. Under secondary limits a handful of searches can take hours, so this, not the budget, is what bounds time (0088). |
 
 Turn on `submitMode` and `publishSite` independently, and only after [6].
@@ -115,7 +116,8 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   (`pvrRequest`) before it is posted, so it is never posted twice, and a repo is never asked
   again, even if the request failed. The disclosure stays held (`no PVR (enable requested)`) and
   PVR is re-checked every run; once the owner turns it on, the private report is filed. Requests
-  count against the throttle. Dry runs ask nobody.
+  count against the throttle. Dry runs ask nobody. After `pvrRequestTtlDays` (default 90) with
+  PVR still off, the hold becomes final as `no PVR (request expired)` (0106).
 - **Tripped archetypes.** A submitted report whose advisory is closed or withdrawn becomes
   `declined` and puts its archetype in `trippedArchetypes`; the gate then holds it even if
   allowlisted. Re-admit it by removing it from that list by hand once you have judged the cause.

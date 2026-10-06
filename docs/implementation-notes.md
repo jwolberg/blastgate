@@ -1441,3 +1441,12 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   and names nothing (not even "CI"), so nothing about the vulnerability goes public.
 - Not built: watching the request issue (closed without enabling = owner declined). Today the
   repo just stays held; a follow-up could mark it declined.
+
+## 2026-10-06 — 0106 expire unanswered PVR requests
+
+- `pvrRequestTtlDays` (default 90, max 365) in the ops config. Past it, every retryable `no PVR`
+  hold on an asked repo becomes final as `no PVR (request expired)`, so `delta` stops treating it
+  as pending. Runs in `runSubmit` right after the scans are applied, on the whole ledger, so it
+  happens even when the repo is not rescanned.
+- Chose 90 days to match the usual disclosure window. Skipped the optional back-off (rescan daily
+  instead of every run inside the TTL): one rescan per run is cheap next to the 90-day cutoff.

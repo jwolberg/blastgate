@@ -95,6 +95,8 @@ export const REASON_POSSIBLE_PAUSED = 'possible vulnerability: sending paused';
 export const REASON_NO_PVR_REQUESTED = `${REASON_NO_PVR} (enable requested)`;
 export const reasonPvrRequestFailed = (status: number): string =>
   `${REASON_NO_PVR} (enable request failed: HTTP ${status})`;
+/** The owner was asked longer ago than `pvrRequestTtlDays` and never turned PVR on (0106). Final. */
+export const REASON_NO_PVR_EXPIRED = `${REASON_NO_PVR} (request expired)`;
 export const REASON_RATE_LIMITED = 'rate limited (HTTP';
 
 /**
@@ -612,4 +614,32 @@ export function setPvrRequest(
   if (!cur) throw new Error(`setPvrRequest: no disclosure for ${key.repo}`);
   const next = normalizeDisclosure({ ...cur, pvrRequest, updatedAt: now });
   return { ...ledger, disclosures: ledger.disclosures.map((d, i) => (i === idx ? next : d)) };
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * 0106: once a repo's PVR request is older than `ttlDays`, its no-PVR holds become final
+ * (`REASON_NO_PVR_EXPIRED`), so the repo stops being rescanned every run for a report that will
+ * never be accepted. Returns the same ledger when nothing expires.
+ */
+export function expirePvrRequests(ledger: Ledger, now: string, ttlDays: number): Ledger {
+  const cutoff = Date.parse(now) - ttlDays * DAY_MS;
+  const expired = new Set(
+    ledger.disclosures
+      .filter((d) => d.pvrRequest !== undefined && Date.parse(d.pvrRequest.at) < cutoff)
+      .map((d) => d.repo),
+  );
+  const hit = (d: Disclosure): boolean =>
+    expired.has(d.repo) &&
+    d.state === 'held' &&
+    isRetryableHold(d) &&
+    (d.reason ?? '').startsWith(REASON_NO_PVR);
+  if (!ledger.disclosures.some(hit)) return ledger;
+  return {
+    ...ledger,
+    disclosures: ledger.disclosures.map((d) =>
+      hit(d) ? normalizeDisclosure({ ...d, reason: REASON_NO_PVR_EXPIRED, updatedAt: now }) : d,
+    ),
+  };
 }

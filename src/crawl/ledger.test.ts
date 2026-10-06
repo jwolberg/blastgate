@@ -8,6 +8,9 @@ import {
   createDisclosure,
   delta,
   emptyLedger,
+  expirePvrRequests,
+  isRetryableHold,
+  type Disclosure,
   lsRemoteHeads,
   parseLedger,
   recordWouldSend,
@@ -636,5 +639,79 @@ describe('delta: pending disclosures (review #2)', () => {
       'a/one',
       'a/new',
     ]);
+  });
+});
+
+describe('expirePvrRequests (0106)', () => {
+  const DAY = 86_400_000;
+  const asked = (reason: string, at = T0, repo = 'o/r', ids = ['o/r#1']): Ledger => {
+    let l = createDisclosure(emptyLedger(), {
+      repo,
+      findingIds: ids,
+      archetype: 'a',
+      state: 'held',
+      reason,
+      now: at,
+    });
+    l = setPvrRequest(
+      l,
+      { repo, findingIds: ids },
+      { at, url: `https://github.com/${repo}/issues/1` },
+      at,
+    );
+    return l;
+  };
+  const at = (days: number): string => new Date(Date.parse(T0) + days * DAY).toISOString();
+
+  it('leaves a request inside the TTL alone', () => {
+    const l = asked('no PVR (enable requested)');
+    expect(expirePvrRequests(l, at(89), 90)).toBe(l);
+  });
+
+  it('past the TTL the hold becomes final and the repo is no longer pending', () => {
+    let l = asked('no PVR (enable requested)');
+    l = applyScan(l, 'o/r', {
+      fullSha: sha('a'),
+      engineVersion: V,
+      verdict: 'fail',
+      scannedAt: T0,
+      failFindings: [{ id: 'o/r#1', archetype: 'a' }],
+    });
+    const heads = new Map([['o/r', sha('a')]]);
+    expect(delta(l, heads, V, 10).selected).toHaveLength(1);
+    const x = expirePvrRequests(l, at(91), 90);
+    expect(x.disclosures[0]).toMatchObject({ state: 'held', reason: 'no PVR (request expired)' });
+    expect(isRetryableHold(x.disclosures[0] as Disclosure)).toBe(false);
+    expect(delta(x, heads, V, 10).selected).toHaveLength(0);
+  });
+
+  it('also expires a failed request and every other no-PVR hold on that repo', () => {
+    let l = asked('no PVR (enable request failed: HTTP 410)');
+    l = createDisclosure(l, {
+      repo: 'o/r',
+      findingIds: ['o/r#2'],
+      archetype: 'b',
+      state: 'held',
+      reason: 'no PVR (enable requested)',
+      now: at(80),
+    });
+    const x = expirePvrRequests(l, at(91), 90);
+    expect(x.disclosures.map((d) => d.reason)).toEqual([
+      'no PVR (request expired)',
+      'no PVR (request expired)',
+    ]);
+  });
+
+  it('never touches other states, other reasons, or repos never asked', () => {
+    let l = asked('not approved at this commit');
+    l = createDisclosure(l, {
+      repo: 'o/other',
+      findingIds: ['x'],
+      archetype: 'a',
+      state: 'held',
+      reason: 'no PVR',
+      now: T0,
+    });
+    expect(expirePvrRequests(l, at(400), 90)).toBe(l);
   });
 });

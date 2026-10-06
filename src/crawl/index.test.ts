@@ -29,6 +29,7 @@ import {
   emptyLedger,
   lsRemoteHeads,
   serializeLedger,
+  setPvrRequest,
   transition,
 } from './ledger';
 import { reverify, scanRepos } from './scan';
@@ -782,6 +783,27 @@ describe('runSubmit', () => {
     expect(out).toMatch(/\d/);
     expect(out).not.toContain('acme');
     expect(out).not.toMatch(/\S+\/\S+\s*[:=]\s*(pass|fail|warn|unknown|held|submitted)/);
+  });
+
+  it('0106: expires a PVR request past pvrRequestTtlDays, with no request sent', async () => {
+    const key = { repo: 'acme/old', findingIds: ['x'] };
+    const asked = '2026-01-01T00:00:00.000Z';
+    let l = createDisclosure(emptyLedger(), {
+      ...key,
+      archetype: ARCH,
+      state: 'held',
+      reason: 'no PVR (enable requested)',
+      now: asked,
+    });
+    l = setPvrRequest(l, key, { at: asked, url: 'https://github.com/acme/old/issues/1' }, asked);
+    setup({ pvrRequestTtlDays: 30 }, scanResult({ candidates: [] }), l);
+    const h = harness();
+    await runSubmit(submitArgs(), h.deps);
+    const last = h.persisted[h.persisted.length - 1];
+    expect(last?.disclosures.find((d) => d.repo === 'acme/old')?.reason).toBe(
+      'no PVR (request expired)',
+    );
+    expect(h.net.reqs).toEqual([]);
   });
 
   it('a malformed scan result is refused before any write', async () => {

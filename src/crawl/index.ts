@@ -55,6 +55,7 @@ import {
   delta,
   SCAN_VERDICTS,
   emptyLedger,
+  expirePvrRequests,
   lsRemoteHeads,
   parseLedger,
   recoverSubmitting,
@@ -671,6 +672,8 @@ export async function runSubmit(args: SubmitArgs, deps: SubmitDeps): Promise<num
     );
   }
   for (const [repo, scan] of Object.entries(result.scans)) ledger = applyScan(ledger, repo, scan);
+  // 0106: a request the owner never acted on stops holding the repo open.
+  ledger = expirePvrRequests(ledger, iso(), config.pvrRequestTtlDays);
 
   const killSwitch = args.killSwitch !== undefined && existsSync(args.killSwitch);
   const sub = await (deps.submitAll ?? submitAll)({
