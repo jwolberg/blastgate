@@ -9,14 +9,17 @@
  * `submitting` entry is never retried automatically.
  */
 
-import { gate, pvrEnableRequest, tierReport } from './disclose';
-import type { CrawlConfig } from './config';
+import { gate, pvrCloseOutComment, pvrEnableRequest, tierReport } from './disclose';
+import type { Approval, CrawlConfig } from './config';
 import { GitHubRateLimitError, isPlainRepoName, type GitHubClient } from './github';
 import {
   REASON_NO_PVR,
   REASON_NO_PVR_REQUESTED,
+  REASON_NOT_APPROVED,
   REASON_RATE_LIMITED,
+  REASON_REQUEST_DECLINED,
   reasonPvrRequestFailed,
+  reasonRequestGone,
   setPvrRequest,
   UNCERTAIN_REASON,
   isRetryableHold,
@@ -26,6 +29,7 @@ import {
   type Disclosure,
   type DisclosureKey,
   type Ledger,
+  type PvrRequest,
 } from './ledger';
 import type { ReverifyStatus } from './scan';
 
@@ -60,6 +64,10 @@ export interface SubmitSummary {
   counts: Record<string, number>;
   /** Set when the run halted early (kill switch, GitHub rate limit). */
   stoppedReason?: string;
+  /** New comments by someone other than us on PVR request issues (0104); read them by hand. */
+  ownerReplies: number;
+  /** Fails released by an approval carried from an earlier commit (0103). */
+  carried: number;
 }
 
 export interface SubmitOptions {
@@ -106,9 +114,10 @@ function budgetUsed(ledger: Ledger, now: number): { hour: number; day: number } 
   let hour = 0;
   let day = 0;
   for (const d of ledger.disclosures) {
-    // 0102: a public PVR request counts against the same budget as a report.
-    if (d.pvrRequest) {
-      const age = now - Date.parse(d.pvrRequest.at);
+    // 0102/0105: a public PVR request, and its close-out, count against the same budget.
+    for (const at of [d.pvrRequest?.at, d.pvrRequest?.closedOutAt]) {
+      if (at === undefined) continue;
+      const age = now - Date.parse(at);
       if (age < DAY_MS) day++;
       if (age < HOUR_MS) hour++;
     }
@@ -118,6 +127,139 @@ function budgetUsed(ledger: Ledger, now: number): { hour: number; day: number } 
     if (age < HOUR_MS) hour++;
   }
   return { hour, day };
+}
+
+const ISSUE_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/(\d+)$/;
+
+interface IssueCheck {
+  /** `unknown` = the lookup failed or said nothing usable; change nothing. */
+  state: 'open' | 'closed' | 'gone' | 'unknown';
+  status: number;
+  /** New replies by anyone but the issue's author (us), and the newest one's `created_at`. */
+  replies: number;
+  repliesSeenAt?: string;
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Read the PVR request issue (0104): its state, and replies newer than the last ones counted.
+ * Rate limits surface as a 429 status or a thrown GitHubRateLimitError; the caller stops.
+ */
+async function checkRequestIssue(
+  client: GitHubClient,
+  repo: string,
+  req: PvrRequest,
+): Promise<IssueCheck> {
+  const n = ISSUE_URL.exec(req.url ?? '')?.[1];
+  if (n === undefined) return { state: 'unknown', status: 0, replies: 0 };
+  const r = await client.get(`/repos/${repo}/issues/${n}`);
+  if (r.status === 404 || r.status === 410) return { state: 'gone', status: r.status, replies: 0 };
+  const issue = r.json;
+  if (r.status !== 200 || !isObj(issue) || (issue.state !== 'open' && issue.state !== 'closed')) {
+    return { state: 'unknown', status: r.status, replies: 0 };
+  }
+  const author = isObj(issue.user) ? String(issue.user.login ?? '').toLowerCase() : '';
+  const c = await client.get(`/repos/${repo}/issues/${n}/comments`, {
+    per_page: 100,
+    ...(req.repliesSeenAt ? { since: req.repliesSeenAt } : {}),
+  });
+  if (isRateLimit(c.status)) return { state: 'unknown', status: c.status, replies: 0 };
+  let replies = 0;
+  let newest = req.repliesSeenAt;
+  for (const x of c.status === 200 && Array.isArray(c.json) ? c.json : []) {
+    if (!isObj(x) || !isObj(x.user) || typeof x.created_at !== 'string') continue;
+    if (String(x.user.login ?? '').toLowerCase() === author) continue;
+    if (req.repliesSeenAt !== undefined && x.created_at <= req.repliesSeenAt) continue;
+    replies++;
+    if (newest === undefined || x.created_at > newest) newest = x.created_at;
+  }
+  return {
+    state: issue.state,
+    status: r.status,
+    replies,
+    ...(newest !== undefined ? { repliesSeenAt: newest } : {}),
+  };
+}
+
+/** GitHub's compare API lists at most 300 files; a full list may be truncated. */
+const COMPARE_FILE_CAP = 300;
+/** Older reviewed commits tried per fail; each costs one compare request. */
+const MAX_CARRY_TRIES = 3;
+
+/**
+ * Paths whose change can alter what a workflow does: anything under `.github/` (workflows and
+ * the local actions kept there) and any `action.yml`/`action.yaml`, the entry point of a local
+ * action wherever it lives.
+ */
+export function touchesWorkflowSurface(path: string): boolean {
+  return path.startsWith('.github/') || /(^|\/)action\.ya?ml$/.test(path);
+}
+
+/**
+ * 0103: approvals for `c` carried forward from an earlier reviewed commit, or undefined. Needs
+ * an approval for EVERY finding id at one common commit, from which `c.sha` is strictly ahead,
+ * with a complete file list that touches no workflow surface. The skeptic tier is kept. A
+ * GitHubRateLimitError propagates (the caller stops the run).
+ */
+async function carryApprovals(
+  client: GitHubClient,
+  config: CrawlConfig,
+  c: SubmitCandidate,
+): Promise<Approval[] | undefined> {
+  const mine = config.approved.filter((a) => a.repo === c.repo && a.sha !== c.sha);
+  const shas = [...new Set(mine.map((a) => a.sha))]
+    .filter((sha) =>
+      c.findingIds.every((id) => mine.some((a) => a.sha === sha && a.findingId === id)),
+    )
+    .sort()
+    .slice(0, MAX_CARRY_TRIES);
+  for (const sha of shas) {
+    const r = await client.get(`/repos/${c.repo}/compare/${sha}...${c.sha}`);
+    if (isRateLimit(r.status)) throw new GitHubRateLimitError('compare rate limited', r.status);
+    const cmp = r.json;
+    if (r.status !== 200 || !isObj(cmp) || cmp.status !== 'ahead' || !Array.isArray(cmp.files)) {
+      continue;
+    }
+    const files = cmp.files as unknown[];
+    if (files.length >= COMPARE_FILE_CAP) continue;
+    const paths = files.flatMap((f) =>
+      isObj(f) ? [f.filename, f.previous_filename].filter((p) => typeof p === 'string') : [null],
+    );
+    if (paths.some((p) => typeof p !== 'string' || touchesWorkflowSurface(p))) continue;
+    return c.findingIds.map((id) => {
+      const a = mine.find((x) => x.sha === sha && x.findingId === id) as Approval;
+      return { ...a, sha: c.sha };
+    });
+  }
+  return undefined;
+}
+
+/**
+ * Whether a repo's PVR request issue can be closed out (0105), and with which text: `filed` once
+ * a report went out, `resolved` once every disclosure was resolved before reporting and the
+ * latest scan is clean. Anything
+ * still in flight (queued, submitting, or a retryable hold) or held for good means: leave it.
+ */
+function closeOutKind(ledger: Ledger, repo: string): 'filed' | 'resolved' | undefined {
+  const mine = ledger.disclosures.filter((d) => d.repo === repo);
+  if (mine.some((d) => d.reportUrl !== undefined)) {
+    const pending = mine.some(
+      (d) =>
+        d.state === 'queued' ||
+        d.state === 'submitting' ||
+        (d.state === 'held' && isRetryableHold(d)),
+    );
+    return pending ? undefined : 'filed';
+  }
+  // "No longer finds" only when the latest scan of the repo has no fails at all: finding ids can
+  // shift (engine change) while the problem remains, and that must never read as resolved.
+  const scan = ledger.repos[repo];
+  const clean = scan !== undefined && scan.verdict !== 'fail' && scan.failFindings.length === 0;
+  return clean && mine.length > 0 && mine.every((d) => d.state === 'resolved-before-report')
+    ? 'resolved'
+    : undefined;
 }
 
 /**
@@ -134,6 +276,8 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
   const outcomes: SubmitOutcome[] = [];
   let stoppedReason: string | undefined;
   let dirty = false;
+  let ownerReplies = 0;
+  let carriedCount = 0;
 
   const iso = (): string => opts.now().toISOString();
   const push = (repo: string, outcome: SubmitOutcomeKind, reason?: string): void => {
@@ -240,11 +384,25 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       ...ledger,
       disclosures: ledger.disclosures.filter((d) => d !== current()),
     };
-    const decision = gate(
-      { repo: c.repo, sha: c.sha, archetype: c.archetype, findingIds: c.findingIds },
-      config,
-      others,
-    );
+    const input = { repo: c.repo, sha: c.sha, archetype: c.archetype, findingIds: c.findingIds };
+    let decision = gate(input, config, others);
+    // 0103: HEAD moved since the review. If nothing that can change a workflow's behaviour
+    // changed in between, the approval at the reviewed commit still stands for this one.
+    if (decision.decision === 'held' && decision.reason === REASON_NOT_APPROVED) {
+      let carried: Approval[] | undefined;
+      try {
+        carried = await carryApprovals(client, config, c);
+      } catch (e) {
+        if (!(e instanceof GitHubRateLimitError)) throw e;
+        stoppedReason = `GitHub rate limit (HTTP ${e.status}) on approval carry-forward`;
+        push(c.repo, 'stopped', stoppedReason);
+        continue;
+      }
+      if (carried) {
+        decision = gate(input, { ...config, approved: [...config.approved, ...carried] }, others);
+        if (decision.decision === 'allowed') carriedCount++;
+      }
+    }
     if (decision.decision === 'held') {
       const reason = decision.reason ?? 'held by gate';
       hold(reason);
@@ -277,6 +435,44 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       }
       push(c.repo, 'retry', `PVR pre-check failed: ${(e as Error).message}`);
       continue;
+    }
+    // 0104: read the request issue, if this repo was asked. Closed (or gone) while PVR is
+    // definitely off means the owner declined; closed with PVR on means they did what we asked.
+    const holder = ledger.disclosures.find((d) => d.repo === c.repo && d.pvrRequest?.url);
+    if (holder?.pvrRequest) {
+      let check: IssueCheck = { state: 'unknown', status: 0, replies: 0 };
+      let limited: number | undefined;
+      try {
+        check = await checkRequestIssue(client, c.repo, holder.pvrRequest);
+        if (isRateLimit(check.status)) limited = check.status;
+      } catch (e) {
+        if (e instanceof GitHubRateLimitError) limited = e.status;
+        // Any other failure says nothing about the issue: carry on as if it were not checked.
+      }
+      if (limited !== undefined) {
+        stoppedReason = `GitHub rate limit (HTTP ${limited}) on PVR request issue`;
+        push(c.repo, 'stopped', stoppedReason);
+        continue;
+      }
+      if (check.replies > 0) {
+        ownerReplies += check.replies;
+        apply(
+          setPvrRequest(
+            ledger,
+            { repo: holder.repo, findingIds: holder.findingIds },
+            { ...holder.pvrRequest, repliesSeenAt: check.repliesSeenAt as string },
+            iso(),
+          ),
+        );
+      }
+      // Only a definite "off" makes a closed issue final; an unknown PVR answer waits a run.
+      if (pvrDefinitelyOff && (check.state === 'closed' || check.state === 'gone')) {
+        const reason =
+          check.state === 'closed' ? REASON_REQUEST_DECLINED : reasonRequestGone(check.status);
+        hold(reason);
+        push(c.repo, 'held', reason);
+        continue;
+      }
     }
     if (!pvrEnabled) {
       const asked = ledger.disclosures.some((d) => d.repo === c.repo && d.pvrRequest);
@@ -388,13 +584,97 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
     dirty = false;
   }
 
+  // 0105: close out request issues whose repo has nothing left pending.
+  if (config.submitMode && !opts.killSwitch) {
+    const holders = ledger.disclosures.filter(
+      (d) => d.pvrRequest?.url !== undefined && d.pvrRequest.closedOutAt === undefined,
+    );
+    for (const cur of holders) {
+      if (stoppedReason !== undefined) break;
+      // One request issue per repo: once any entry there is closed out, the issue is done.
+      if (ledger.disclosures.some((d) => d.repo === cur.repo && d.pvrRequest?.closedOutAt))
+        continue;
+      const req = cur.pvrRequest as PvrRequest & { url: string };
+      const kind = closeOutKind(ledger, cur.repo);
+      if (kind === undefined) continue;
+      const used = budgetUsed(ledger, opts.now().getTime());
+      if (used.hour >= config.throttle.perHour || used.day >= config.throttle.perDay) continue;
+      const n = ISSUE_URL.exec(req.url)?.[1];
+      if (n === undefined) continue;
+      const key: DisclosureKey = { repo: cur.repo, findingIds: cur.findingIds };
+      try {
+        const issue = await client.get(`/repos/${cur.repo}/issues/${n}`);
+        if (isRateLimit(issue.status)) {
+          stoppedReason = `GitHub rate limit (HTTP ${issue.status}) on PVR request issue`;
+          break;
+        }
+        // Only an issue we can see is still open gets a comment; one the owner closed is left be.
+        if (issue.status !== 200 || !isObj(issue.json) || issue.json.state !== 'open') {
+          const gone = issue.status === 404 || issue.status === 410;
+          if (gone || (isObj(issue.json) && issue.json.state === 'closed')) {
+            apply(setPvrRequest(ledger, key, { ...req, closedOutAt: iso() }, iso()));
+          }
+          continue;
+        }
+      } catch (e) {
+        if (e instanceof GitHubRateLimitError) {
+          stoppedReason = `GitHub rate limit (HTTP ${e.status}) on PVR request issue`;
+          break;
+        }
+        continue;
+      }
+      // Recorded before the comment, so a crash can never post it twice.
+      const at = iso();
+      apply(setPvrRequest(ledger, key, { ...req, closedOutAt: at }, at));
+      await persist(ledger);
+      dirty = false;
+      let status = 0;
+      try {
+        status = (
+          await client.post(`/repos/${cur.repo}/issues/${n}/comments`, {
+            body: pvrCloseOutComment(kind),
+          })
+        ).status;
+        if (status === 201) {
+          status = (
+            await client.patch(`/repos/${cur.repo}/issues/${n}`, {
+              state: 'closed',
+              state_reason: 'completed',
+            })
+          ).status;
+          if (status === 200) status = 0;
+        }
+      } catch (e) {
+        status = e instanceof GitHubRateLimitError ? e.status : -1;
+      }
+      if (status !== 0) {
+        apply(
+          setPvrRequest(
+            ledger,
+            key,
+            { ...req, closedOutAt: at, closeOutFailedStatus: status },
+            iso(),
+          ),
+        );
+        if (isRateLimit(status)) stoppedReason = `GitHub rate limit (HTTP ${status}) on close-out`;
+      }
+      await persist(ledger);
+      dirty = false;
+    }
+  }
+
   if (dirty) await persist(ledger);
 
   const counts: Record<string, number> = {};
   for (const o of outcomes) counts[o.outcome] = (counts[o.outcome] ?? 0) + 1;
   return {
     ledger,
-    summary: { counts, ...(stoppedReason !== undefined ? { stoppedReason } : {}) },
+    summary: {
+      counts,
+      ownerReplies,
+      carried: carriedCount,
+      ...(stoppedReason !== undefined ? { stoppedReason } : {}),
+    },
     outcomes,
   };
 }

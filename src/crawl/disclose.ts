@@ -322,3 +322,15 @@ export function pvrEnableRequest(): { title: string; body: string } {
     ].join('\n'),
   };
 }
+
+// ---------------------------------------------------------------- PVR request close-out (0105)
+
+/**
+ * The one comment posted on a PVR request issue before closing it (0105). Fixed text, like the
+ * request: nothing about the finding, the report or its tier.
+ */
+export function pvrCloseOutComment(kind: 'filed' | 'resolved'): string {
+  return kind === 'filed'
+    ? 'Thank you for turning on private vulnerability reporting. The details have been filed as a private report that only maintainers can see, under the Security tab. Closing this issue.'
+    : 'A later scan no longer finds the problem, so there is nothing to report. Thank you, and closing this issue.';
+}

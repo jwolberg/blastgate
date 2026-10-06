@@ -13,6 +13,7 @@ describe('parseCrawlConfig', () => {
       discoveryMinutes: 60,
       approved: [],
       sendPossible: false,
+      pvrRequestTtlDays: 90,
     });
     expect(DEFAULT_CRAWL_CONFIG.allowlist).toEqual([]);
     expect(DEFAULT_CRAWL_CONFIG.approved).toEqual([]);
@@ -38,6 +39,7 @@ describe('parseCrawlConfig', () => {
       discoveryMinutes: 60,
       approved: [],
       sendPossible: false,
+      pvrRequestTtlDays: 90,
     });
   });
 
@@ -101,6 +103,15 @@ describe('parseCrawlConfig', () => {
     for (const v of ['0', '-1', '2.5', '"60"', '241']) {
       expect(() => parseCrawlConfig(`{"discoveryMinutes":${v}}`), v).toThrow(
         /discoveryMinutes must be/,
+      );
+    }
+  });
+
+  it('0106: accepts pvrRequestTtlDays and rejects zero, fractional, or over the 365 cap', () => {
+    expect(parseCrawlConfig('{"pvrRequestTtlDays":30}').pvrRequestTtlDays).toBe(30);
+    for (const bad of [0, -1, 1.5, 366, '90']) {
+      expect(() => parseCrawlConfig(JSON.stringify({ pvrRequestTtlDays: bad }))).toThrow(
+        /pvrRequestTtlDays/,
       );
     }
   });

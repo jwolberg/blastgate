@@ -65,12 +65,13 @@ Strict JSON; unknown keys are rejected so a typo cannot silently flip a safety d
 | --- | --- | --- |
 | `allowlist` | `[]` | Archetypes (`<entry kind>-><sink kind>`) eligible to be submitted. Empty means everything is held. Necessary, not sufficient: each fail also needs an `approved` entry. |
 | `sendPossible` | `false` | Send possible-vulnerability reports (skeptic `doubtful`, 0101). Off until the analyzer fixes 0095/0096 land; until then those reports are held as `possible vulnerability: sending paused`. |
-| `approved` | `[]` | Per-fail approvals written by `crawl approve`, `{"repo", "sha", "findingId", "skeptic"}` (0092, 0100). `skeptic` is `could-not-refute` (sent as a security vulnerability) or `doubtful` (sent as a possible one); nothing else loads. A report is sent only when **every** finding in it is approved for that repo **at the exact commit the report names**. If the repo's HEAD moves, the new commit has no approval and the fail is held again until re-reviewed. |
+| `approved` | `[]` | Per-fail approvals written by `crawl approve`, `{"repo", "sha", "findingId", "skeptic"}` (0092, 0100). `skeptic` is `could-not-refute` (sent as a security vulnerability) or `doubtful` (sent as a possible one); nothing else loads. A report is sent only when **every** finding in it is approved for that repo **at the exact commit the report names**. If the repo's HEAD moves, the approval carries to the new commit only when GitHub's compare shows the new commit strictly ahead and no changed path is under `.github/` or named `action.yml`/`action.yaml` (0103, logged as `approvals carried N`); otherwise the fail is held again until re-reviewed. |
 | `submitMode` | `false` | Off is dry run: the exact request body is recorded on the disclosure (`wouldSend`), nothing is sent. |
 | `publishSite` | `false` | Off builds the site but never pushes it. |
 | `reporterLogin` | `""` | Login the reports are filed as. Empty skips advisory tracking. |
 | `throttle` | `{perHour: 5, perDay: 20}` | Submission budget per trailing hour and day. |
 | `discoveryBudget` | `300` | Max code-search requests one run spends on discovery (1 to 5000). Searches are paced at 9/min, so 300 is about 35 minutes when GitHub does not push back. |
+| `pvrRequestTtlDays` | `90` | Days a PVR enable request (0102) stays open (1 to 365). Past it, every `no PVR` hold on that repo becomes final (`no PVR (request expired)`) and the repo is no longer rescanned for it (0106). A later fail with new finding ids still gets the PVR check, but never a second issue. |
 | `discoveryMinutes` | `60` | Wall-clock limit on discovery per run (1 to 240). Past it no new search starts and the run scans known repos; a request already in flight may finish its retries first. Under secondary limits a handful of searches can take hours, so this, not the budget, is what bounds time (0088). |
 
 Turn on `submitMode` and `publishSite` independently, and only after [6].
@@ -115,7 +116,24 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   (`pvrRequest`) before it is posted, so it is never posted twice, and a repo is never asked
   again, even if the request failed. The disclosure stays held (`no PVR (enable requested)`) and
   PVR is re-checked every run; once the owner turns it on, the private report is filed. Requests
-  count against the throttle. Dry runs ask nobody.
+  count against the throttle. Dry runs ask nobody. After `pvrRequestTtlDays` (default 90) with
+  PVR still off, the hold becomes final as `no PVR (request expired)` (0106).
+- **Watching the request issue (0104).** Each run that reaches the PVR check for an asked repo
+  reads the request issue. Closed (by anyone) while PVR is definitely off means the owner declined:
+  the hold becomes final as `declined (request issue closed)` and nothing is ever filed. Closed
+  with PVR on means they did what we asked, and the report is filed. A deleted issue (404/410)
+  while PVR is off is final too (`declined (request issue gone: HTTP …)`). Replies by anyone but
+  us are counted once (`pvrRequest.repliesSeenAt`) and the run log says `owner replies N`. The
+  log never names repos, so when N > 0 find the thread in your GitHub notifications (you are the
+  issue author) or by `repliesSeenAt` in the ledger, and answer by hand.
+- **Closing out the request issue (0105).** Once nothing is pending for an asked repo, the
+  crawler posts one fixed comment on the request issue and closes it: "filed as a private
+  report" after a report went out, or "a later scan no longer finds the problem" when every
+  disclosure was resolved before reporting and the latest scan has no fails. Recorded as `pvrRequest.closedOutAt` before the
+  comment, so it never repeats; a refusal is kept as `closeOutFailedStatus` and not retried. An
+  issue the owner already closed gets no comment. Counts against the throttle; dry runs and the
+  kill switch skip it. A queued or retryable-held entry whose repo was rescanned without those
+  fails (for example, the repo now passes) becomes `resolved-before-report`.
 - **Tripped archetypes.** A submitted report whose advisory is closed or withdrawn becomes
   `declined` and puts its archetype in `trippedArchetypes`; the gate then holds it even if
   allowlisted. Re-admit it by removing it from that list by hand once you have judged the cause.

@@ -76,6 +76,14 @@ export interface PvrRequest {
   at: string;
   url?: string;
   failedStatus?: number;
+  /** `created_at` of the newest owner reply already counted (0104). Absent = none seen yet. */
+  repliesSeenAt?: string;
+  /**
+   * When the issue was closed out (0105): one comment, then closed. Written before the comment
+   * is posted, so it is never posted twice; `closeOutFailedStatus` if GitHub refused it.
+   */
+  closedOutAt?: string;
+  closeOutFailedStatus?: number;
 }
 
 export interface Ledger {
@@ -95,6 +103,13 @@ export const REASON_POSSIBLE_PAUSED = 'possible vulnerability: sending paused';
 export const REASON_NO_PVR_REQUESTED = `${REASON_NO_PVR} (enable requested)`;
 export const reasonPvrRequestFailed = (status: number): string =>
   `${REASON_NO_PVR} (enable request failed: HTTP ${status})`;
+/** PVR is still off and the owner closed the request issue: they do not want to hear (0104). Final. */
+export const REASON_REQUEST_DECLINED = 'declined (request issue closed)';
+/** The request issue (or the repo's issues) is gone while PVR is still off (0104). Final. */
+export const reasonRequestGone = (status: number): string =>
+  `declined (request issue gone: HTTP ${status})`;
+/** The owner was asked longer ago than `pvrRequestTtlDays` and never turned PVR on (0106). Final. */
+export const REASON_NO_PVR_EXPIRED = `${REASON_NO_PVR} (request expired)`;
 export const REASON_RATE_LIMITED = 'rate limited (HTTP';
 
 /**
@@ -160,17 +175,42 @@ function parsePvrRequest(v: unknown, where: string): PvrRequest | undefined {
   const w = `${where}.pvrRequest`;
   if (!isObj(v)) fail(`${w} must be an object`);
   for (const k of Object.keys(v)) {
-    if (!['at', 'url', 'failedStatus'].includes(k)) fail(`${w} has unknown key "${k}"`);
+    if (
+      ![
+        'at',
+        'url',
+        'failedStatus',
+        'repliesSeenAt',
+        'closedOutAt',
+        'closeOutFailedStatus',
+      ].includes(k)
+    ) {
+      fail(`${w} has unknown key "${k}"`);
+    }
   }
   if (typeof v.at !== 'string' || v.at === '') fail(`${w}.at must be a non-empty string`);
   if (v.url !== undefined && typeof v.url !== 'string') fail(`${w}.url must be a string`);
   if (v.failedStatus !== undefined && !Number.isInteger(v.failedStatus)) {
     fail(`${w}.failedStatus must be an integer`);
   }
+  if (v.repliesSeenAt !== undefined && typeof v.repliesSeenAt !== 'string') {
+    fail(`${w}.repliesSeenAt must be a string`);
+  }
+  if (v.closedOutAt !== undefined && typeof v.closedOutAt !== 'string') {
+    fail(`${w}.closedOutAt must be a string`);
+  }
+  if (v.closeOutFailedStatus !== undefined && !Number.isInteger(v.closeOutFailedStatus)) {
+    fail(`${w}.closeOutFailedStatus must be an integer`);
+  }
   return {
     at: v.at,
     ...(v.url !== undefined ? { url: v.url as string } : {}),
     ...(v.failedStatus !== undefined ? { failedStatus: v.failedStatus as number } : {}),
+    ...(v.repliesSeenAt !== undefined ? { repliesSeenAt: v.repliesSeenAt as string } : {}),
+    ...(v.closedOutAt !== undefined ? { closedOutAt: v.closedOutAt as string } : {}),
+    ...(v.closeOutFailedStatus !== undefined
+      ? { closeOutFailedStatus: v.closeOutFailedStatus as number }
+      : {}),
   };
 }
 
@@ -607,9 +647,78 @@ export function setPvrRequest(
   pvrRequest: PvrRequest,
   now: string,
 ): Ledger {
-  const idx = findDisclosure(ledger, key);
+  // Update the entry that already carries the request, even if a later live entry shares its
+  // ids; otherwise the record would split across two entries.
+  const k = idsKey(key.findingIds);
+  const holder = ledger.disclosures.findIndex(
+    (d) => d.repo === key.repo && idsKey(d.findingIds) === k && d.pvrRequest !== undefined,
+  );
+  const idx = holder >= 0 ? holder : findDisclosure(ledger, key);
   const cur = ledger.disclosures[idx];
   if (!cur) throw new Error(`setPvrRequest: no disclosure for ${key.repo}`);
   const next = normalizeDisclosure({ ...cur, pvrRequest, updatedAt: now });
   return { ...ledger, disclosures: ledger.disclosures.map((d, i) => (i === idx ? next : d)) };
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * 0106: once a repo's PVR request is older than `ttlDays`, its no-PVR holds become final
+ * (`REASON_NO_PVR_EXPIRED`), so the repo stops being rescanned every run for a report that will
+ * never be accepted. Returns the same ledger when nothing expires.
+ */
+export function expirePvrRequests(ledger: Ledger, now: string, ttlDays: number): Ledger {
+  const cutoff = Date.parse(now) - ttlDays * DAY_MS;
+  const expired = new Set(
+    ledger.disclosures
+      .filter((d) => d.pvrRequest !== undefined && Date.parse(d.pvrRequest.at) < cutoff)
+      .map((d) => d.repo),
+  );
+  const hit = (d: Disclosure): boolean =>
+    expired.has(d.repo) &&
+    d.state === 'held' &&
+    isRetryableHold(d) &&
+    (d.reason ?? '').startsWith(REASON_NO_PVR);
+  if (!ledger.disclosures.some(hit)) return ledger;
+  return {
+    ...ledger,
+    disclosures: ledger.disclosures.map((d) =>
+      hit(d) ? normalizeDisclosure({ ...d, reason: REASON_NO_PVR_EXPIRED, updatedAt: now }) : d,
+    ),
+  };
+}
+
+/**
+ * 0105: a queued or retryable-held disclosure whose repo was rescanned and none of whose finding
+ * ids still fail is `resolved-before-report`. Without this, a repo that turns `pass` leaves its
+ * pending entry (and any PVR request issue) open forever, since `delta` only rechecks fails.
+ * `currentFails` holds every rescanned repo's failing ids; a repo absent from it is left alone.
+ */
+export function resolveStale(
+  ledger: Ledger,
+  currentFails: ReadonlyMap<string, ReadonlySet<string>>,
+  now: string,
+): Ledger {
+  const stale = (d: Disclosure): boolean => {
+    const fails = currentFails.get(d.repo);
+    return (
+      fails !== undefined &&
+      (d.state === 'queued' || (d.state === 'held' && isRetryableHold(d))) &&
+      !d.findingIds.some((id) => fails.has(id))
+    );
+  };
+  if (!ledger.disclosures.some(stale)) return ledger;
+  return {
+    ...ledger,
+    disclosures: ledger.disclosures.map((d) =>
+      stale(d)
+        ? normalizeDisclosure({
+            ...d,
+            state: 'resolved-before-report',
+            reason: undefined,
+            updatedAt: now,
+          })
+        : d,
+    ),
+  };
 }

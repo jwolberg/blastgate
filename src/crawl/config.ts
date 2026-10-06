@@ -59,7 +59,15 @@ export interface CrawlConfig {
    * guard and wrong-line bugs (0095/0096) are fixed; those reports are held meanwhile.
    */
   sendPossible: boolean;
+  /**
+   * Days a PVR enable request (0102) stays open (0106). Past it, the owner never turned PVR on:
+   * the hold becomes final and the repo is no longer rescanned for it.
+   */
+  pvrRequestTtlDays: number;
 }
+
+/** A year: past that an unanswered request is not coming back. */
+export const MAX_PVR_REQUEST_TTL_DAYS = 365;
 
 /** Upper bound: well above what a 5 hour job can spend at the 9/min search throttle (~2,700). */
 export const MAX_DISCOVERY_BUDGET = 5000;
@@ -77,6 +85,7 @@ export const DEFAULT_CRAWL_CONFIG: CrawlConfig = {
   discoveryMinutes: 60,
   approved: [],
   sendPossible: false,
+  pvrRequestTtlDays: 90,
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -169,6 +178,7 @@ export function parseCrawlConfig(text: string): CrawlConfig {
       'discoveryMinutes',
       'approved',
       'sendPossible',
+      'pvrRequestTtlDays',
     ],
     '',
   );
@@ -224,5 +234,12 @@ export function parseCrawlConfig(text: string): CrawlConfig {
     ),
     approved: approvals(raw.approved),
     sendPossible: bool(raw, 'sendPossible', DEFAULT_CRAWL_CONFIG.sendPossible),
+    pvrRequestTtlDays: posInt(
+      raw,
+      'pvrRequestTtlDays',
+      DEFAULT_CRAWL_CONFIG.pvrRequestTtlDays,
+      'pvrRequestTtlDays',
+      MAX_PVR_REQUEST_TTL_DAYS,
+    ),
   };
 }

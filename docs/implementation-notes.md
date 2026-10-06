@@ -1441,3 +1441,80 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   and names nothing (not even "CI"), so nothing about the vulnerability goes public.
 - Not built: watching the request issue (closed without enabling = owner declined). Today the
   repo just stays held; a follow-up could mark it declined.
+
+## 2026-10-06 — 0106 expire unanswered PVR requests
+
+- `pvrRequestTtlDays` (default 90, max 365) in the ops config. Past it, every retryable `no PVR`
+  hold on an asked repo becomes final as `no PVR (request expired)`, so `delta` stops treating it
+  as pending. Runs in `runSubmit` right after the scans are applied, on the whole ledger, so it
+  happens even when the repo is not rescanned.
+- Chose 90 days to match the usual disclosure window. Skipped the optional back-off (rescan daily
+  instead of every run inside the TTL): one rescan per run is cheap next to the 90-day cutoff.
+
+## 2026-10-06 — 0104 honor a closed PVR request issue, surface owner replies
+
+- Decided the open question from the ticket: closed counts as "declined" only while PVR is still
+  off. An owner who turns PVR on and then closes the issue did what we asked, so the report goes
+  out. Closed with PVR off is final (`declined (request issue closed)`) even if PVR is turned on
+  later, which keeps the issue text's promise ("close this issue" = do not want to hear).
+- Deviation: the ticket asked for a HITL item per reply. The crawler runs in GitHub Actions,
+  where the local HITL helper does not exist, and the run log is counts-only by design (no repo
+  names). So replies are counted (`owner replies N` in the submit log) and the newest counted
+  reply's time is stored as `pvrRequest.repliesSeenAt`. GitHub already notifies Jay of replies,
+  since the issues are filed from his account; that is the primary channel.
+- The issue is read only when a candidate for that repo reaches the PVR check (rescanned, still
+  failing, gate passed). A repo held for another reason (e.g. not approved) is not checked; a
+  missed close then takes effect the first time it does reach the check.
+- A 403/5xx/transport error on the lookup changes nothing; a rate limit stops the run like the
+  PVR pre-check does.
+
+## 2026-10-06 — 0105 close out the PVR request issue
+
+- One comment, then `PATCH state: closed` (added `patch()` to the crawler's GitHub client; sent
+  once, never retried, like a POST). `closedOutAt` is written and persisted before the comment.
+  A refused comment or close is recorded as `closeOutFailedStatus` and not retried.
+- Chose repo-level conditions, since one request issue covers every disclosure on the repo:
+  "filed" once any disclosure there has a report URL and none is still pending; "resolved" only
+  when every disclosure there is `resolved-before-report`. Final holds (declined, expired,
+  uncertain) leave the issue as it is.
+- Added scope: `resolveStale` in `runSubmit`. Before this, a pending entry whose repo was
+  rescanned and passed stayed pending forever (`delta` only revisits fails and changed passes),
+  so neither the "resolved" close-out nor the ledger would ever reflect the fix.
+- Close-out counts against the throttle as one action (comment + close). An issue found already
+  closed is marked `closedOutAt` without posting; that still counts toward the budget. Rare, so
+  kept simple.
+
+## 2026-10-06 — 0103 carry an approval across an unrelated commit
+
+- Done in the submit job with GitHub's compare API (`/compare/<approved>...<head>`), since the
+  submit job never clones. The approval carries only when: every finding id has an approval at
+  one common older commit; compare says `ahead` (not diverged/behind); the file list is complete
+  (< 300 files, GitHub's cap); and no changed path (or rename source) is under `.github/` or is an
+  `action.yml`/`action.yaml` anywhere. Anything else falls back to `not approved at this commit`.
+- Deviation from the ticket: it asked for "the cited workflow file is byte-identical". Chose the
+  whole `.github/` tree plus any `action.yml`/`action.yaml` instead, because a finding can depend
+  on a reusable workflow or local action the finding id does not name. Gap: a local action whose
+  code changed but whose `action.yml` did not (e.g. its `dist/index.js`) still carries. Accepted:
+  the sink and the `${{ }}` splice the finding names live in the workflow/action YAML.
+- Not recorded in the ledger (no schema change): the run log has `approvals carried N`, and the
+  report footer already names the new commit. Up to 3 older commits are tried per fail.
+- The carried approval keeps its skeptic verdict, so the report tier (0101) is unchanged.
+- `approvals carried N` counts fails the carry released at the gate this run, including ones then
+  held for PVR; it can repeat across runs for the same fail. Older commits are tried in sha order
+  (no dates on approvals), at most 3.
+
+## 2026-10-06 — review fixes for 0103-0106 (fresh-context reviewer)
+
+- Fixed: a "no longer finds" close-out could fire when finding ids shifted (engine change) while
+  the repo still failed; `resolved` now also needs the latest scan of the repo to be clean.
+- Fixed: a closed request issue became a final decline even when the PVR check was inconclusive
+  (403/404); it now needs a definite `enabled: false`.
+- Fixed: close-out is now once per repo (any entry with `closedOutAt` ends it), and
+  `setPvrRequest` updates the entry that already carries the request, so the record never splits
+  across a resolved entry and a later live one with the same ids.
+- Fixed: a request issue that is gone (404/410) at close-out is given up on instead of re-checked
+  every run.
+- Known, not changed: expiry (0106) runs before the PVR check, so an owner who turns PVR on after
+  the TTL is not reported to. Matches the ticket; revisit if it ever happens.
+- Known, not changed: a comment that lands but whose close (PATCH) fails leaves the issue open
+  with our comment; recorded as `closeOutFailedStatus`, not retried.
