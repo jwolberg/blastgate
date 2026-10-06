@@ -238,7 +238,8 @@ async function carryApprovals(
 
 /**
  * Whether a repo's PVR request issue can be closed out (0105), and with which text: `filed` once
- * a report went out, `resolved` once every disclosure was resolved before reporting. Anything
+ * a report went out, `resolved` once every disclosure was resolved before reporting and the
+ * latest scan is clean. Anything
  * still in flight (queued, submitting, or a retryable hold) or held for good means: leave it.
  */
 function closeOutKind(ledger: Ledger, repo: string): 'filed' | 'resolved' | undefined {
@@ -252,7 +253,11 @@ function closeOutKind(ledger: Ledger, repo: string): 'filed' | 'resolved' | unde
     );
     return pending ? undefined : 'filed';
   }
-  return mine.length > 0 && mine.every((d) => d.state === 'resolved-before-report')
+  // "No longer finds" only when the latest scan of the repo has no fails at all: finding ids can
+  // shift (engine change) while the problem remains, and that must never read as resolved.
+  const scan = ledger.repos[repo];
+  const clean = scan !== undefined && scan.verdict !== 'fail' && scan.failFindings.length === 0;
+  return clean && mine.length > 0 && mine.every((d) => d.state === 'resolved-before-report')
     ? 'resolved'
     : undefined;
 }
@@ -431,8 +436,8 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
       push(c.repo, 'retry', `PVR pre-check failed: ${(e as Error).message}`);
       continue;
     }
-    // 0104: read the request issue, if this repo was asked. Closed (or gone) while PVR is still
-    // off means the owner declined; closed with PVR on means they did what we asked.
+    // 0104: read the request issue, if this repo was asked. Closed (or gone) while PVR is
+    // definitely off means the owner declined; closed with PVR on means they did what we asked.
     const holder = ledger.disclosures.find((d) => d.repo === c.repo && d.pvrRequest?.url);
     if (holder?.pvrRequest) {
       let check: IssueCheck = { state: 'unknown', status: 0, replies: 0 };
@@ -460,7 +465,8 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
           ),
         );
       }
-      if (!pvrEnabled && (check.state === 'closed' || check.state === 'gone')) {
+      // Only a definite "off" makes a closed issue final; an unknown PVR answer waits a run.
+      if (pvrDefinitelyOff && (check.state === 'closed' || check.state === 'gone')) {
         const reason =
           check.state === 'closed' ? REASON_REQUEST_DECLINED : reasonRequestGone(check.status);
         hold(reason);
@@ -585,6 +591,9 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
     );
     for (const cur of holders) {
       if (stoppedReason !== undefined) break;
+      // One request issue per repo: once any entry there is closed out, the issue is done.
+      if (ledger.disclosures.some((d) => d.repo === cur.repo && d.pvrRequest?.closedOutAt))
+        continue;
       const req = cur.pvrRequest as PvrRequest & { url: string };
       const kind = closeOutKind(ledger, cur.repo);
       if (kind === undefined) continue;
@@ -601,7 +610,8 @@ export async function submitAll(opts: SubmitOptions): Promise<SubmitResult> {
         }
         // Only an issue we can see is still open gets a comment; one the owner closed is left be.
         if (issue.status !== 200 || !isObj(issue.json) || issue.json.state !== 'open') {
-          if (isObj(issue.json) && issue.json.state === 'closed') {
+          const gone = issue.status === 404 || issue.status === 410;
+          if (gone || (isObj(issue.json) && issue.json.state === 'closed')) {
             apply(setPvrRequest(ledger, key, { ...req, closedOutAt: iso() }, iso()));
           }
           continue;

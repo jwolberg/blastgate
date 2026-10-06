@@ -647,7 +647,13 @@ export function setPvrRequest(
   pvrRequest: PvrRequest,
   now: string,
 ): Ledger {
-  const idx = findDisclosure(ledger, key);
+  // Update the entry that already carries the request, even if a later live entry shares its
+  // ids; otherwise the record would split across two entries.
+  const k = idsKey(key.findingIds);
+  const holder = ledger.disclosures.findIndex(
+    (d) => d.repo === key.repo && idsKey(d.findingIds) === k && d.pvrRequest !== undefined,
+  );
+  const idx = holder >= 0 ? holder : findDisclosure(ledger, key);
   const cur = ledger.disclosures[idx];
   if (!cur) throw new Error(`setPvrRequest: no disclosure for ${key.repo}`);
   const next = normalizeDisclosure({ ...cur, pvrRequest, updatedAt: now });

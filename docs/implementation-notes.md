@@ -1492,8 +1492,29 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   (< 300 files, GitHub's cap); and no changed path (or rename source) is under `.github/` or is an
   `action.yml`/`action.yaml` anywhere. Anything else falls back to `not approved at this commit`.
 - Deviation from the ticket: it asked for "the cited workflow file is byte-identical". Chose the
-  whole `.github/` tree plus local actions instead, because a finding can depend on a reusable
-  workflow or local action the finding id does not name. Stricter, never looser.
+  whole `.github/` tree plus any `action.yml`/`action.yaml` instead, because a finding can depend
+  on a reusable workflow or local action the finding id does not name. Gap: a local action whose
+  code changed but whose `action.yml` did not (e.g. its `dist/index.js`) still carries. Accepted:
+  the sink and the `${{ }}` splice the finding names live in the workflow/action YAML.
 - Not recorded in the ledger (no schema change): the run log has `approvals carried N`, and the
   report footer already names the new commit. Up to 3 older commits are tried per fail.
 - The carried approval keeps its skeptic verdict, so the report tier (0101) is unchanged.
+- `approvals carried N` counts fails the carry released at the gate this run, including ones then
+  held for PVR; it can repeat across runs for the same fail. Older commits are tried in sha order
+  (no dates on approvals), at most 3.
+
+## 2026-10-06 — review fixes for 0103-0106 (fresh-context reviewer)
+
+- Fixed: a "no longer finds" close-out could fire when finding ids shifted (engine change) while
+  the repo still failed; `resolved` now also needs the latest scan of the repo to be clean.
+- Fixed: a closed request issue became a final decline even when the PVR check was inconclusive
+  (403/404); it now needs a definite `enabled: false`.
+- Fixed: close-out is now once per repo (any entry with `closedOutAt` ends it), and
+  `setPvrRequest` updates the entry that already carries the request, so the record never splits
+  across a resolved entry and a later live one with the same ids.
+- Fixed: a request issue that is gone (404/410) at close-out is given up on instead of re-checked
+  every run.
+- Known, not changed: expiry (0106) runs before the PVR check, so an owner who turns PVR on after
+  the TTL is not reported to. Matches the ticket; revisit if it ever happens.
+- Known, not changed: a comment that lands but whose close (PATCH) fails leaves the issue open
+  with our comment; recorded as `closeOutFailedStatus`, not retried.

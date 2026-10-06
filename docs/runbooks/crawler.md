@@ -119,7 +119,7 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
   count against the throttle. Dry runs ask nobody. After `pvrRequestTtlDays` (default 90) with
   PVR still off, the hold becomes final as `no PVR (request expired)` (0106).
 - **Watching the request issue (0104).** Each run that reaches the PVR check for an asked repo
-  reads the request issue. Closed (by anyone) while PVR is still off means the owner declined:
+  reads the request issue. Closed (by anyone) while PVR is definitely off means the owner declined:
   the hold becomes final as `declined (request issue closed)` and nothing is ever filed. Closed
   with PVR on means they did what we asked, and the report is filed. A deleted issue (404/410)
   while PVR is off is final too (`declined (request issue gone: HTTP …)`). Replies by anyone but
@@ -129,7 +129,7 @@ Turn on `submitMode` and `publishSite` independently, and only after [6].
 - **Closing out the request issue (0105).** Once nothing is pending for an asked repo, the
   crawler posts one fixed comment on the request issue and closes it: "filed as a private
   report" after a report went out, or "a later scan no longer finds the problem" when every
-  disclosure was resolved before reporting. Recorded as `pvrRequest.closedOutAt` before the
+  disclosure was resolved before reporting and the latest scan has no fails. Recorded as `pvrRequest.closedOutAt` before the
   comment, so it never repeats; a refusal is kept as `closeOutFailedStatus` and not retried. An
   issue the owner already closed gets no comment. Counts against the throttle; dry runs and the
   kill switch skip it. A queued or retryable-held entry whose repo was rescanned without those

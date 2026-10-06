@@ -171,6 +171,14 @@ describe('PVR enable request record (0102)', () => {
     });
   });
 
+  it('updates the entry that carries the request, not a later live entry with the same ids', () => {
+    let l = setPvrRequest(l0, key, { at: T0, url: 'u' }, T0);
+    l = transition(l, key, 'resolved-before-report', { now: T0 });
+    l = createDisclosure(l, base('a/b', ['x'], 'queued'));
+    l = setPvrRequest(l, key, { at: T0, url: 'u', closedOutAt: T1 }, T1);
+    expect(l.disclosures.map((d) => d.pvrRequest?.closedOutAt)).toEqual([T1, undefined]);
+  });
+
   it('rejects a malformed record', () => {
     const text = (pvrRequest: unknown) =>
       JSON.stringify({

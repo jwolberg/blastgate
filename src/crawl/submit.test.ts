@@ -3,7 +3,10 @@ import { DEFAULT_CRAWL_CONFIG, type CrawlConfig } from './config';
 import { createGitHubClient, type HttpRequest, type HttpResponse } from './github';
 import {
   UNCERTAIN_REASON,
+  applyScan,
   createDisclosure,
+  isRetryableHold,
+  type Disclosure,
   emptyLedger,
   recoverSubmitting,
   transition,
@@ -314,6 +317,16 @@ describe('submitAll (U5)', () => {
       expect(r.ledger.disclosures[0]?.reason).toBe('no PVR (enable requested)');
     });
 
+    it('a closed issue with an unknown PVR answer (HTTP 403) is not final', async () => {
+      const l = await asked();
+      const closedThenUnknown: Handler = (req) =>
+        req.method === 'GET' && req.url.endsWith('/private-vulnerability-reporting')
+          ? res(403, { message: 'x' })
+          : issue('closed')(req);
+      const r = await run(env(closedThenUnknown, false), [cand('a/one')], { ledger: l });
+      expect(isRetryableHold(r.ledger.disclosures[0] as Disclosure)).toBe(true);
+    });
+
     it.each([404, 410])('PVR off and the issue gone (HTTP %i): final', async (status) => {
       const l = await asked();
       const r = await run(env(issue(status), false), [cand('a/one')], { ledger: l });
@@ -424,13 +437,63 @@ describe('submitAll (U5)', () => {
       expect(closes(e2)).toHaveLength(0);
     });
 
+    const passing = (l: Ledger): Ledger =>
+      applyScan(l, 'a/one', {
+        fullSha: SHA,
+        engineVersion: 'v',
+        verdict: 'pass',
+        scannedAt: NOW.toISOString(),
+        failFindings: [],
+      });
+
     it('when the problem went away before reporting: a "no longer finds" comment and close', async () => {
-      const l = await asked();
+      const l = passing(await asked());
       const e = env(thread('open'), false);
       const r = await run(e, [cand('a/one', { reverify: 'resolved' })], { ledger: l });
       expect(r.ledger.disclosures[0]?.state).toBe('resolved-before-report');
       expect(comments(e)).toHaveLength(1);
       expect(String(JSON.parse(comments(e)[0]?.body ?? '{}').body)).toMatch(/no longer/i);
+      expect(closes(e)).toHaveLength(1);
+    });
+
+    it('never says "no longer finds" while the latest scan of the repo still fails', async () => {
+      const l = applyScan(await asked(), 'a/one', {
+        fullSha: SHA,
+        engineVersion: 'v',
+        verdict: 'fail',
+        scannedAt: NOW.toISOString(),
+        failFindings: [{ id: 'a/one#9', archetype: ARCH }],
+      });
+      const e = env(thread('open'), false);
+      await run(e, [cand('a/one', { reverify: 'resolved' })], { ledger: l });
+      expect(comments(e)).toHaveLength(0);
+    });
+
+    it('a deleted request issue is given up on, not retried every run', async () => {
+      const l = await asked();
+      const gone: Handler = (req) =>
+        req.method === 'GET' && /\/issues\/7$/.test(req.url) ? res(404, {}) : undefined;
+      const r = await run(env(thread('open', gone), true), [cand('a/one')], { ledger: l });
+      expect(r.ledger.disclosures[0]?.pvrRequest?.closedOutAt).toBe(NOW.toISOString());
+    });
+
+    it('one close-out per repo, even with two entries carrying the request', async () => {
+      const l = await asked();
+      const twice: Ledger = {
+        ...l,
+        disclosures: [
+          ...l.disclosures,
+          {
+            ...(l.disclosures[0] as Disclosure),
+            findingIds: ['a/one#2'],
+            state: 'resolved-before-report',
+            reason: undefined,
+          },
+        ],
+      };
+      const e = env(thread('open'), true);
+      await run(e, [cand('a/one')], { ledger: twice });
+      expect(comments(e)).toHaveLength(1);
       expect(closes(e)).toHaveLength(1);
     });
 
