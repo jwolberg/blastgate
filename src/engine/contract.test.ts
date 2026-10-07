@@ -733,3 +733,119 @@ describe('evidence names the executing step and the secret exposure (0096)', () 
     expect(f?.reason).toContain(`exposed at ${WF}:9`);
   });
 });
+
+/**
+ * 0097: a quoted artifact read used only in a string comparison is not injection, even when
+ * later quoting (quotes inside a `$( )` inside double quotes) is complex; and a workflow_run
+ * job gated to push-triggered upstream runs is not reachable by an outsider.
+ */
+describe('artifact comparisons and push-only workflow_run (0097)', () => {
+  const artifactJob = (script: string[], jobIf: string[] = []) =>
+    gh([
+      'on:',
+      '  workflow_run:',
+      '    workflows: [CI]',
+      '    types: [completed]',
+      'permissions:',
+      '  contents: write',
+      'jobs:',
+      '  publish:',
+      ...jobIf,
+      '    steps:',
+      '      - uses: actions/download-artifact@v4',
+      '      - run: |',
+      ...script.map((l) => `          ${l}`),
+      '        env:',
+      '          K: ${{ secrets.DEPLOY_KEY }}',
+    ]);
+  const LATER_NESTED_QUOTES =
+    'NAME="$(grep -m1 title meta.txt | sed \'s/.*"\\([^"]*\\)".*/\\1/\')"';
+  const keyFail = (inputs: EngineInputs): Finding | undefined =>
+    fails(runEngine(inputs).findings).find((x) => x.sink.identity === 'DEPLOY_KEY');
+
+  it('a quoted $(< file) compared in [[ ]] is not a splice, despite later nested quotes', () => {
+    expect(
+      keyFail(artifactJob(['[[ "$(< ref.txt)" == "$EXPECTED" ]]', LATER_NESTED_QUOTES])),
+    ).toBeUndefined();
+  });
+
+  it('control: an unquoted splice is still a fail after the same nested quotes', () => {
+    expect(
+      keyFail(artifactJob([LATER_NESTED_QUOTES, 'gh pr comment $(<pr.txt) --body ok'])),
+    ).toBeDefined();
+  });
+
+  const forkRun = (jobIf: string[]) =>
+    gh([
+      'on:',
+      '  workflow_run:',
+      '    workflows: [CI]',
+      '    types: [completed]',
+      '  workflow_dispatch:',
+      'jobs:',
+      '  build:',
+      ...jobIf,
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '        with:',
+      '          ref: ${{ github.event.workflow_run.head_sha }}',
+      '      - run: npm ci',
+      '        env:',
+      '          K: ${{ secrets.DEPLOY_KEY }}',
+    ]);
+
+  it('control: an ungated workflow_run job that runs the head commit fails', () => {
+    expect(keyFail(forkRun([]))).toBeDefined();
+  });
+
+  it('a job gated to push-triggered upstream runs is not a fail', () => {
+    expect(keyFail(forkRun(["    if: github.event.workflow_run.event == 'push'"]))).toBeUndefined();
+  });
+
+  it('every branch of the if: excluding outsiders (dispatch, or push-only run) is not a fail', () => {
+    expect(
+      keyFail(
+        forkRun([
+          '    if: >-',
+          "      (github.event_name == 'workflow_dispatch') ||",
+          "      (github.event.workflow_run.conclusion == 'success' &&",
+          "       github.event.workflow_run.event == 'push')",
+        ]),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('one branch that lets a pull_request run through still fails', () => {
+    expect(
+      keyFail(
+        forkRun([
+          "    if: github.event.workflow_run.event == 'push' || github.event.workflow_run.conclusion == 'success'",
+        ]),
+      ),
+    ).toBeDefined();
+  });
+
+  it.each([
+    "github.event.workflow_run.event != 'pull_request'",
+    "!(github.event.workflow_run.event == 'pull_request')",
+    "always() || github.event.workflow_run.event == 'push'",
+    "github.event.workflow_run.event == 'push' || true",
+  ])('an if: that does not prove a push-only run still fails: %s', (cond) => {
+    expect(keyFail(forkRun([`    if: ${cond}`]))).toBeDefined();
+  });
+
+  it('a ${{ }}-wrapped push-only gate is not a fail', () => {
+    expect(
+      keyFail(forkRun(["    if: ${{ github.event.workflow_run.event == 'push' }}"])),
+    ).toBeUndefined();
+  });
+
+  it('a branches: filter alone does not gate (a fork can name its branch main)', () => {
+    const inputs = forkRun([]);
+    const content = inputs.ci!.workflows[0]!.content.replace(
+      '    types: [completed]',
+      '    types: [completed]\n    branches: [main]',
+    );
+    expect(keyFail({ ci: { workflows: [{ path: WF, content }] } })).toBeDefined();
+  });
+});

@@ -16,6 +16,7 @@ import { locateSource } from './locate';
 import {
   checksOutUntrustedRef,
   credentialReachableTriggers,
+  excludesUntrustedWorkflowRun,
   findSecretRefs,
   hasActorGuard,
   hasInstallStep,
@@ -95,10 +96,14 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
     // event that runs privileged (base-repo context). Plain fork `pull_request` gets a
     // read-only token and no secrets, so it is NOT credential-reachable — excluding it
     // is the difference between a reachable path and a declared permission (R14).
-    const credentialReachable = credentialReachableTriggers(triggers);
     const jobs = spec.jobs ?? {};
 
     for (const [jobId, job] of Object.entries(jobs)) {
+      // 0097: a job gated to trusted upstream runs is not reachable through workflow_run.
+      const jobTriggers = excludesUntrustedWorkflowRun(job)
+        ? triggers.filter((t) => t !== 'workflow_run')
+        : triggers;
+      const credentialReachable = credentialReachableTriggers(jobTriggers);
       const { names: secretNames, usesAllSecrets } = findSecretRefs(job);
       const perms = resolvePermissions(spec, job);
       const jobNodeId = `job:${wf.path}#${jobId}`;
@@ -148,7 +153,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         provider: 'github',
         workflow: wf.path,
         job: jobId,
-        triggers,
+        triggers: jobTriggers,
         secrets: secretNames,
         forkTriggerable,
         runsInstall: hasInstallStep(job),
@@ -202,7 +207,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       // read-only token / no secrets, so it is not a credential path); (b) a `workflow_run`
       // job that splices a downloaded (untrusted) artifact's contents into a shell (0042).
       // An actor guard (U17/0017) restricts who triggers it, so exempt it.
-      const injectableEvents = credentialReachableTextTriggers(triggers);
+      const injectableEvents = credentialReachableTextTriggers(jobTriggers);
       // 0044: the text-injection path is neutralized by a recognized guard (actor/label
       // gate, in-step github-script permission-check-with-throw) or by safe handling
       // (untrusted text only boolean-matched) — cutting the co-presence false positives the
@@ -212,7 +217,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
       // (env-passed / boolean-compared text never does). Tiering by class is the engine's.
       // 0067: a relayed issue/PR reaches the job as a number, not text, so only an agent that
       // fetches and reads it ingests the text; other sinks need the job's own text events.
-      const relayEvents = triggers.includes('workflow_run') ? (relayed.get(wf.path) ?? []) : [];
+      const relayEvents = jobTriggers.includes('workflow_run') ? (relayed.get(wf.path) ?? []) : [];
       const directSink =
         injectableEvents.length > 0 && !injectionNeutralized(job)
           ? classifyUntrustedText(job)
@@ -228,7 +233,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           ? injectableEvents.join('/')
           : `${relayEvents.join('/')} (relayed via workflow_run)`;
       const spliceStep =
-        workflowRunArtifactInjection(job, triggers) && !hasActorGuard(job)
+        workflowRunArtifactInjection(job, jobTriggers) && !hasActorGuard(job)
           ? artifactSpliceStep(job)
           : undefined;
       // The artifact splice is an execution sink; it wins over a weaker text sink.

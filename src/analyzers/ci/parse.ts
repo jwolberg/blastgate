@@ -156,6 +156,81 @@ export function hasActorGuard(job: JobSpec): boolean {
   );
 }
 
+/** Split an Actions expression on `op` at paren depth 0, outside quotes. */
+function splitTopLevel(expr: string, op: '||' | '&&'): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | undefined;
+  let start = 0;
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i]!;
+    if (quote) {
+      quote = c === quote ? undefined : quote;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+    } else if (c === '(') {
+      depth++;
+    } else if (c === ')') {
+      depth--;
+    } else if (depth === 0 && expr.startsWith(op, i)) {
+      parts.push(expr.slice(start, i));
+      start = i + op.length;
+      i++;
+    }
+  }
+  parts.push(expr.slice(start));
+  return parts.map(unwrapParens);
+}
+
+/** Drop parens that wrap the whole expression: `(a && b)` → `a && b`. */
+function unwrapParens(expr: string): string {
+  let e = expr.trim();
+  while (e.startsWith('(') && e.endsWith(')')) {
+    let depth = 0;
+    let wraps = true;
+    for (let i = 0; i < e.length - 1; i++) {
+      depth += e[i] === '(' ? 1 : e[i] === ')' ? -1 : 0;
+      if (depth === 0) {
+        wraps = false;
+        break;
+      }
+    }
+    if (!wraps) {
+      break;
+    }
+    e = e.slice(1, -1).trim();
+  }
+  return e;
+}
+
+// Upstream events only a maintainer can fire.
+const TRUSTED_UPSTREAM_EVENTS = new Set(['push', 'schedule', 'workflow_dispatch', 'release']);
+
+/**
+ * 0097: the job's `if:` keeps an outsider's `workflow_run` out — every top-level `||` branch
+ * requires either a different `github.event_name` or an upstream run fired by a trusted event
+ * (`github.event.workflow_run.event == 'push'`). Only plain `==` conjuncts count; anything
+ * else (nested `||`, `!=`, functions) is not proof. A `branches:` filter is not a gate either:
+ * `head_branch` is the fork's branch name, which the outsider picks.
+ */
+export function excludesUntrustedWorkflowRun(job: JobSpec): boolean {
+  const raw = typeof job.if === 'string' ? job.if : '';
+  const expr = raw.replace(/^\s*\$\{\{([\s\S]*)\}\}\s*$/, '$1').trim();
+  if (!expr) {
+    return false;
+  }
+  return splitTopLevel(expr, '||').every((branch) =>
+    splitTopLevel(branch, '&&').some((term) => {
+      const run = /^github\.event\.workflow_run\.event\s*==\s*'(\w+)'$/.exec(term);
+      if (run) {
+        return TRUSTED_UPSTREAM_EVENTS.has(run[1]!);
+      }
+      const name = /^github\.event_name\s*==\s*'(\w+)'$/.exec(term);
+      return name !== null && name[1] !== 'workflow_run';
+    }),
+  );
+}
+
 /**
  * Whether a job is gated on a *label* — `if: github.event.label.name …` (0044).
  * Applying a label requires triage/write permission, so a `labeled`-triggered job
