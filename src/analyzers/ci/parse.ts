@@ -386,7 +386,7 @@ const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', '!', '{', '}
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // Variables that make a later program load code: a hijacked PATH, a shell or loader hook, git.
 const LOADER_ENV_RE =
-  /^(?:PATH|BASH_ENV|ENV|HOME|XDG_CONFIG_HOME|NODE_OPTIONS|LD_\w+|DYLD_\w+|GIT_\w+|PYTHON\w*|PERL5\w*|RUBY\w*)(?:=|$)/;
+  /^(?:PATH|BASH_ENV|ENV|HOME|XDG_CONFIG_HOME|NODE_OPTIONS|LD_\w+|DYLD_\w+|GIT_\w+|PYTHON\w*|PERL5\w*|RUBY\w*|PS4|PROMPT_COMMAND)(?:=|$)/;
 // Git subcommands that read, fetch, or move refs and run no user-supplied command. Hooks and
 // filters need config: a fresh checkout's own .git carries none, and `-c`, `config`, and any
 // way of pointing git at another directory (which may be a committed bare repo) are refused.
@@ -419,6 +419,9 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
 const GIT_SAFE_CONFIG_KEY_RE =
   /^(?:user\.(?:name|email)|safe\.directory|init\.defaultBranch|core\.(?:autocrlf|sparseCheckout)|http\..*\.extraheader|advice\.\w+|pull\.rebase|fetch\.prune)$/;
 const GIT_EXEC_OPTION_RE = /^(?:-x|--exec|--upload-pack|--receive-pack|--ext-diff|--config)/;
+// Git subcommands that talk to a remote: a variable argument could be an attacker-chosen
+// `--upload-pack=…`.
+const GIT_REMOTE_SUBCOMMANDS = new Set(['fetch', 'pull', 'push', 'ls-remote', 'remote']);
 const GIT_DIR_OPTION_RE = /^(?:-C|--git-dir|--work-tree)/;
 const SAFE_REDIRECT_TARGET_RE = /^(?:&[\d-]+|\/dev\/null|\$\{?GITHUB_(?:OUTPUT|STEP_SUMMARY)\}?)$/;
 
@@ -569,9 +572,20 @@ function gitRunsNothing(args: string[]): boolean {
   return (
     sub !== undefined &&
     GIT_SAFE_SUBCOMMANDS.has(sub) &&
-    !rest.some((x) => GIT_EXEC_OPTION_RE.test(x))
+    !rest.some((x) => GIT_EXEC_OPTION_RE.test(x)) &&
+    !(GIT_REMOTE_SUBCOMMANDS.has(sub) && rest.some((x) => x.includes('$')))
   );
 }
+
+// `${{ }}` values a PR author cannot shape into shell: SHAs, numbers, ids, repo names, the base
+// ref, secrets, runner facts. GitHub pastes any other expression into the script before bash
+// runs, so it counts as executing (0096).
+const INERT_EXPRESSION_RES = [
+  /^(?:secrets|runner)\.\w+$/,
+  /^github\.(?:sha|ref|ref_name|run_id|run_number|run_attempt|repository|repository_owner|workspace|base_ref|server_url|api_url|event_name)$/,
+  /^github\.[\w.]*(?:\.sha|_sha|\.number|\.clone_url|\.full_name|\.base\.ref)$/,
+  /^fromJSON\([\w.-]+\)\.(?:number|base\.ref|base\.sha|head\.sha)$/i,
+];
 
 export interface RunContext {
   /** The step runs outside the workspace root (`defaults.run.working-directory`). */
@@ -597,7 +611,14 @@ export function runsWorkspaceCode(step: StepSpec, context: RunContext = {}): boo
   if (context.loaderEnv || Object.keys(step.env ?? {}).some((k) => LOADER_ENV_RE.test(k))) {
     return true;
   }
-  const raw = step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'X');
+  let unsafeExpression = false;
+  const raw = step.run.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expr: string) => {
+    unsafeExpression ||= !INERT_EXPRESSION_RES.some((re) => re.test(expr.trim()));
+    return 'X';
+  });
+  if (unsafeExpression) {
+    return true;
+  }
   if (/GITHUB_ENV|GITHUB_PATH/.test(raw)) {
     return true;
   }
@@ -627,6 +648,11 @@ export function runsWorkspaceCode(step: StepSpec, context: RunContext = {}): boo
     } else if (!NON_EXECUTING_COMMANDS.has(name)) {
       return true;
     } else if (name === 'export' && args.some((x) => LOADER_ENV_RE.test(x))) {
+      return true;
+    } else if (name === 'printf' && args.includes('-v')) {
+      return true;
+    } else if (name === '[[' && args.some((x) => /^-(?:eq|ne|lt|le|gt|ge)$/.test(x))) {
+      // `[[ … -eq … ]]` evaluates its operands as arithmetic, which runs `a[$(cmd)]`.
       return true;
     } else if (name === 'cd' || name === 'pushd' || name === 'popd') {
       movedDir = true;

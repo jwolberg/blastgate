@@ -690,3 +690,32 @@ describe('runsWorkspaceCode: quoting and git directory tricks (0096 re-review)',
     expect(runs(run)).toBe(false);
   });
 });
+
+describe('runsWorkspaceCode: expressions and builtins (0096 third review)', () => {
+  const runs = (run: string): boolean => runsWorkspaceCode({ run });
+
+  it.each([
+    'echo "${{ github.head_ref }}"',
+    'echo ${{ github.event.pull_request.title }}',
+    'echo ${{ steps.a.outputs.msg }}',
+    'git checkout ${{ github.event.workflow_run.head_branch }}',
+    '[[ "$X" -eq 1 ]] && echo one',
+    "PS4='+ ' ; set -x; echo hi",
+    "printf -v PATH '%s' ./bin; cat f",
+    'git fetch "$REMOTE"',
+    'git ls-remote $URL',
+  ])('%j runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it.each([
+    'git fetch origin ${{ github.event.pull_request.head.sha }}',
+    'git remote add upstream ${{ github.event.repository.clone_url }}',
+    'git checkout -B ${{ fromJson(steps.pr.outputs.data).base.ref }} upstream/${{ github.base_ref }}',
+    'echo "run ${{ github.run_id }} for ${{ github.repository }}"',
+    'set -euo pipefail\n[ "$A" = "b" ] && echo same',
+    'git checkout "$BRANCH"',
+  ])('%j does not', (run) => {
+    expect(runs(run)).toBe(false);
+  });
+});

@@ -1573,3 +1573,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Rejected one reviewer probe: `echo don't` / `make build` / `echo can't` is one quoted string in
   bash, so make never runs; the reader agrees with bash.
 - Rescan of the 26 failing repos: same outcome as before.
+
+## 2026-10-06 — 0096 third review fixes
+
+- Fixed (medium): every `${{ }}` was replaced with a placeholder, but GitHub pastes the value into
+  the script before bash runs, so `echo ${{ github.event.pull_request.title }}` is shell
+  injection. Only values a PR author cannot shape stay inert (SHAs, numbers, run ids, ref,
+  repository names, clone URL, base ref, secrets, runner facts); any other expression counts
+  as executing.
+- Fixed (low): `[[ … -eq … ]]` (arithmetic evaluation runs `a[$(cmd)]`), `printf -v`, and
+  assigning PS4/PROMPT_COMMAND count as executing. A variable argument to git fetch/pull/push/
+  ls-remote/remote counts as executing (could be `--upload-pack=…`).
+- Left as is (low, fails safe): `gh` and `curl` steps still count as executing, so a
+  post-checkout comment/notify step can still be the cited line. Steps before the checkout are
+  not scanned for GITHUB_PATH/GITHUB_ENV writes; that predates this PR.
+- Rescan of the 26 failing repos: same outcome.
