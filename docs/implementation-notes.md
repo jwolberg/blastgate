@@ -1518,3 +1518,88 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   the TTL is not reported to. Matches the ticket; revisit if it ever happens.
 - Known, not changed: a comment that lands but whose close (PATCH) fails leaves the issue open
   with our comment; recorded as `closeOutFailedStatus`, not retried.
+
+## 2026-10-06 — 0096: evidence names the executing step and the secret
+
+- Chose a conservative allowlist for "runs nothing from the checkout": git plus a short list of
+  shell builtins/coreutils (echo, date, cd, cat, rm, ...). Anything else, command substitution,
+  loops, `case`, or a non-bash `shell:` still counts as running PR code. It only drops a fail
+  whose step plainly runs nothing; it does not try to prove a step safe.
+- Tradeoff: a third-party action after the checkout still never counts as running PR code
+  (unchanged from 0048), so an action that builds the workspace (e.g. a Docker or Gradle build
+  action) is missed. The ticket asked for this; revisit with a list of known building actions.
+- `at:` is now the step's `run:` (or local `uses:`) line, not its first line. The install step
+  evidence is unchanged.
+- The reason now says where the job exposes the sink: the `secrets.X` reference line, or the
+  `permissions:` line for a write token. A shell injection whose secret sits in a later step is
+  still a fail (existing AE1 contract); the report now cites that later line instead of implying
+  the injected step holds it.
+- Also fixed under this ticket (same report-accuracy class): the trigger list in a fork-PR reason
+  drops maintainer-only events (push, schedule, workflow_dispatch, ...).
+- Two fixtures used `run: echo ...` to mean "runs PR code"; changed to `make build` / `npm test`,
+  since echo is now correctly non-executing.
+- Checked on the three live repos from the 2026-10-05 review (names in the private ops repo):
+  each now cites the executing `run:` line and the secret's line, and none lists push.
+- Not caused by this change: `src/crawl/scan.test.ts` times out locally (5s test / 10s hook) on
+  main as well; all 950 tests pass with a 30s timeout.
+
+## 2026-10-06 — 0096 review fixes (fresh-context reviewer, request-changes)
+
+- Fixed: the "runs nothing" allowlist trusted all of git, cp, mv, tee and export. Git can run a
+  command (`bisect run`, `rebase -x`, `submodule foreach`, `-c alias.x='!…'`, `core.hooksPath`),
+  and a copied file can become a hook or `~/.gitconfig`. Now: git only for read/fetch/ref
+  subcommands, no `-c`, no exec-style options, `config` only for user.name/email and similar;
+  cp/mv/tee/touch count as executing; assigning PATH, BASH_ENV, LD_*, GIT_* and similar counts
+  as executing; any redirect other than /dev/null, an fd, $GITHUB_OUTPUT or $GITHUB_STEP_SUMMARY
+  counts as executing, as does any mention of GITHUB_ENV/GITHUB_PATH.
+- Fixed: single `&` and process substitution `<( )` / `>( )` hid a command.
+- Quoted strings are masked before the redirect and command checks, so `echo "a -> b"` is not a
+  redirect.
+- Rescan of the 26 failing repos unchanged in outcome: the git-only job still drops.
+
+## 2026-10-06 — 0096 second review fixes (request-changes again)
+
+- Fixed (high): quoted text was masked with a regex, so an apostrophe in a comment (`# don't`)
+  or an escaped quote swallowed real commands. Replaced with a small single-pass shell reader
+  (quotes, `$'…'`, escapes, comments, separators, redirects). Anything outside that subset
+  (substitutions, subshells, heredocs, unterminated quotes) counts as executing.
+- Fixed (medium): a PR can commit a bare-repo layout in a subdirectory whose config names a
+  command (e.g. `remote.origin.uploadpack`), and git loads it when run from there. git now
+  counts as executing after `cd`/`pushd`, with `-C`/`--git-dir`/`--work-tree`, in a step with
+  `working-directory:`, or under a job/workflow `defaults.run.working-directory`. A step, job
+  or workflow `env:` that sets PATH or another loader variable also counts.
+- Low: grep, jq, sort, cut, tr and similar read-only tools, and a few more harmless git config
+  keys (http extraheader, core.sparseCheckout), now count as non-executing.
+- Rejected one reviewer probe: `echo don't` / `make build` / `echo can't` is one quoted string in
+  bash, so make never runs; the reader agrees with bash.
+- Rescan of the 26 failing repos: same outcome as before.
+
+## 2026-10-06 — 0096 third review fixes
+
+- Fixed (medium): every `${{ }}` was replaced with a placeholder, but GitHub pastes the value into
+  the script before bash runs, so `echo ${{ github.event.pull_request.title }}` is shell
+  injection. Only values a PR author cannot shape stay inert (SHAs, numbers, run ids, ref,
+  repository names, clone URL, base ref, secrets, runner facts); any other expression counts
+  as executing.
+- Fixed (low): `[[ … -eq … ]]` (arithmetic evaluation runs `a[$(cmd)]`), `printf -v`, and
+  assigning PS4/PROMPT_COMMAND count as executing. A variable argument to git fetch/pull/push/
+  ls-remote/remote counts as executing (could be `--upload-pack=…`).
+- Left as is (low, fails safe): `gh` and `curl` steps still count as executing, so a
+  post-checkout comment/notify step can still be the cited line. Steps before the checkout are
+  not scanned for GITHUB_PATH/GITHUB_ENV writes; that predates this PR.
+- Rescan of the 26 failing repos: same outcome.
+
+## 2026-10-06 — 0096 fourth review: shrink instead of patch
+
+- Four review rounds each found a new way a "runs nothing" guess could hide code, so the allowlist
+  is now minimal: echo, exit, true/false, set, export (no loader variables), mkdir, rm, ls, pwd,
+  date, sleep, cd/pushd/popd, plus the reviewed git subcommands. Readers and testers (cat, grep,
+  jq, test, [, [[, printf) are out: each has an argument form that evaluates or loads code.
+- Fixed (medium): `fromJSON(…).number/.base.ref` was treated as inert, but in a workflow_run job
+  the JSON can come from a PR-built artifact. Removed; any fromJSON expression counts as executing.
+- Fixed (low): `${A:$T}` / `${arr[$T]}` (arithmetic evaluation) count as executing.
+- Decoupled the cited line from the inert check: evidence prefers the first step that plainly
+  runs build tooling (`./…`, npm, make, gradle, python, …) and falls back to the first step that
+  cannot be shown to run nothing. A stricter allowlist can then only keep a fail; it no longer
+  moves the citation back to a git step.
+- Rescan of the 26 failing repos: same outcome, same cited lines.

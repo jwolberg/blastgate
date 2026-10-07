@@ -4,8 +4,10 @@ import {
   isPinnedAction,
   normalizeTriggers,
   resolvePermissions,
+  runsWorkspaceCode,
   untrustedTriggers,
   type JobSpec,
+  type StepSpec,
   type WorkflowSpec,
 } from './parse';
 
@@ -593,5 +595,150 @@ describe('same-repo guard before a PR-ref fetch (0090)', () => {
         wf([lookup, 'if [[ "${head_repo}" != "${REPO}" ]]; then', '  echo fork', 'fi', fetch]),
       ),
     ).toBe(true);
+  });
+});
+
+describe('runsWorkspaceCode (0096)', () => {
+  it('git and plain builtins run nothing from the checkout', () => {
+    expect(runsWorkspaceCode({ run: 'git fetch origin\ngit checkout -B x origin/x' })).toBe(false);
+    expect(runsWorkspaceCode({ run: 'if git rev-parse -q --verify v1; then echo yes; fi' })).toBe(
+      false,
+    );
+    expect(runsWorkspaceCode({ run: 'REF=${{ github.ref }} echo "$REF" > /dev/null' })).toBe(false);
+  });
+
+  it('anything else, or anything it cannot read, counts as running code', () => {
+    expect(runsWorkspaceCode({ run: 'npm test' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'git status && make' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'echo `./x.sh`' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'for f in *.sh; do echo $f; done' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'print(1)', shell: 'python' })).toBe(true);
+    expect(runsWorkspaceCode({ uses: 'actions/setup-node@v4' })).toBe(false);
+  });
+});
+
+describe('runsWorkspaceCode: commands that look inert but run repo code (0096 review)', () => {
+  const runs = (run: string): boolean => runsWorkspaceCode({ run });
+
+  it.each([
+    'git bisect run ./test.sh',
+    'git rebase -x ./check.sh main',
+    'git submodule foreach ./build.sh',
+    'git difftool -x ./d.sh HEAD~1',
+    "git filter-branch --tree-filter './t.sh' HEAD",
+    'git -c core.hooksPath=.githooks commit -m x',
+    "git -c alias.x='!./evil.sh' x",
+    'git config core.fsmonitor ./mon.sh\ngit status',
+    'git x-custom-subcommand',
+    'cp hooks/post-checkout .git/hooks/\ngit checkout main',
+    'echo "#!/bin/sh" > .git/hooks/pre-commit',
+    'cat conf > ~/.gitconfig\ngit fetch',
+    'export PATH="$PWD/bin:$PATH"\ngit fetch',
+    'PATH=./bin git fetch',
+    'export BASH_ENV=./env.sh',
+    'cat vars >> $GITHUB_ENV',
+    'echo "$PWD/bin" >> "$GITHUB_PATH"',
+    'echo hi & ./evil.sh',
+    'cat <(./evil.sh)',
+    'echo a > >(./x)',
+  ])('%s runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it.each([
+    'git fetch origin\ngit checkout -B main origin/main',
+    'git remote add upstream https://example.invalid/r.git && git fetch upstream',
+    'git log -1 --format=%H > /dev/null 2>&1',
+    'echo "sha=$SHA" >> "$GITHUB_OUTPUT"',
+    'git tag -f v1 "$SHA" && git push -f origin refs/tags/v1',
+    'echo "::notice::moved v1 -> ${SHA:0:8}; done & ok"',
+  ])('%s does not', (run) => {
+    expect(runs(run)).toBe(false);
+  });
+});
+
+describe('runsWorkspaceCode: quoting and git directory tricks (0096 re-review)', () => {
+  const runs = (run: string, extra: Partial<StepSpec> = {}): boolean =>
+    runsWorkspaceCode({ run, ...extra });
+
+  it.each([
+    "# don't cache\nnpm test\n# it's done",
+    'echo \\"hi\\"; npm test; echo "done"',
+    "echo it\\'s; ./x.sh; echo 'z'",
+    "echo $'a\\'b'; ./x; echo $'c\\'d'",
+    'echo "unterminated\nnpm test',
+    'git -C docs fetch origin',
+    'git --git-dir=docs fetch origin',
+    'git --work-tree docs status',
+    'cd docs && git fetch origin',
+    'pushd docs\ngit status',
+    'export "PATH=$PWD/bin:$PATH"',
+  ])('%j runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it('git in a step with a working-directory runs repo config', () => {
+    expect(runs('git fetch origin', { 'working-directory': 'docs' })).toBe(true);
+  });
+
+  it.each([
+    "# don't run anything here\ngit fetch origin # it's fine",
+    'git config --global --add safe.directory "*"',
+    'git config http.https://example.invalid/.extraheader "AUTHORIZATION: basic x"',
+    'git config core.sparseCheckout true',
+  ])('%j does not', (run) => {
+    expect(runs(run)).toBe(false);
+  });
+});
+
+describe('runsWorkspaceCode: expressions and builtins (0096 third review)', () => {
+  const runs = (run: string): boolean => runsWorkspaceCode({ run });
+
+  it.each([
+    'echo "${{ github.head_ref }}"',
+    'echo ${{ github.event.pull_request.title }}',
+    'echo ${{ steps.a.outputs.msg }}',
+    'git checkout ${{ github.event.workflow_run.head_branch }}',
+    '[[ "$X" -eq 1 ]] && echo one',
+    "PS4='+ ' ; set -x; echo hi",
+    "printf -v PATH '%s' ./bin; cat f",
+    'git fetch "$REMOTE"',
+    'git ls-remote $URL',
+  ])('%j runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it.each([
+    'git fetch origin ${{ github.event.pull_request.head.sha }}',
+    'git remote add upstream ${{ github.event.repository.clone_url }}',
+    'git checkout -B ${{ github.event.pull_request.base.ref }} upstream/${{ github.base_ref }}',
+    'echo "run ${{ github.run_id }} for ${{ github.repository }}"',
+    'set -euo pipefail\necho same',
+    'git checkout "$BRANCH"',
+  ])('%j does not', (run) => {
+    expect(runs(run)).toBe(false);
+  });
+});
+
+describe('runsWorkspaceCode: minimal allowlist (0096 fourth review)', () => {
+  const runs = (run: string): boolean => runsWorkspaceCode({ run });
+
+  it.each([
+    'echo ${{ fromJSON(needs.a.outputs.pr).number }}',
+    'git checkout -B ${{ fromJson(steps.pr.outputs.data).base.ref }}',
+    'echo ${{ FROMJSON(steps.x.outputs.y).NUMBER }}',
+    '[ -v "$T" ] && echo set',
+    'test -v "$T"',
+    '[[ -v $T ]]',
+    'echo "${A:$T}"',
+    'echo "${arr[$T]}"',
+    "printf -vPATH '%s' ./bin",
+    'cat notes.txt',
+  ])('%j runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it('a literal substring offset stays inert', () => {
+    expect(runs('echo "short ${SHA:0:8}"')).toBe(false);
   });
 });

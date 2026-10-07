@@ -118,6 +118,8 @@ export interface CiJobNode {
   runsInstall: boolean;
   /** Where attacker-controlled code first executes in the job (after an untrusted checkout, 0048). */
   execEvidence?: SourceEvidence;
+  /** Where the job exposes each held sink, keyed by sink identity (0096). */
+  exposure?: Record<string, SourceEvidence>;
   /** The dependency-install step (where a new dependency's install script runs, 0048). */
   installEvidence?: SourceEvidence;
 }

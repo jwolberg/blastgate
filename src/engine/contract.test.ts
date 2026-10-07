@@ -612,3 +612,124 @@ describe('fork-PR warn reasons name the missing proof (0068)', () => {
     expect(f?.reason).toMatch(/runs PR code/i);
   });
 });
+
+/**
+ * 0096: the report's `at:` line is the step that runs the PR's code (its `run:` line), the
+ * secret is cited where the job exposes it, and steps that only run git or shell builtins
+ * do not count as running PR code.
+ */
+describe('evidence names the executing step and the secret exposure (0096)', () => {
+  const fork = (afterCheckout: string[], on: string[] = ['  pull_request_target:']) =>
+    gh([
+      'on:', // 1
+      ...on,
+      'jobs:',
+      '  test:',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '        with:',
+      '          ref: ${{ github.event.pull_request.head.sha }}',
+      ...afterCheckout,
+    ]);
+  const keyFinding = (inputs: EngineInputs): Finding | undefined =>
+    runEngine(inputs).findings.find((x) => x.sink.identity === 'DEPLOY_KEY');
+
+  it('skips a git-only step and cites the run: line of the step that builds the PR', () => {
+    const f = keyFinding(
+      fork([
+        '      - name: Sync with base', // 9
+        '        run: |', // 10
+        '          git remote add upstream https://example.invalid/base.git', // 11
+        '          git fetch upstream', // 12
+        '          git checkout -B main upstream/main && git checkout -', // 13
+        '      - uses: actions/setup-java@v4', // 14
+        '      - name: Build', // 15
+        '        run: ./gradlew check', // 16
+        '        env:', // 17
+        '          DEPLOY: ${{ secrets.DEPLOY_KEY }}', // 18
+      ]),
+    );
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(16);
+    expect(f?.reason).toContain(`${WF}:16`);
+    expect(f?.reason).toContain(`exposed at ${WF}:18`);
+  });
+
+  it('cites the step that runs build tooling over an earlier step it cannot prove inert', () => {
+    const f = keyFinding(
+      fork([
+        '      - run: echo "${{ steps.meta.outputs.label }}"', // 9
+        '      - run: npm test', // 10
+        '        env:', // 11
+        '          DEPLOY: ${{ secrets.DEPLOY_KEY }}', // 12
+      ]),
+    );
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(10);
+  });
+
+  it('falls back to the first step it cannot prove inert when nothing runs build tooling', () => {
+    const f = keyFinding(
+      fork([
+        '      - run: echo "${{ steps.meta.outputs.label }}"', // 9
+        '      - uses: some/lint-action@v1', // 10
+        '        env:', // 11
+        '          K: ${{ secrets.DEPLOY_KEY }}', // 12
+      ]),
+    );
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(9);
+  });
+
+  it('a job whose steps after the checkout only run git and builtins is not a fail', () => {
+    const f = keyFinding(
+      fork([
+        '      - run: |',
+        '          git log -1 --format=%H',
+        '          echo "done" && date',
+        '      - uses: some/lint-action@v1',
+        '        env:',
+        '          K: ${{ secrets.DEPLOY_KEY }}',
+      ]),
+    );
+    expect(f?.tier).toBe('warn');
+    expect(f?.reason).toMatch(/no later step/i);
+  });
+
+  it('a builtin that runs a command substitution still counts as running PR code', () => {
+    const f = keyFinding(
+      fork([
+        '      - run: echo "$(./scripts/version.sh)"',
+        '        env:',
+        '          K: ${{ secrets.DEPLOY_KEY }}',
+      ]),
+    );
+    expect(f?.tier).toBe('fail');
+  });
+
+  it('names only the untrusted triggers, not push', () => {
+    const f = keyFinding(
+      fork(
+        ['      - run: npm test', '        env:', '          K: ${{ secrets.DEPLOY_KEY }}'],
+        ['  push:', '    branches: [main]', '  pull_request_target:'],
+      ),
+    );
+    expect(f?.tier).toBe('fail');
+    expect(f?.reason).toContain('(pull_request_target)');
+    expect(f?.reason).not.toMatch(/\bpush\b/);
+  });
+
+  it('a shell injection cites where a later step is handed the secret', () => {
+    const f = runEngine(
+      issueJob([
+        '      - run: echo "${{ github.event.issue.title }}"', // 6
+        '      - uses: some/assistant-action@v1', // 7
+        '        with:', // 8
+        '          api_key: ${{ secrets.DEPLOY_KEY }}', // 9
+      ]),
+    ).findings.find((x) => x.sink.identity === 'DEPLOY_KEY');
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(6);
+    expect(f?.reason).toContain(`exposed at ${WF}:9`);
+  });
+});

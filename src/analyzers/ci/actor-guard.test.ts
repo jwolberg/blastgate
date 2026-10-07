@@ -15,7 +15,7 @@ const MENTION_ONLY = [
   '      contents: write',
   '    steps:',
   '      - run: gh pr checkout 123',
-  '      - run: echo hi',
+  '      - run: npm test',
   '        env:',
   '          KEY: ${{ secrets.ANTHROPIC_API_KEY }}',
 ].join('\n');
@@ -34,7 +34,7 @@ const ACTOR_GATED = [
   '      contents: write',
   '    steps:',
   '      - run: gh pr checkout 123',
-  '      - run: echo hi',
+  '      - run: npm test',
   '        env:',
   '          KEY: ${{ secrets.ANTHROPIC_API_KEY }}',
 ].join('\n');

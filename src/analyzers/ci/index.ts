@@ -23,6 +23,7 @@ import {
   normalizeTriggers,
   parseWorkflow,
   resolvePermissions,
+  secretRefPaths,
   unpinnedActions,
   untrustedExecutionStep,
 } from './parse';
@@ -105,6 +106,32 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         const line = i === undefined ? undefined : locator.line(['jobs', jobId, 'steps', i]);
         return line === undefined ? undefined : { file: wf.path, line };
       };
+      // 0096: cite the line that runs the code (`run:` / `uses:`), not the step's `name:`.
+      const execStep = untrustedExecutionStep(job, spec);
+      const execField =
+        execStep !== undefined && typeof job.steps?.[execStep]?.run === 'string' ? 'run' : 'uses';
+      const execLine =
+        execStep === undefined ? undefined : locator.stepLine(jobId, execStep, execField);
+      const evidenceAt = (path: (string | number)[]) => {
+        const line = locator.line(path);
+        return line === undefined ? undefined : { file: wf.path, line };
+      };
+      // 0096: where the job exposes each sink, so a report can cite it.
+      const exposure: Record<string, { file: string; line: number }> = {};
+      for (const [name, path] of secretRefPaths(job)) {
+        const at = evidenceAt(['jobs', jobId, ...path]);
+        if (at) {
+          exposure[name] = at;
+        }
+      }
+      const tokenIdentity = `GITHUB_TOKEN (${perms.raw})`;
+      const tokenAt =
+        job.permissions !== undefined
+          ? evidenceAt(['jobs', jobId, 'permissions'])
+          : evidenceAt(['permissions']);
+      if (perms.overBroad && tokenAt) {
+        exposure[tokenIdentity] = tokenAt;
+      }
 
       // 0041: attacker-triggerable is not enough — the job is credential-reachable only
       // when the attacker's code can actually RUN in it (an untrusted PR-head checkout).
@@ -125,7 +152,8 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         secrets: secretNames,
         forkTriggerable,
         runsInstall: hasInstallStep(job),
-        execEvidence: stepEvidence(untrustedExecutionStep(job)),
+        execEvidence: execLine === undefined ? undefined : { file: wf.path, line: execLine },
+        exposure,
         installEvidence: stepEvidence(installStep(job)),
       };
       result.nodes.push(jobNode);
@@ -150,7 +178,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
           kind: 'sink',
           sinkKind:
             perms.codeWrite || perms.mintsCredentials ? 'credential' : 'privileged-capability',
-          identity: `GITHUB_TOKEN (${perms.raw})`,
+          identity: tokenIdentity,
         });
         result.edges.push({ from: jobNodeId, to: tokenSink, edge: { kind: 'holds' } });
       }
