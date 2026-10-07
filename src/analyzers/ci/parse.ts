@@ -8,6 +8,7 @@ export interface StepSpec {
   if?: unknown;
   name?: unknown;
   id?: unknown;
+  shell?: unknown;
 }
 
 export interface JobSpec {
@@ -309,7 +310,8 @@ export function untrustedCheckoutStep(job: JobSpec): number | undefined {
 /**
  * Index of the first step after an untrusted checkout that executes workspace code: a
  * `run:` step or a local `./` action (0048). Approximation: any `run:` after the checkout
- * is treated as able to run attacker-controlled repo code (scripts, Makefiles, configs).
+ * is treated as able to run attacker-controlled repo code (scripts, Makefiles, configs),
+ * unless it only runs git and shell builtins (0096).
  */
 export function untrustedExecutionStep(job: JobSpec): number | undefined {
   const checkout = untrustedCheckoutStep(job);
@@ -319,14 +321,99 @@ export function untrustedExecutionStep(job: JobSpec): number | undefined {
   const steps = job.steps ?? [];
   for (let i = checkout + 1; i < steps.length; i++) {
     const step = steps[i]!;
-    if (
-      typeof step.run === 'string' ||
-      (typeof step.uses === 'string' && step.uses.startsWith('./'))
-    ) {
+    if (runsWorkspaceCode(step) || (typeof step.uses === 'string' && step.uses.startsWith('./'))) {
       return i;
     }
   }
   return undefined;
+}
+
+// 0096: commands that act on the checkout without running anything it contains. git does
+// not run repo-supplied hooks or filters from a fresh clone; the rest are shell builtins or
+// coreutils that only read, move or print files.
+const NON_EXECUTING_COMMANDS = new Set([
+  'git',
+  'echo',
+  'printf',
+  'date',
+  'mkdir',
+  'cd',
+  'export',
+  'set',
+  'true',
+  'false',
+  'test',
+  '[',
+  '[[',
+  'sleep',
+  'exit',
+  'pwd',
+  'ls',
+  'touch',
+  'rm',
+  'cp',
+  'mv',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'tee',
+]);
+const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', '!', '{', '}']);
+const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * Whether a `run:` script can execute code from the workspace (0096). Conservative: a script
+ * is non-executing only when every simple command is in NON_EXECUTING_COMMANDS. Command
+ * substitution, loops, `case`, a non-default `shell:`, or any unknown command all count as
+ * executing, so the check can only drop a fail whose step plainly runs nothing.
+ */
+export function runsWorkspaceCode(step: StepSpec): boolean {
+  if (typeof step.run !== 'string') {
+    return false;
+  }
+  if (step.shell !== undefined && step.shell !== 'bash' && step.shell !== 'sh') {
+    return true;
+  }
+  const script = step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'X');
+  if (/\$\(|`/.test(script)) {
+    return true;
+  }
+  for (const command of script.split(/\n|&&|\|\||;|\|/)) {
+    const words = command
+      .replace(/(^|\s)#.*$/, '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const name = words.find((w) => !SHELL_KEYWORDS.has(w) && !ASSIGNMENT_RE.test(w));
+    if (name !== undefined && !NON_EXECUTING_COMMANDS.has(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Key path within a job of the first scalar that references each `secrets.X`, so a report
+ * can cite where the job exposes the secret (0096).
+ */
+export function secretRefPaths(job: JobSpec): Map<string, (string | number)[]> {
+  const found = new Map<string, (string | number)[]>();
+  const walk = (value: unknown, path: (string | number)[]): void => {
+    if (typeof value === 'string') {
+      for (const m of value.matchAll(SECRET_RE)) {
+        if (m[1] && !found.has(m[1])) {
+          found.set(m[1], path);
+        }
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, [...path, i]));
+    } else if (value && typeof value === 'object') {
+      Object.entries(value as Record<string, unknown>).forEach(([k, v]) => walk(v, [...path, k]));
+    }
+  };
+  walk(job, []);
+  return found;
 }
 
 /** Index of the dependency-install step (prefers an explicit install command over setup-node). */

@@ -172,6 +172,30 @@ function describeAgent(
   };
 }
 
+/** 0096: `credential X (exposed at file:line)`, citing where the job exposes the sink. */
+function heldSink(job: CiJobNode | undefined, sink: SinkNode): string {
+  const at = job?.exposure?.[sink.identity];
+  return `${sink.sinkKind} ${sink.identity}${at ? ` (exposed at ${at.file}:${at.line})` : ''}`;
+}
+
+// 0096: events only a maintainer can fire; a report names the untrusted ones.
+const TRUSTED_TRIGGERS = new Set([
+  'push',
+  'schedule',
+  'workflow_dispatch',
+  'release',
+  'create',
+  'delete',
+  'workflow_call',
+  'repository_dispatch',
+  'merge_group',
+]);
+
+function untrustedOnly(triggers: string[]): string[] {
+  const untrusted = triggers.filter((t) => !TRUSTED_TRIGGERS.has(t));
+  return untrusted.length > 0 ? untrusted : triggers;
+}
+
 /** Derive the reachability reason + remediation from the path's cross-layer shape. */
 function describe(path: ReachPath): { reason: string; remediation: string } {
   const dep = find<DependencyNode>(path, 'dependency');
@@ -190,7 +214,7 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
           `${path.entry.label} — job ${where} runs on \`workflow_run\` and splices the contents of an ` +
           `artifact built by the untrusted \`pull_request\` run into a shell (e.g. \`$(<file)\`), so ` +
           `attacker-controlled artifact content is injected into a privileged command holding ` +
-          `${sink.sinkKind} ${sink.identity}.`,
+          `${heldSink(job, sink)}.`,
         remediation:
           `Never splice downloaded-artifact contents into a shell; pass the artifact as a quoted argument ` +
           `to a trusted committed script, validate it, and keep ${sink.identity} out of the workflow_run job.`,
@@ -236,7 +260,7 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
           `${path.entry.label} — job ${where} expands attacker-written event text with \`\${{ }}\` ` +
           `directly into code the job runs (a \`run:\` shell script or \`github-script\`), before ` +
           `that code starts. Text that closes the surrounding quote or string runs as code in the job, ` +
-          `which holds ${sink.sinkKind} ${sink.identity} and can send it out.`,
+          `which holds ${heldSink(job, sink)} and can send it out.`,
         remediation:
           `Pass the text through an environment variable and use it quoted (\`env: VAR: \${{ … }}\` ` +
           `then \`"$VAR"\`) instead of expanding \`\${{ }}\` inside the script; remove ` +
@@ -368,7 +392,7 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
     }
     // 0068: say which proof is missing instead of claiming exfiltration for every path.
     const where = `${job.workflow}#${job.job}`;
-    const on = `untrusted input (${job.triggers.join(', ')})`;
+    const on = `untrusted input (${untrustedOnly(job.triggers).join(', ')})`;
     const at = job.execEvidence ? ` at ${job.execEvidence.file}:${job.execEvidence.line}` : '';
     const reason = !job.execEvidence
       ? `Job ${where} is triggered by ${on}, checks out the PR head, and holds ${sink.sinkKind} ` +
@@ -378,7 +402,7 @@ function describe(path: ReachPath): { reason: string; remediation: string } {
         ? `Job ${where} is triggered by ${on} and runs PR code${at} while holding ` +
           `${sink.identity}, a privileged capability rather than a secret or credential — this warns.`
         : `Job ${where} is triggered by ${on} and runs PR code${at} while holding ` +
-          `${sink.sinkKind} ${sink.identity}, which that code can read and exfiltrate.`;
+          `${heldSink(job, sink)}, which that code can read and exfiltrate.`;
     return {
       reason,
       remediation:

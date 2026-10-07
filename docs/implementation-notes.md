@@ -1518,3 +1518,27 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   the TTL is not reported to. Matches the ticket; revisit if it ever happens.
 - Known, not changed: a comment that lands but whose close (PATCH) fails leaves the issue open
   with our comment; recorded as `closeOutFailedStatus`, not retried.
+
+## 2026-10-06 — 0096: evidence names the executing step and the secret
+
+- Chose a conservative allowlist for "runs nothing from the checkout": git plus a short list of
+  shell builtins/coreutils (echo, date, cd, cat, rm, ...). Anything else, command substitution,
+  loops, `case`, or a non-bash `shell:` still counts as running PR code. It only drops a fail
+  whose step plainly runs nothing; it does not try to prove a step safe.
+- Tradeoff: a third-party action after the checkout still never counts as running PR code
+  (unchanged from 0048), so an action that builds the workspace (e.g. a Docker or Gradle build
+  action) is missed. The ticket asked for this; revisit with a list of known building actions.
+- `at:` is now the step's `run:` (or local `uses:`) line, not its first line. The install step
+  evidence is unchanged.
+- The reason now says where the job exposes the sink: the `secrets.X` reference line, or the
+  `permissions:` line for a write token. A shell injection whose secret sits in a later step is
+  still a fail (existing AE1 contract); the report now cites that later line instead of implying
+  the injected step holds it.
+- Also fixed under this ticket (same report-accuracy class): the trigger list in a fork-PR reason
+  drops maintainer-only events (push, schedule, workflow_dispatch, ...).
+- Two fixtures used `run: echo ...` to mean "runs PR code"; changed to `make build` / `npm test`,
+  since echo is now correctly non-executing.
+- Checked on the three live repos from the 2026-10-05 review (names in the private ops repo):
+  each now cites the executing `run:` line and the secret's line, and none lists push.
+- Not caused by this change: `src/crawl/scan.test.ts` times out locally (5s test / 10s hook) on
+  main as well; all 950 tests pass with a 30s timeout.

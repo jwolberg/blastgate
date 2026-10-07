@@ -4,6 +4,7 @@ import {
   isPinnedAction,
   normalizeTriggers,
   resolvePermissions,
+  runsWorkspaceCode,
   untrustedTriggers,
   type JobSpec,
   type WorkflowSpec,
@@ -593,5 +594,22 @@ describe('same-repo guard before a PR-ref fetch (0090)', () => {
         wf([lookup, 'if [[ "${head_repo}" != "${REPO}" ]]; then', '  echo fork', 'fi', fetch]),
       ),
     ).toBe(true);
+  });
+});
+
+describe('runsWorkspaceCode (0096)', () => {
+  it('git, builtins and coreutils run nothing from the checkout', () => {
+    expect(runsWorkspaceCode({ run: 'git fetch origin\ngit checkout -B x origin/x' })).toBe(false);
+    expect(runsWorkspaceCode({ run: 'if [ -f x ]; then echo yes; fi' })).toBe(false);
+    expect(runsWorkspaceCode({ run: 'REF=${{ github.ref }} echo "$REF" | tee out' })).toBe(false);
+  });
+
+  it('anything else, or anything it cannot read, counts as running code', () => {
+    expect(runsWorkspaceCode({ run: 'npm test' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'git status && make' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'echo `./x.sh`' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'for f in *.sh; do echo $f; done' })).toBe(true);
+    expect(runsWorkspaceCode({ run: 'print(1)', shell: 'python' })).toBe(true);
+    expect(runsWorkspaceCode({ uses: 'actions/setup-node@v4' })).toBe(false);
   });
 });
