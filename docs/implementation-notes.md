@@ -1603,3 +1603,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   cannot be shown to run nothing. A stricter allowlist can then only keep a fail; it no longer
   moves the citation back to a git step.
 - Rescan of the 26 failing repos: same outcome, same cited lines.
+## 2026-10-06 — 0097: quoted artifact comparisons, push-only workflow_run
+
+- Root cause of the reviewed false alarm was not the `[[ "$(< f)" == ... ]]` line itself (it was
+  already treated as quoted). A later `"$(... | sed 's/"([^"]+)"/.../')"` desynced the quote
+  tracker, which then failed closed to a plain `$(<` match. The splice scanner now tracks
+  nesting: a `$( )` inside double quotes starts a fresh quoting context.
+- Deviation: the ticket says "workflow_run restricted to push or default-branch runs". Only the
+  push gate is implemented. A `branches:` filter matches `head_branch`, which is the fork's
+  branch name and is chosen by the outsider, so it is not a gate. There is a test pinning that.
+- The gate is proven only from plain `==` conjuncts in every top-level `||` branch of the job
+  `if:` (`github.event.workflow_run.event == 'push'`, or `github.event_name == '<other>'`).
+  `!=`, nested `||`, and functions are not proof, so those jobs keep their findings.
+- Rescanned all 26 repos the crawler marks fail, at their ledger commits: the only fails
+  dropped were the reviewed artifact false alarm, one push-only workflow_run job, and one job
+  that only runs git after the checkout. The other repos' fails are unchanged.
