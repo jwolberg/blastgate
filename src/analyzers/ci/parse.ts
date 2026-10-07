@@ -328,11 +328,10 @@ export function untrustedExecutionStep(job: JobSpec): number | undefined {
   return undefined;
 }
 
-// 0096: commands that act on the checkout without running anything it contains. git does
-// not run repo-supplied hooks or filters from a fresh clone; the rest are shell builtins or
-// coreutils that only read, move or print files.
+// 0096: commands that act on the checkout without running anything it contains. Commands that
+// write files (cp, mv, tee, touch) are left out: they can plant a git hook or a config that a
+// later command runs.
 const NON_EXECUTING_COMMANDS = new Set([
-  'git',
   'echo',
   'printf',
   'date',
@@ -349,24 +348,86 @@ const NON_EXECUTING_COMMANDS = new Set([
   'exit',
   'pwd',
   'ls',
-  'touch',
   'rm',
-  'cp',
-  'mv',
   'cat',
   'head',
   'tail',
   'wc',
-  'tee',
 ]);
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', '!', '{', '}']);
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+// Variables that make a later program load code: a hijacked PATH, a shell or loader hook, git.
+const LOADER_ENV_RE =
+  /^(?:PATH|BASH_ENV|ENV|HOME|XDG_CONFIG_HOME|NODE_OPTIONS|LD_\w+|DYLD_\w+|GIT_\w+|PYTHON\w*|PERL5\w*|RUBY\w*)=/;
+// Git subcommands that read, fetch, or move refs and run no user-supplied command. Hooks
+// and filters need config, which a fresh checkout does not carry and `-c`/`config` are refused.
+const GIT_SAFE_SUBCOMMANDS = new Set([
+  'fetch',
+  'pull',
+  'checkout',
+  'switch',
+  'log',
+  'show',
+  'diff',
+  'status',
+  'rev-parse',
+  'rev-list',
+  'merge-base',
+  'tag',
+  'push',
+  'clean',
+  'reset',
+  'branch',
+  'ls-remote',
+  'ls-files',
+  'describe',
+  'remote',
+  'cat-file',
+  'init',
+  'add',
+  'commit',
+  'merge',
+]);
+const GIT_SAFE_CONFIG_KEY_RE = /^(?:user\.(?:name|email)|safe\.directory|init\.defaultBranch)$/;
+const GIT_EXEC_OPTION_RE = /^(?:-x|--exec|--upload-pack|--receive-pack|--ext-diff|--config)/;
+const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '--git-dir', '--work-tree', '--namespace']);
+// Redirect targets that are not files a later command loads.
+const SAFE_REDIRECT_TARGET_RE = /^(?:&\d|\/dev\/null|"?\$\{?GITHUB_(?:OUTPUT|STEP_SUMMARY)\}?"?)$/;
+
+/** Whether a `git …` invocation stays within the read/fetch subcommands with no exec hook. */
+function gitRunsNothing(args: string[]): boolean {
+  let i = 0;
+  for (; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith('-c') || a.startsWith('--config-env')) {
+      return false;
+    }
+    if (GIT_OPTIONS_WITH_VALUE.has(a)) {
+      i++;
+    } else if (!a.startsWith('-')) {
+      break;
+    }
+  }
+  const sub = args[i];
+  const rest = args.slice(i + 1);
+  if (sub === 'config') {
+    const key = rest.find((x) => !x.startsWith('-'));
+    return key !== undefined && GIT_SAFE_CONFIG_KEY_RE.test(key);
+  }
+  return (
+    sub !== undefined &&
+    GIT_SAFE_SUBCOMMANDS.has(sub) &&
+    !rest.some((x) => GIT_EXEC_OPTION_RE.test(x))
+  );
+}
 
 /**
  * Whether a `run:` script can execute code from the workspace (0096). Conservative: a script
- * is non-executing only when every simple command is in NON_EXECUTING_COMMANDS. Command
- * substitution, loops, `case`, a non-default `shell:`, or any unknown command all count as
- * executing, so the check can only drop a fail whose step plainly runs nothing.
+ * is non-executing only when every simple command is a plain builtin or a read/fetch git
+ * command, nothing changes PATH or a loader variable, and output goes nowhere a later
+ * command loads. Command or process substitution, `&`, loops, `case`, a non-default
+ * `shell:`, or any unknown command all count as executing, so the check can only drop a
+ * fail whose step plainly runs nothing.
  */
 export function runsWorkspaceCode(step: StepSpec): boolean {
   if (typeof step.run !== 'string') {
@@ -376,17 +437,46 @@ export function runsWorkspaceCode(step: StepSpec): boolean {
     return true;
   }
   const script = step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'X');
-  if (/\$\(|`/.test(script)) {
+  if (/\$\(|`|[<>]\(|GITHUB_ENV|GITHUB_PATH/.test(script)) {
     return true;
   }
-  for (const command of script.split(/\n|&&|\|\||;|\|/)) {
+  // Quoted text is an argument, not shell syntax: `echo "a -> b"` has no redirect. A quoted
+  // bare `$VAR` keeps its name so `>> "$GITHUB_OUTPUT"` is still recognized.
+  const masked = script.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, (q) =>
+    /^"\$\{?\w+\}?"$/.test(q) ? q.slice(1, -1) : 'Q',
+  );
+  for (const m of masked.matchAll(/>>?\s*(&\d|"[^"]*"|'[^']*'|[^\s;&|]+)/g)) {
+    if (!SAFE_REDIRECT_TARGET_RE.test(m[1]!)) {
+      return true;
+    }
+  }
+  // Redirects are checked above; drop them so `2>&1` is not split on its `&`.
+  const commands = masked.replace(/\d*>>?\s*(&\d|"[^"]*"|'[^']*'|[^\s;&|]+)/g, ' ');
+  for (const command of commands.split(/\n|&&|\|\||;|\||&/)) {
     const words = command
       .replace(/(^|\s)#.*$/, '')
       .trim()
       .split(/\s+/)
       .filter(Boolean);
-    const name = words.find((w) => !SHELL_KEYWORDS.has(w) && !ASSIGNMENT_RE.test(w));
-    if (name !== undefined && !NON_EXECUTING_COMMANDS.has(name)) {
+    let i = 0;
+    while (i < words.length && (SHELL_KEYWORDS.has(words[i]!) || ASSIGNMENT_RE.test(words[i]!))) {
+      if (LOADER_ENV_RE.test(words[i]!)) {
+        return true;
+      }
+      i++;
+    }
+    const name = words[i];
+    const args = words.slice(i + 1);
+    if (name === undefined) {
+      continue;
+    }
+    if (name === 'git') {
+      if (!gitRunsNothing(args)) {
+        return true;
+      }
+    } else if (!NON_EXECUTING_COMMANDS.has(name)) {
+      return true;
+    } else if (name === 'export' && args.some((x) => LOADER_ENV_RE.test(x))) {
       return true;
     }
   }

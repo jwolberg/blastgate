@@ -601,7 +601,7 @@ describe('runsWorkspaceCode (0096)', () => {
   it('git, builtins and coreutils run nothing from the checkout', () => {
     expect(runsWorkspaceCode({ run: 'git fetch origin\ngit checkout -B x origin/x' })).toBe(false);
     expect(runsWorkspaceCode({ run: 'if [ -f x ]; then echo yes; fi' })).toBe(false);
-    expect(runsWorkspaceCode({ run: 'REF=${{ github.ref }} echo "$REF" | tee out' })).toBe(false);
+    expect(runsWorkspaceCode({ run: 'REF=${{ github.ref }} echo "$REF" | head -1' })).toBe(false);
   });
 
   it('anything else, or anything it cannot read, counts as running code', () => {
@@ -611,5 +611,45 @@ describe('runsWorkspaceCode (0096)', () => {
     expect(runsWorkspaceCode({ run: 'for f in *.sh; do echo $f; done' })).toBe(true);
     expect(runsWorkspaceCode({ run: 'print(1)', shell: 'python' })).toBe(true);
     expect(runsWorkspaceCode({ uses: 'actions/setup-node@v4' })).toBe(false);
+  });
+});
+
+describe('runsWorkspaceCode: commands that look inert but run repo code (0096 review)', () => {
+  const runs = (run: string): boolean => runsWorkspaceCode({ run });
+
+  it.each([
+    'git bisect run ./test.sh',
+    'git rebase -x ./check.sh main',
+    'git submodule foreach ./build.sh',
+    'git difftool -x ./d.sh HEAD~1',
+    "git filter-branch --tree-filter './t.sh' HEAD",
+    'git -c core.hooksPath=.githooks commit -m x',
+    "git -c alias.x='!./evil.sh' x",
+    'git config core.fsmonitor ./mon.sh\ngit status',
+    'git x-custom-subcommand',
+    'cp hooks/post-checkout .git/hooks/\ngit checkout main',
+    'echo "#!/bin/sh" > .git/hooks/pre-commit',
+    'cat conf > ~/.gitconfig\ngit fetch',
+    'export PATH="$PWD/bin:$PATH"\ngit fetch',
+    'PATH=./bin git fetch',
+    'export BASH_ENV=./env.sh',
+    'cat vars >> $GITHUB_ENV',
+    'echo "$PWD/bin" >> "$GITHUB_PATH"',
+    'echo hi & ./evil.sh',
+    'cat <(./evil.sh)',
+    'echo a > >(./x)',
+  ])('%s runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it.each([
+    'git fetch origin\ngit checkout -B main origin/main',
+    'git remote add upstream https://example.invalid/r.git && git fetch upstream',
+    'git log -1 --format=%H > /dev/null 2>&1',
+    'echo "sha=$SHA" >> "$GITHUB_OUTPUT"',
+    'git tag -f v1 "$SHA" && git push -f origin refs/tags/v1',
+    'echo "::notice::moved v1 -> ${SHA:0:8}; done & ok"',
+  ])('%s does not', (run) => {
+    expect(runs(run)).toBe(false);
   });
 });

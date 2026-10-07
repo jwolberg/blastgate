@@ -1542,3 +1542,17 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   each now cites the executing `run:` line and the secret's line, and none lists push.
 - Not caused by this change: `src/crawl/scan.test.ts` times out locally (5s test / 10s hook) on
   main as well; all 950 tests pass with a 30s timeout.
+
+## 2026-10-06 — 0096 review fixes (fresh-context reviewer, request-changes)
+
+- Fixed: the "runs nothing" allowlist trusted all of git, cp, mv, tee and export. Git can run a
+  command (`bisect run`, `rebase -x`, `submodule foreach`, `-c alias.x='!…'`, `core.hooksPath`),
+  and a copied file can become a hook or `~/.gitconfig`. Now: git only for read/fetch/ref
+  subcommands, no `-c`, no exec-style options, `config` only for user.name/email and similar;
+  cp/mv/tee/touch count as executing; assigning PATH, BASH_ENV, LD_*, GIT_* and similar counts
+  as executing; any redirect other than /dev/null, an fd, $GITHUB_OUTPUT or $GITHUB_STEP_SUMMARY
+  counts as executing, as does any mention of GITHUB_ENV/GITHUB_PATH.
+- Fixed: single `&` and process substitution `<( )` / `>( )` hid a command.
+- Quoted strings are masked before the redirect and command checks, so `echo "a -> b"` is not a
+  redirect.
+- Rescan of the 26 failing repos unchanged in outcome: the git-only job still drops.
