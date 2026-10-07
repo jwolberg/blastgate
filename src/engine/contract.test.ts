@@ -825,6 +825,21 @@ describe('artifact comparisons and push-only workflow_run (0097)', () => {
     ).toBeDefined();
   });
 
+  it.each([
+    "github.event.workflow_run.event != 'pull_request'",
+    "!(github.event.workflow_run.event == 'pull_request')",
+    "always() || github.event.workflow_run.event == 'push'",
+    "github.event.workflow_run.event == 'push' || true",
+  ])('an if: that does not prove a push-only run still fails: %s', (cond) => {
+    expect(keyFail(forkRun([`    if: ${cond}`]))).toBeDefined();
+  });
+
+  it('a ${{ }}-wrapped push-only gate is not a fail', () => {
+    expect(
+      keyFail(forkRun(["    if: ${{ github.event.workflow_run.event == 'push' }}"])),
+    ).toBeUndefined();
+  });
+
   it('a branches: filter alone does not gate (a fork can name its branch main)', () => {
     const inputs = forkRun([]);
     const content = inputs.ci!.workflows[0]!.content.replace(
