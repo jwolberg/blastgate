@@ -7,6 +7,7 @@ import {
   runsWorkspaceCode,
   untrustedTriggers,
   type JobSpec,
+  type StepSpec,
   type WorkflowSpec,
 } from './parse';
 
@@ -650,6 +651,42 @@ describe('runsWorkspaceCode: commands that look inert but run repo code (0096 re
     'git tag -f v1 "$SHA" && git push -f origin refs/tags/v1',
     'echo "::notice::moved v1 -> ${SHA:0:8}; done & ok"',
   ])('%s does not', (run) => {
+    expect(runs(run)).toBe(false);
+  });
+});
+
+describe('runsWorkspaceCode: quoting and git directory tricks (0096 re-review)', () => {
+  const runs = (run: string, extra: Partial<StepSpec> = {}): boolean =>
+    runsWorkspaceCode({ run, ...extra });
+
+  it.each([
+    "# don't cache\nnpm test\n# it's done",
+    'echo \\"hi\\"; npm test; echo "done"',
+    "echo it\\'s; ./x.sh; echo 'z'",
+    "echo $'a\\'b'; ./x; echo $'c\\'d'",
+    'echo "unterminated\nnpm test',
+    'git -C docs fetch origin',
+    'git --git-dir=docs fetch origin',
+    'git --work-tree docs status',
+    'cd docs && git fetch origin',
+    'pushd docs\ngit status',
+    'export "PATH=$PWD/bin:$PATH"',
+  ])('%j runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it('git in a step with a working-directory runs repo config', () => {
+    expect(runs('git fetch origin', { 'working-directory': 'docs' })).toBe(true);
+  });
+
+  it.each([
+    "# don't run anything here\ngit fetch origin # it's fine",
+    'grep -q "x" README.md && echo found',
+    "jq -r '.version' package.json",
+    'git config --global --add safe.directory "*"',
+    'git config http.https://example.invalid/.extraheader "AUTHORIZATION: basic x"',
+    'git config core.sparseCheckout true',
+  ])('%j does not', (run) => {
     expect(runs(run)).toBe(false);
   });
 });

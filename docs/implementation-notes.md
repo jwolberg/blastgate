@@ -1556,3 +1556,20 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Quoted strings are masked before the redirect and command checks, so `echo "a -> b"` is not a
   redirect.
 - Rescan of the 26 failing repos unchanged in outcome: the git-only job still drops.
+
+## 2026-10-06 — 0096 second review fixes (request-changes again)
+
+- Fixed (high): quoted text was masked with a regex, so an apostrophe in a comment (`# don't`)
+  or an escaped quote swallowed real commands. Replaced with a small single-pass shell reader
+  (quotes, `$'…'`, escapes, comments, separators, redirects). Anything outside that subset
+  (substitutions, subshells, heredocs, unterminated quotes) counts as executing.
+- Fixed (medium): a PR can commit a bare-repo layout in a subdirectory whose config names a
+  command (e.g. `remote.origin.uploadpack`), and git loads it when run from there. git now
+  counts as executing after `cd`/`pushd`, with `-C`/`--git-dir`/`--work-tree`, in a step with
+  `working-directory:`, or under a job/workflow `defaults.run.working-directory`. A step, job
+  or workflow `env:` that sets PATH or another loader variable also counts.
+- Low: grep, jq, sort, cut, tr and similar read-only tools, and a few more harmless git config
+  keys (http extraheader, core.sparseCheckout), now count as non-executing.
+- Rejected one reviewer probe: `echo don't` / `make build` / `echo can't` is one quoted string in
+  bash, so make never runs; the reader agrees with bash.
+- Rescan of the 26 failing repos: same outcome as before.

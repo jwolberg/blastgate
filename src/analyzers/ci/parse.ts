@@ -9,6 +9,7 @@ export interface StepSpec {
   name?: unknown;
   id?: unknown;
   shell?: unknown;
+  'working-directory'?: unknown;
 }
 
 export interface JobSpec {
@@ -18,6 +19,7 @@ export interface JobSpec {
   env?: Record<string, unknown>;
   secrets?: unknown;
   if?: unknown;
+  defaults?: unknown;
 }
 
 export interface WorkflowSpec {
@@ -25,6 +27,7 @@ export interface WorkflowSpec {
   on?: unknown;
   permissions?: unknown;
   env?: Record<string, unknown>;
+  defaults?: unknown;
   jobs?: Record<string, JobSpec>;
 }
 
@@ -313,15 +316,30 @@ export function untrustedCheckoutStep(job: JobSpec): number | undefined {
  * is treated as able to run attacker-controlled repo code (scripts, Makefiles, configs),
  * unless it only runs git and shell builtins (0096).
  */
-export function untrustedExecutionStep(job: JobSpec): number | undefined {
+export function untrustedExecutionStep(
+  job: JobSpec,
+  workflow: WorkflowSpec = {},
+): number | undefined {
   const checkout = untrustedCheckoutStep(job);
   if (checkout === undefined) {
     return undefined;
   }
   const steps = job.steps ?? [];
+  const runDefaults = (d: unknown): unknown =>
+    (d as { run?: { 'working-directory'?: unknown } } | undefined)?.run?.['working-directory'];
+  const context: RunContext = {
+    workingDirectory:
+      runDefaults(job.defaults) !== undefined || runDefaults(workflow.defaults) !== undefined,
+    loaderEnv: [job.env, workflow.env].some((env) =>
+      Object.keys(env ?? {}).some((k) => LOADER_ENV_RE.test(k)),
+    ),
+  };
   for (let i = checkout + 1; i < steps.length; i++) {
     const step = steps[i]!;
-    if (runsWorkspaceCode(step) || (typeof step.uses === 'string' && step.uses.startsWith('./'))) {
+    if (
+      runsWorkspaceCode(step, context) ||
+      (typeof step.uses === 'string' && step.uses.startsWith('./'))
+    ) {
       return i;
     }
   }
@@ -336,7 +354,6 @@ const NON_EXECUTING_COMMANDS = new Set([
   'printf',
   'date',
   'mkdir',
-  'cd',
   'export',
   'set',
   'true',
@@ -353,14 +370,26 @@ const NON_EXECUTING_COMMANDS = new Set([
   'head',
   'tail',
   'wc',
+  'grep',
+  'jq',
+  'sort',
+  'uniq',
+  'cut',
+  'tr',
+  'basename',
+  'dirname',
+  'cd',
+  'pushd',
+  'popd',
 ]);
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', '!', '{', '}']);
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // Variables that make a later program load code: a hijacked PATH, a shell or loader hook, git.
 const LOADER_ENV_RE =
-  /^(?:PATH|BASH_ENV|ENV|HOME|XDG_CONFIG_HOME|NODE_OPTIONS|LD_\w+|DYLD_\w+|GIT_\w+|PYTHON\w*|PERL5\w*|RUBY\w*)=/;
-// Git subcommands that read, fetch, or move refs and run no user-supplied command. Hooks
-// and filters need config, which a fresh checkout does not carry and `-c`/`config` are refused.
+  /^(?:PATH|BASH_ENV|ENV|HOME|XDG_CONFIG_HOME|NODE_OPTIONS|LD_\w+|DYLD_\w+|GIT_\w+|PYTHON\w*|PERL5\w*|RUBY\w*)(?:=|$)/;
+// Git subcommands that read, fetch, or move refs and run no user-supplied command. Hooks and
+// filters need config: a fresh checkout's own .git carries none, and `-c`, `config`, and any
+// way of pointing git at another directory (which may be a committed bare repo) are refused.
 const GIT_SAFE_SUBCOMMANDS = new Set([
   'fetch',
   'pull',
@@ -383,28 +412,151 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
   'describe',
   'remote',
   'cat-file',
-  'init',
   'add',
   'commit',
   'merge',
 ]);
-const GIT_SAFE_CONFIG_KEY_RE = /^(?:user\.(?:name|email)|safe\.directory|init\.defaultBranch)$/;
+const GIT_SAFE_CONFIG_KEY_RE =
+  /^(?:user\.(?:name|email)|safe\.directory|init\.defaultBranch|core\.(?:autocrlf|sparseCheckout)|http\..*\.extraheader|advice\.\w+|pull\.rebase|fetch\.prune)$/;
 const GIT_EXEC_OPTION_RE = /^(?:-x|--exec|--upload-pack|--receive-pack|--ext-diff|--config)/;
-const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '--git-dir', '--work-tree', '--namespace']);
-// Redirect targets that are not files a later command loads.
-const SAFE_REDIRECT_TARGET_RE = /^(?:&\d|\/dev\/null|"?\$\{?GITHUB_(?:OUTPUT|STEP_SUMMARY)\}?"?)$/;
+const GIT_DIR_OPTION_RE = /^(?:-C|--git-dir|--work-tree)/;
+const SAFE_REDIRECT_TARGET_RE = /^(?:&[\d-]+|\/dev\/null|\$\{?GITHUB_(?:OUTPUT|STEP_SUMMARY)\}?)$/;
+
+interface ShellScript {
+  commands: string[][];
+  redirects: string[];
+}
+
+/**
+ * A small single-pass reader for the shell subset a git-only step uses: words, quotes
+ * ('…', "…", $'…'), backslash escapes, comments, `;` `&` `|` and newlines, and `<` / `>`
+ * redirects. Returns undefined for anything outside that subset (substitutions, subshells,
+ * heredocs, unterminated quotes) so the caller treats the script as executing (0096).
+ */
+function readShell(script: string): ShellScript | undefined {
+  const commands: string[][] = [];
+  const redirects: string[] = [];
+  let command: string[] = [];
+  let word = '';
+  let inWord = false;
+  let redirect: 'in' | 'out' | undefined;
+  const endWord = (): void => {
+    if (inWord) {
+      if (redirect === 'out') {
+        redirects.push(word);
+      } else if (redirect === undefined) {
+        command.push(word);
+      }
+      redirect = undefined;
+    }
+    word = '';
+    inWord = false;
+  };
+  const endCommand = (): void => {
+    endWord();
+    if (command.length > 0) {
+      commands.push(command);
+    }
+    command = [];
+  };
+  for (let i = 0; i < script.length; i++) {
+    const c = script[i]!;
+    if (c === '\\') {
+      if (script[i + 1] !== '\n') {
+        word += script[i + 1] ?? '';
+        inWord = true;
+      }
+      i++;
+    } else if (c === "'") {
+      const end = script.indexOf("'", i + 1);
+      if (end < 0) {
+        return undefined;
+      }
+      word += script.slice(i + 1, end);
+      inWord = true;
+      i = end;
+    } else if (c === '$' && script[i + 1] === "'") {
+      let j = i + 2;
+      for (; j < script.length && script[j] !== "'"; j++) {
+        if (script[j] === '\\') {
+          j++;
+        }
+      }
+      if (j >= script.length) {
+        return undefined;
+      }
+      word += script.slice(i + 2, j);
+      inWord = true;
+      i = j;
+    } else if (c === '"') {
+      let j = i + 1;
+      for (; j < script.length && script[j] !== '"'; j++) {
+        const d = script[j];
+        if (d === '`' || (d === '$' && script[j + 1] === '(')) {
+          return undefined;
+        }
+        if (d === '\\') {
+          j++;
+        }
+        word += script[j] ?? '';
+      }
+      if (j >= script.length) {
+        return undefined;
+      }
+      inWord = true;
+      i = j;
+    } else if (c === '`' || c === '(' || c === ')' || (c === '$' && script[i + 1] === '(')) {
+      return undefined;
+    } else if (c === '#' && !inWord) {
+      const nl = script.indexOf('\n', i);
+      i = nl < 0 ? script.length : nl - 1;
+    } else if (c === ' ' || c === '\t') {
+      endWord();
+    } else if (c === '\n' || c === ';' || c === '&' || c === '|') {
+      endCommand();
+    } else if (c === '<') {
+      if (script[i + 1] === '<' || script[i + 1] === '(') {
+        return undefined;
+      }
+      endWord();
+      redirect = 'in';
+    } else if (c === '>') {
+      if (/^\d+$/.test(word)) {
+        word = '';
+        inWord = false;
+      }
+      endWord();
+      if (script[i + 1] === '>') {
+        i++;
+      }
+      if (script[i + 1] === '(') {
+        return undefined;
+      }
+      if (script[i + 1] === '&') {
+        const m = /^&[\d-]+/.exec(script.slice(i + 1));
+        redirects.push(m ? m[0] : '&');
+        i += m ? m[0].length : 1;
+      } else {
+        redirect = 'out';
+      }
+    } else {
+      word += c;
+      inWord = true;
+    }
+  }
+  endCommand();
+  return redirect === undefined ? { commands, redirects } : undefined;
+}
 
 /** Whether a `git …` invocation stays within the read/fetch subcommands with no exec hook. */
 function gitRunsNothing(args: string[]): boolean {
   let i = 0;
   for (; i < args.length; i++) {
     const a = args[i]!;
-    if (a.startsWith('-c') || a.startsWith('--config-env')) {
+    if (a.startsWith('-c') || a.startsWith('--config-env') || GIT_DIR_OPTION_RE.test(a)) {
       return false;
     }
-    if (GIT_OPTIONS_WITH_VALUE.has(a)) {
-      i++;
-    } else if (!a.startsWith('-')) {
+    if (!a.startsWith('-')) {
       break;
     }
   }
@@ -421,46 +573,44 @@ function gitRunsNothing(args: string[]): boolean {
   );
 }
 
+export interface RunContext {
+  /** The step runs outside the workspace root (`defaults.run.working-directory`). */
+  workingDirectory?: boolean;
+  /** The job or workflow `env:` sets a loader variable such as PATH. */
+  loaderEnv?: boolean;
+}
+
 /**
  * Whether a `run:` script can execute code from the workspace (0096). Conservative: a script
- * is non-executing only when every simple command is a plain builtin or a read/fetch git
- * command, nothing changes PATH or a loader variable, and output goes nowhere a later
- * command loads. Command or process substitution, `&`, loops, `case`, a non-default
- * `shell:`, or any unknown command all count as executing, so the check can only drop a
- * fail whose step plainly runs nothing.
+ * is non-executing only when it parses cleanly and every simple command is a plain builtin or
+ * a read/fetch git command run from the workspace root, nothing sets PATH or a loader
+ * variable, and output goes nowhere a later command loads. Anything else counts as
+ * executing, so the check can only drop a fail whose step plainly runs nothing.
  */
-export function runsWorkspaceCode(step: StepSpec): boolean {
+export function runsWorkspaceCode(step: StepSpec, context: RunContext = {}): boolean {
   if (typeof step.run !== 'string') {
     return false;
   }
   if (step.shell !== undefined && step.shell !== 'bash' && step.shell !== 'sh') {
     return true;
   }
-  const script = step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'X');
-  if (/\$\(|`|[<>]\(|GITHUB_ENV|GITHUB_PATH/.test(script)) {
+  if (context.loaderEnv || Object.keys(step.env ?? {}).some((k) => LOADER_ENV_RE.test(k))) {
     return true;
   }
-  // Quoted text is an argument, not shell syntax: `echo "a -> b"` has no redirect. A quoted
-  // bare `$VAR` keeps its name so `>> "$GITHUB_OUTPUT"` is still recognized.
-  const masked = script.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, (q) =>
-    /^"\$\{?\w+\}?"$/.test(q) ? q.slice(1, -1) : 'Q',
-  );
-  for (const m of masked.matchAll(/>>?\s*(&\d|"[^"]*"|'[^']*'|[^\s;&|]+)/g)) {
-    if (!SAFE_REDIRECT_TARGET_RE.test(m[1]!)) {
-      return true;
-    }
+  const raw = step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'X');
+  if (/GITHUB_ENV|GITHUB_PATH/.test(raw)) {
+    return true;
   }
-  // Redirects are checked above; drop them so `2>&1` is not split on its `&`.
-  const commands = masked.replace(/\d*>>?\s*(&\d|"[^"]*"|'[^']*'|[^\s;&|]+)/g, ' ');
-  for (const command of commands.split(/\n|&&|\|\||;|\||&/)) {
-    const words = command
-      .replace(/(^|\s)#.*$/, '')
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
+  const parsed = readShell(raw);
+  if (!parsed || parsed.redirects.some((t) => !SAFE_REDIRECT_TARGET_RE.test(t))) {
+    return true;
+  }
+  // A directory the PR controls can hold a committed bare repo whose config git then loads.
+  let movedDir = step['working-directory'] !== undefined || context.workingDirectory === true;
+  for (const words of parsed.commands) {
     let i = 0;
     while (i < words.length && (SHELL_KEYWORDS.has(words[i]!) || ASSIGNMENT_RE.test(words[i]!))) {
-      if (LOADER_ENV_RE.test(words[i]!)) {
+      if (ASSIGNMENT_RE.test(words[i]!) && LOADER_ENV_RE.test(words[i]!)) {
         return true;
       }
       i++;
@@ -471,13 +621,15 @@ export function runsWorkspaceCode(step: StepSpec): boolean {
       continue;
     }
     if (name === 'git') {
-      if (!gitRunsNothing(args)) {
+      if (movedDir || !gitRunsNothing(args)) {
         return true;
       }
     } else if (!NON_EXECUTING_COMMANDS.has(name)) {
       return true;
     } else if (name === 'export' && args.some((x) => LOADER_ENV_RE.test(x))) {
       return true;
+    } else if (name === 'cd' || name === 'pushd' || name === 'popd') {
+      movedDir = true;
     }
   }
   return false;

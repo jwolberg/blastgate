@@ -107,7 +107,7 @@ export function analyzeCi(inputs: CiInputs): AnalyzerResult {
         return line === undefined ? undefined : { file: wf.path, line };
       };
       // 0096: cite the line that runs the code (`run:` / `uses:`), not the step's `name:`.
-      const execStep = untrustedExecutionStep(job);
+      const execStep = untrustedExecutionStep(job, spec);
       const execField =
         execStep !== undefined && typeof job.steps?.[execStep]?.run === 'string' ? 'run' : 'uses';
       const execLine =
