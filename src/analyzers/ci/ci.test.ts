@@ -599,10 +599,12 @@ describe('same-repo guard before a PR-ref fetch (0090)', () => {
 });
 
 describe('runsWorkspaceCode (0096)', () => {
-  it('git, builtins and coreutils run nothing from the checkout', () => {
+  it('git and plain builtins run nothing from the checkout', () => {
     expect(runsWorkspaceCode({ run: 'git fetch origin\ngit checkout -B x origin/x' })).toBe(false);
-    expect(runsWorkspaceCode({ run: 'if [ -f x ]; then echo yes; fi' })).toBe(false);
-    expect(runsWorkspaceCode({ run: 'REF=${{ github.ref }} echo "$REF" | head -1' })).toBe(false);
+    expect(runsWorkspaceCode({ run: 'if git rev-parse -q --verify v1; then echo yes; fi' })).toBe(
+      false,
+    );
+    expect(runsWorkspaceCode({ run: 'REF=${{ github.ref }} echo "$REF" > /dev/null' })).toBe(false);
   });
 
   it('anything else, or anything it cannot read, counts as running code', () => {
@@ -681,8 +683,6 @@ describe('runsWorkspaceCode: quoting and git directory tricks (0096 re-review)',
 
   it.each([
     "# don't run anything here\ngit fetch origin # it's fine",
-    'grep -q "x" README.md && echo found',
-    "jq -r '.version' package.json",
     'git config --global --add safe.directory "*"',
     'git config http.https://example.invalid/.extraheader "AUTHORIZATION: basic x"',
     'git config core.sparseCheckout true',
@@ -711,11 +711,34 @@ describe('runsWorkspaceCode: expressions and builtins (0096 third review)', () =
   it.each([
     'git fetch origin ${{ github.event.pull_request.head.sha }}',
     'git remote add upstream ${{ github.event.repository.clone_url }}',
-    'git checkout -B ${{ fromJson(steps.pr.outputs.data).base.ref }} upstream/${{ github.base_ref }}',
+    'git checkout -B ${{ github.event.pull_request.base.ref }} upstream/${{ github.base_ref }}',
     'echo "run ${{ github.run_id }} for ${{ github.repository }}"',
-    'set -euo pipefail\n[ "$A" = "b" ] && echo same',
+    'set -euo pipefail\necho same',
     'git checkout "$BRANCH"',
   ])('%j does not', (run) => {
     expect(runs(run)).toBe(false);
+  });
+});
+
+describe('runsWorkspaceCode: minimal allowlist (0096 fourth review)', () => {
+  const runs = (run: string): boolean => runsWorkspaceCode({ run });
+
+  it.each([
+    'echo ${{ fromJSON(needs.a.outputs.pr).number }}',
+    'git checkout -B ${{ fromJson(steps.pr.outputs.data).base.ref }}',
+    'echo ${{ FROMJSON(steps.x.outputs.y).NUMBER }}',
+    '[ -v "$T" ] && echo set',
+    'test -v "$T"',
+    '[[ -v $T ]]',
+    'echo "${A:$T}"',
+    'echo "${arr[$T]}"',
+    "printf -vPATH '%s' ./bin",
+    'cat notes.txt',
+  ])('%j runs repo code', (run) => {
+    expect(runs(run)).toBe(true);
+  });
+
+  it('a literal substring offset stays inert', () => {
+    expect(runs('echo "short ${SHA:0:8}"')).toBe(false);
   });
 });

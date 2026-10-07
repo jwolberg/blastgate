@@ -334,6 +334,13 @@ export function untrustedExecutionStep(
       Object.keys(env ?? {}).some((k) => LOADER_ENV_RE.test(k)),
     ),
   };
+  // Cite the step that plainly runs build tooling when there is one; otherwise the first step
+  // that cannot be shown to run nothing (0096 review).
+  for (let i = checkout + 1; i < steps.length; i++) {
+    if (runsBuildTooling(steps[i]!)) {
+      return i;
+    }
+  }
   for (let i = checkout + 1; i < steps.length; i++) {
     const step = steps[i]!;
     if (
@@ -346,38 +353,23 @@ export function untrustedExecutionStep(
   return undefined;
 }
 
-// 0096: commands that act on the checkout without running anything it contains. Commands that
-// write files (cp, mv, tee, touch) are left out: they can plant a git hook or a config that a
-// later command runs.
+// 0096: commands that act on the checkout without running anything it contains. Deliberately
+// minimal: file writers (cp, mv, tee) can plant a hook or config, and readers and testers
+// (cat, grep, jq, test, [[, printf) have argument forms that evaluate or load code. Anything
+// not listed counts as executing; that only keeps a fail, never drops one.
 const NON_EXECUTING_COMMANDS = new Set([
   'echo',
-  'printf',
-  'date',
-  'mkdir',
-  'export',
-  'set',
+  'exit',
   'true',
   'false',
-  'test',
-  '[',
-  '[[',
-  'sleep',
-  'exit',
-  'pwd',
-  'ls',
+  'set',
+  'export',
+  'mkdir',
   'rm',
-  'cat',
-  'head',
-  'tail',
-  'wc',
-  'grep',
-  'jq',
-  'sort',
-  'uniq',
-  'cut',
-  'tr',
-  'basename',
-  'dirname',
+  'ls',
+  'pwd',
+  'date',
+  'sleep',
   'cd',
   'pushd',
   'popd',
@@ -584,7 +576,6 @@ const INERT_EXPRESSION_RES = [
   /^(?:secrets|runner)\.\w+$/,
   /^github\.(?:sha|ref|ref_name|run_id|run_number|run_attempt|repository|repository_owner|workspace|base_ref|server_url|api_url|event_name)$/,
   /^github\.[\w.]*(?:\.sha|_sha|\.number|\.clone_url|\.full_name|\.base\.ref)$/,
-  /^fromJSON\([\w.-]+\)\.(?:number|base\.ref|base\.sha|head\.sha)$/i,
 ];
 
 export interface RunContext {
@@ -622,6 +613,10 @@ export function runsWorkspaceCode(step: StepSpec, context: RunContext = {}): boo
   if (/GITHUB_ENV|GITHUB_PATH/.test(raw)) {
     return true;
   }
+  // `${A:$T}` and `${arr[$T]}` evaluate their inner text as arithmetic, which runs `a[$(cmd)]`.
+  if (/\$\{[^}]*[$[]/.test(raw)) {
+    return true;
+  }
   const parsed = readShell(raw);
   if (!parsed || parsed.redirects.some((t) => !SAFE_REDIRECT_TARGET_RE.test(t))) {
     return true;
@@ -648,11 +643,6 @@ export function runsWorkspaceCode(step: StepSpec, context: RunContext = {}): boo
     } else if (!NON_EXECUTING_COMMANDS.has(name)) {
       return true;
     } else if (name === 'export' && args.some((x) => LOADER_ENV_RE.test(x))) {
-      return true;
-    } else if (name === 'printf' && args.includes('-v')) {
-      return true;
-    } else if (name === '[[' && args.some((x) => /^-(?:eq|ne|lt|le|gt|ge)$/.test(x))) {
-      // `[[ … -eq … ]]` evaluates its operands as arithmetic, which runs `a[$(cmd)]`.
       return true;
     } else if (name === 'cd' || name === 'pushd' || name === 'popd') {
       movedDir = true;
@@ -682,6 +672,25 @@ export function secretRefPaths(job: JobSpec): Map<string, (string | number)[]> {
   };
   walk(job, []);
   return found;
+}
+
+// Commands that run the checked-out project's own code or build files.
+const BUILD_TOOL_RE =
+  /^(?:\.{1,2}\/\S+|npm|npx|yarn|pnpm|bun|node|make|gradle|mvn|python3?|pip3?|poetry|pytest|tox|go|cargo|bundle|rake|ruby|dotnet|composer|php|sh|bash)$/;
+
+/** A step that plainly runs project code: a local action, or a build/test tool command. */
+export function runsBuildTooling(step: StepSpec): boolean {
+  if (typeof step.uses === 'string') {
+    return step.uses.startsWith('./');
+  }
+  if (typeof step.run !== 'string') {
+    return false;
+  }
+  const parsed = readShell(step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'X'));
+  return (parsed?.commands ?? []).some((words) => {
+    const name = words.find((w) => !SHELL_KEYWORDS.has(w) && !ASSIGNMENT_RE.test(w));
+    return name !== undefined && BUILD_TOOL_RE.test(name);
+  });
 }
 
 /** Index of the dependency-install step (prefers an explicit install command over setup-node). */

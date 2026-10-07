@@ -1588,3 +1588,18 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   post-checkout comment/notify step can still be the cited line. Steps before the checkout are
   not scanned for GITHUB_PATH/GITHUB_ENV writes; that predates this PR.
 - Rescan of the 26 failing repos: same outcome.
+
+## 2026-10-06 — 0096 fourth review: shrink instead of patch
+
+- Four review rounds each found a new way a "runs nothing" guess could hide code, so the allowlist
+  is now minimal: echo, exit, true/false, set, export (no loader variables), mkdir, rm, ls, pwd,
+  date, sleep, cd/pushd/popd, plus the reviewed git subcommands. Readers and testers (cat, grep,
+  jq, test, [, [[, printf) are out: each has an argument form that evaluates or loads code.
+- Fixed (medium): `fromJSON(…).number/.base.ref` was treated as inert, but in a workflow_run job
+  the JSON can come from a PR-built artifact. Removed; any fromJSON expression counts as executing.
+- Fixed (low): `${A:$T}` / `${arr[$T]}` (arithmetic evaluation) count as executing.
+- Decoupled the cited line from the inert check: evidence prefers the first step that plainly
+  runs build tooling (`./…`, npm, make, gradle, python, …) and falls back to the first step that
+  cannot be shown to run nothing. A stricter allowlist can then only keep a fail; it no longer
+  moves the citation back to a git step.
+- Rescan of the 26 failing repos: same outcome, same cited lines.

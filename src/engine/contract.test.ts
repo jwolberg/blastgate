@@ -655,6 +655,32 @@ describe('evidence names the executing step and the secret exposure (0096)', () 
     expect(f?.reason).toContain(`exposed at ${WF}:18`);
   });
 
+  it('cites the step that runs build tooling over an earlier step it cannot prove inert', () => {
+    const f = keyFinding(
+      fork([
+        '      - run: echo "${{ steps.meta.outputs.label }}"', // 9
+        '      - run: npm test', // 10
+        '        env:', // 11
+        '          DEPLOY: ${{ secrets.DEPLOY_KEY }}', // 12
+      ]),
+    );
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(10);
+  });
+
+  it('falls back to the first step it cannot prove inert when nothing runs build tooling', () => {
+    const f = keyFinding(
+      fork([
+        '      - run: echo "${{ steps.meta.outputs.label }}"', // 9
+        '      - uses: some/lint-action@v1', // 10
+        '        env:', // 11
+        '          K: ${{ secrets.DEPLOY_KEY }}', // 12
+      ]),
+    );
+    expect(f?.tier).toBe('fail');
+    expect(f?.evidence?.line).toBe(9);
+  });
+
   it('a job whose steps after the checkout only run git and builtins is not a fail', () => {
     const f = keyFinding(
       fork([
