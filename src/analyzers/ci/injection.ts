@@ -232,8 +232,12 @@ const ASSIGNMENT_BEFORE =
  * leading `--flag`.
  */
 export function splicesFileIntoCommand(run: string): boolean {
-  let inDouble = false;
   let inSingle = false;
+  // 0097: quoting nests. Inside `"$( … )"` the substitution starts a fresh context, so its
+  // own quotes (e.g. a sed expression's `"`) must not toggle the outer double quote.
+  // 'dq' = inside double quotes; 'sub' = inside `$(`; 'paren' = a bare `(` inside a sub.
+  const stack: ('dq' | 'sub' | 'paren')[] = [];
+  const inDouble = (): boolean => stack[stack.length - 1] === 'dq';
   let heredocs: { word: string; stripTabs: boolean }[] = [];
   for (let i = 0; i < run.length; i++) {
     const c = run[i];
@@ -245,7 +249,7 @@ export function splicesFileIntoCommand(run: string): boolean {
       i++; // skip the escaped character (incl. a line continuation)
       continue;
     }
-    if (!inDouble && c === '#' && (i === 0 || /[\s;&|(]/.test(run[i - 1] ?? ''))) {
+    if (!inDouble() && c === '#' && (i === 0 || /[\s;&|(]/.test(run[i - 1] ?? ''))) {
       // A comment runs to end of line; its quotes and substitutions are inert.
       const nl = run.indexOf('\n', i);
       if (nl < 0) {
@@ -254,7 +258,7 @@ export function splicesFileIntoCommand(run: string): boolean {
       i = nl - 1;
       continue;
     }
-    if (!inDouble && run.startsWith('$((', i)) {
+    if (!inDouble() && run.startsWith('$((', i)) {
       // Arithmetic expansion: `<<` in here is a shift, never a heredoc.
       let depth = 0;
       let j = i + 1;
@@ -273,11 +277,11 @@ export function splicesFileIntoCommand(run: string): boolean {
       i = j;
       continue;
     }
-    if (!inDouble && run.startsWith('<<<', i)) {
+    if (!inDouble() && run.startsWith('<<<', i)) {
       i += 2; // a here-string, not a heredoc
       continue;
     }
-    if (!inDouble && c === '<' && run[i + 1] === '<') {
+    if (!inDouble() && c === '<' && run[i + 1] === '<') {
       const m = /^<<(-?)\s*(['"]?)([A-Za-z_]\w*)\2/.exec(run.slice(i));
       if (m) {
         heredocs.push({ word: m[3]!, stripTabs: m[1] === '-' });
@@ -285,7 +289,7 @@ export function splicesFileIntoCommand(run: string): boolean {
         continue;
       }
     }
-    if (c === '\n' && !inDouble && heredocs.length > 0) {
+    if (c === '\n' && !inDouble() && heredocs.length > 0) {
       // Skip each pending heredoc body: it is stdin text, never command arguments.
       let pos = i + 1;
       for (const h of heredocs) {
@@ -302,19 +306,31 @@ export function splicesFileIntoCommand(run: string): boolean {
       i = pos - 1;
       continue;
     }
-    if (c === "'" && !inDouble) {
+    if (c === "'" && !inDouble()) {
       inSingle = true;
     } else if (c === '"') {
-      inDouble = !inDouble;
-    } else if (!inDouble && c === '$' && FILE_SUBSTITUTION_AT.test(run.slice(i))) {
-      const before = run.slice(run.lastIndexOf('\n', i - 1) + 1, i);
-      if (!ASSIGNMENT_BEFORE.test(before)) {
-        return true;
+      if (inDouble()) {
+        stack.pop();
+      } else {
+        stack.push('dq');
       }
+    } else if (c === '$' && run[i + 1] === '(') {
+      if (!inDouble() && FILE_SUBSTITUTION_AT.test(run.slice(i))) {
+        const before = run.slice(run.lastIndexOf('\n', i - 1) + 1, i);
+        if (!ASSIGNMENT_BEFORE.test(before)) {
+          return true;
+        }
+      }
+      stack.push('sub');
+      i++;
+    } else if (c === '(' && !inDouble() && stack.length > 0) {
+      stack.push('paren');
+    } else if (c === ')' && !inDouble() && stack.length > 0) {
+      stack.pop();
     }
   }
   // Quotes left open mean the scan lost track of the script: fail closed to a plain match.
-  return inSingle || inDouble ? /\$\(\s*(?:<|cat\s)/.test(run) : false;
+  return inSingle || stack.length > 0 ? /\$\(\s*(?:<|cat\s)/.test(run) : false;
 }
 
 /** A `run:` step that splices a file's contents into a command (0042, sharpened by 0054). */
