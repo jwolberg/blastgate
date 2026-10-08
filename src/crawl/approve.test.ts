@@ -140,8 +140,8 @@ describe('crawl skeptic-reset between the two skeptic stages (0100)', () => {
     const doubtful = withReasoning('a.md', 'doubtful');
     const passed = withReasoning('b.md', 'could-not-refute');
     const refuted = withReasoning('c.md', 'refuted');
-    const r = resetSkeptic(join(dir, 'packets'));
-    expect(r).toEqual({ reset: ['a.md', 'b.md'], kept: ['c.md'] });
+    const r = resetSkeptic(join(dir, 'packets'), config());
+    expect(r).toEqual({ reset: ['a.md', 'b.md'], kept: ['c.md'], decided: [] });
     for (const p of [doubtful, passed]) {
       const md = readFileSync(p, 'utf8');
       expect(md).toMatch(/^skeptic: pending$/m);
@@ -156,11 +156,45 @@ describe('crawl skeptic-reset between the two skeptic stages (0100)', () => {
     const p = withReasoning('a.md', 'doubtful');
     writeFileSync(p, readFileSync(p, 'utf8').replace('verdict: pending', 'verdict: confirmed'));
     const before = readFileSync(p, 'utf8');
-    resetSkeptic(join(dir, 'packets'));
+    resetSkeptic(join(dir, 'packets'), config());
     const after = readFileSync(p, 'utf8');
     expect(after).toMatch(/^verdict: confirmed$/m);
     expect(after.slice(after.indexOf('## Findings'))).toBe(
       before.slice(before.indexOf('## Findings')),
     );
+  });
+
+  it('leaves a packet from an earlier batch alone once its findings are approved (0111)', () => {
+    const fresh = withReasoning('a.md', 'doubtful');
+    const decided = withReasoning('b.md', 'could-not-refute');
+    const decidedMd = readFileSync(decided, 'utf8').replace('acme/widgets', 'acme/gadgets');
+    writeFileSync(decided, decidedMd.replaceAll('acme/widgets', 'acme/gadgets'));
+    const before = readFileSync(decided, 'utf8');
+    const cfg = config({
+      approved: [{ repo: 'acme/gadgets', sha: SHA, findingId: F.id, skeptic: 'could-not-refute' }],
+    });
+    const r = resetSkeptic(join(dir, 'packets'), cfg);
+    expect(r).toEqual({ reset: ['a.md'], kept: [], decided: ['b.md'] });
+    expect(readFileSync(decided, 'utf8')).toBe(before);
+    expect(readFileSync(fresh, 'utf8')).toMatch(/^skeptic: pending$/m);
+  });
+
+  it('still resets a packet when only some of its findings are approved (0111)', () => {
+    const G = { ...F, id: `${F.id}-second` };
+    packet('a.md', { skeptic: 'doubtful', findings: [F, G] });
+    const cfg = config({
+      approved: [{ repo: 'acme/widgets', sha: SHA, findingId: F.id, skeptic: 'doubtful' }],
+    });
+    expect(resetSkeptic(join(dir, 'packets'), cfg).reset).toEqual(['a.md']);
+  });
+
+  it('treats an approval at another commit as undecided: a moved HEAD is a new review (0111)', () => {
+    packet('a.md', { skeptic: 'doubtful' });
+    const cfg = config({
+      approved: [
+        { repo: 'acme/widgets', sha: 'b'.repeat(40), findingId: F.id, skeptic: 'doubtful' },
+      ],
+    });
+    expect(resetSkeptic(join(dir, 'packets'), cfg).reset).toEqual(['a.md']);
   });
 });

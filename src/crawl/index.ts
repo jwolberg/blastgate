@@ -766,7 +766,7 @@ const USAGE = `usage:
   crawl publish --config <path> --site <dir> --remote <url>
   crawl review  --ledger <path> --out <dir outside this repo> [--repo <owner/name>]
   crawl approve --packets <dir> --config <path>
-  crawl skeptic-reset --packets <dir>`;
+  crawl skeptic-reset --packets <dir> --config <path>`;
 
 const REGISTRY_AUTHOR = {
   name: 'Blastgate Registry',
@@ -843,8 +843,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
     );
   }
   if (cmd === 'skeptic-reset') {
-    const r = resetSkeptic(need(values.packets, 'packets'));
-    log(`skeptic-reset: ${r.reset.length} reset for stage two, ${r.kept.length} refuted kept`);
+    const r = resetSkeptic(need(values.packets, 'packets'), need(values.config, 'config'));
+    log(
+      `skeptic-reset: ${r.reset.length} reset for stage two, ${r.kept.length} refuted kept, ${r.decided.length} already approved kept`,
+    );
     return 0;
   }
   if (cmd === 'approve') {
