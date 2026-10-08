@@ -128,18 +128,33 @@ export function runApprove(args: ApproveArgs, deps: { log: (l: string) => void }
  * Between the two skeptic stages (0100): stage one (cheap model) may only remove fails, so every
  * packet it did not refute goes to stage two. Reset those to a blank skeptic slot first, so stage
  * two never reads stage one's reasoning and cannot simply agree with it. Refuted packets are kept
- * as they are. Verdicts, findings, source and the approval block are never touched.
+ * as they are. A packet from an earlier batch whose every finding is already approved at its
+ * commit in `config` is decided and left alone (0111): resetting it would re-judge a report that
+ * may already be sent. Verdicts, findings, source and the approval block are never touched.
  */
-export function resetSkeptic(packets: string): { reset: string[]; kept: string[] } {
-  const out = { reset: [] as string[], kept: [] as string[] };
+export function resetSkeptic(
+  packets: string,
+  configPath: string,
+): { reset: string[]; kept: string[]; decided: string[] } {
+  const approved = new Set(
+    parseCrawlConfig(readFileSync(configPath, 'utf8')).approved.map((a) =>
+      JSON.stringify([a.repo, a.sha, a.findingId]),
+    ),
+  );
+  const out = { reset: [] as string[], kept: [] as string[], decided: [] as string[] };
   const files = readdirSync(packets)
     .filter((f) => f.endsWith('.md') && !NOT_PACKETS.has(f))
     .sort();
   for (const file of files) {
     const p = join(packets, file);
     const md = readFileSync(p, 'utf8');
-    if (front(md).skeptic === 'refuted') {
+    const fm = front(md);
+    if (fm.skeptic === 'refuted') {
       out.kept.push(file);
+      continue;
+    }
+    if (isDecided(md, approved)) {
+      out.decided.push(file);
       continue;
     }
     const next = md
@@ -149,4 +164,27 @@ export function resetSkeptic(packets: string): { reset: string[]; kept: string[]
     out.reset.push(file);
   }
   return out;
+}
+
+/** Every entry of the packet's approval block is already approved at the packet's commit. */
+function isDecided(md: string, approved: Set<string>): boolean {
+  const fm = front(md);
+  let entries: unknown;
+  try {
+    entries = approvalBlock(md);
+  } catch {
+    return false;
+  }
+  return (
+    Array.isArray(entries) &&
+    entries.length > 0 &&
+    entries.every((e) => {
+      const r = e as Record<string, unknown>;
+      return (
+        r.repo === fm.repo &&
+        r.sha === fm.sha &&
+        approved.has(JSON.stringify([r.repo, r.sha, r.findingId]))
+      );
+    })
+  );
 }

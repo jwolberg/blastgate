@@ -1618,3 +1618,15 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Rescanned all 26 repos the crawler marks fail, at their ledger commits: the only fails
   dropped were the reviewed artifact false alarm, one push-only workflow_run job, and one job
   that only runs git after the checkout. The other repos' fails are unchanged.
+## 2026-10-08 — 0111: skeptic-reset leaves decided packets alone
+
+- Chose "decided = every approval-block entry is already approved at the packet's commit in
+  config.json" over a new `skeptic_stage` front-matter field. The approvals are the system of
+  record for what was decided, and the skeptic agents would otherwise have to write the stage
+  themselves.
+- `--config` is now required for `skeptic-reset` (breaking for the CLI only; the runbook is
+  updated). Making it optional would let the original bug come back when the flag is forgotten.
+- Partial approval (some findings approved) or an approval at another commit counts as undecided
+  and is reset, so a moved HEAD still gets a fresh review.
+- Checked on a copy of the 2026-10-08 ops packets: 0 reset, 28 refuted kept, 21 approved kept,
+  no file changed.

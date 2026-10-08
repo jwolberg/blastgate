@@ -25,9 +25,11 @@ From the ops repo checkout with fresh packets in `reviews/` (`crawl review`), in
 
 1. **Stage one, cheap filter (Sonnet).** One fresh-context subagent per packet whose skeptic is
    pending, `model: sonnet`, given only the packet path and the prompt in [2].
-2. **Reset.** `node dist/crawl/index.js skeptic-reset --packets reviews`. Every packet stage one
-   did not refute goes back to a blank skeptic slot, so stage two never sees stage one's
-   reasoning. Refuted packets stay refuted: stage one may only remove.
+2. **Reset.** `node dist/crawl/index.js skeptic-reset --packets reviews --config config.json`.
+   Every packet stage one did not refute goes back to a blank skeptic slot, so stage two never
+   sees stage one's reasoning. Refuted packets stay refuted: stage one may only remove. Packets
+   from earlier batches whose findings are all approved at that commit in `config.json` are
+   decided and left alone (0111).
 3. **Stage two, decider (Opus).** One fresh-context subagent per packet whose skeptic is pending,
    on the top model, same prompt. Its verdict is final.
 4. Rerun `crawl review` to re-sort the index. Optionally set `verdict: refuted` on any packet
