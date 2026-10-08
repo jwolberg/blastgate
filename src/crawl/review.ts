@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import type { Finding } from '../findings/finding';
 import { composeReport } from './disclose';
 import { parseLedger, type RepoScan } from './ledger';
-import { archetypeOf, childEnv, scanRepos as defaultScanRepos } from './scan';
+import { archetypeOf, childEnv, isGitLabOnly, scanRepos as defaultScanRepos } from './scan';
 import { buildRequestBody } from './submit';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -354,7 +354,7 @@ export async function runReview(args: ReviewArgs, deps: ReviewDeps): Promise<Rev
       const name = repo.replace('/', '__');
       const all = JSON.parse(readFileSync(join(work, 'eval', `${name}.json`), 'utf8')) as Finding[];
       const groups = new Map<string, Finding[]>();
-      for (const f of all.filter((x) => x.tier === 'fail')) {
+      for (const f of all.filter((x) => x.tier === 'fail' && !isGitLabOnly(x.id))) {
         const a = archetypeOf(f);
         groups.set(a, [...(groups.get(a) ?? []), f]);
       }

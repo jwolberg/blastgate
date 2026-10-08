@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { runEngine } from '../../engine/gate';
 import { analyzeCi } from './index';
 import {
   isPinnedAction,
@@ -740,5 +741,67 @@ describe('runsWorkspaceCode: minimal allowlist (0096 fourth review)', () => {
 
   it('a literal substring offset stays inert', () => {
     expect(runs('echo "short ${SHA:0:8}"')).toBe(false);
+  });
+});
+
+describe('local action vs a PR checkout in a side directory (0113)', () => {
+  const wf = (prPath: string | undefined, actionStep: string[]): string =>
+    [
+      'on:',
+      '  pull_request_target:',
+      'jobs:',
+      '  garden:',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '      - uses: actions/checkout@v4',
+      '        with:',
+      '          ref: ${{ github.event.pull_request.head.sha }}',
+      '          repository: ${{ github.event.pull_request.head.repo.full_name }}',
+      ...(prPath === undefined ? [] : [`          path: ${prPath}`]),
+      ...actionStep.map((l) => `      ${l}`),
+    ].join('\n');
+  const localAction = (uses: string): string[] => [
+    `- uses: ${uses}`,
+    '  env:',
+    '    PR_WORKSPACE: ${{ github.workspace }}/pr-checkout',
+    '  with:',
+    '    token: ${{ secrets.BOT_TOKEN }}',
+  ];
+  // Fail means a step was shown to run the fork's code while the secret is in the job.
+  const forkPr = (content: string): boolean =>
+    runEngine({ ci: { workflows: [{ path: '.github/workflows/w.yml', content }] } }).verdict ===
+    'fail';
+
+  it('a ./ action resolves into the base checkout when the PR is checked out under path:', () => {
+    expect(forkPr(wf('./pr-checkout', localAction('./tools/gardening')))).toBe(false);
+    expect(forkPr(wf('pr-checkout', localAction('./tools/gardening')))).toBe(false);
+  });
+
+  it('a ./ action IS fork code when the PR is checked out at the workspace root', () => {
+    expect(forkPr(wf(undefined, localAction('./tools/gardening')))).toBe(true);
+    expect(forkPr(wf('.', localAction('./tools/gardening')))).toBe(true);
+    expect(forkPr(wf('./', localAction('./tools/gardening')))).toBe(true);
+  });
+
+  it('a ./ action inside the PR checkout directory IS fork code', () => {
+    expect(forkPr(wf('pr-checkout', localAction('./pr-checkout/tools/gardening')))).toBe(true);
+    expect(forkPr(wf('./pr-checkout', localAction('./pr-checkout')))).toBe(true);
+  });
+
+  it('a path: built from an expression fails closed as fork code', () => {
+    expect(forkPr(wf('${{ inputs.dir }}', localAction('./tools/gardening')))).toBe(true);
+  });
+
+  it('a run: step that builds in the PR directory is still fork code', () => {
+    expect(
+      forkPr(
+        wf('pr-checkout', [
+          '- run: npm ci',
+          '  working-directory: pr-checkout',
+          '  env:',
+          '    TOKEN: ${{ secrets.BOT_TOKEN }}',
+        ]),
+      ),
+    ).toBe(true);
   });
 });

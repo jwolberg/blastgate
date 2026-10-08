@@ -132,9 +132,20 @@ export function archetypeOf(f: { entry?: { kind?: unknown }; sink?: { kind?: unk
   return `${e}->${s}`;
 }
 
+/**
+ * The crawler only covers GitHub-hosted repos, where a committed `.gitlab-ci.yml` never runs
+ * (0113). Its findings (GitLab merge-request entries) are kept as a warn, never a reportable
+ * fail and never a pass, since the repo may be mirrored to GitLab.
+ */
+export function isGitLabOnly(findingId: string): boolean {
+  return findingId.startsWith('entry:fork-mr:');
+}
+
 interface Parsed {
   tiers: { fail: boolean; warn: boolean; any: boolean };
   failFindings: FailFinding[];
+  /** Fail-tier findings kept as a warn because they only run on GitLab (0113). */
+  gitlabOnly: number;
 }
 
 /** Parse a per-repo findings file; null if it is not a JSON array of objects. */
@@ -148,18 +159,23 @@ function parseFindings(text: string): Parsed | null {
   if (!Array.isArray(data)) return null;
   const failFindings: FailFinding[] = [];
   let warn = false;
+  let gitlabOnly = 0;
   for (const f of data) {
     if (typeof f !== 'object' || f === null) return null;
     const o = f as { id?: unknown; tier?: unknown; entry?: never; sink?: never };
     if (o.tier === 'fail') {
       if (typeof o.id !== 'string' || o.id === '') return null;
-      failFindings.push({ id: o.id, archetype: archetypeOf(o) });
+      if (isGitLabOnly(o.id)) {
+        gitlabOnly++;
+        warn = true;
+      } else failFindings.push({ id: o.id, archetype: archetypeOf(o) });
     } else if (o.tier === 'warn') warn = true;
     else return null;
   }
   return {
     tiers: { fail: failFindings.length > 0, warn, any: data.length > 0 },
     failFindings,
+    gitlabOnly,
   };
 }
 
@@ -169,7 +185,11 @@ export function deriveVerdict(
   parsed: Parsed | null,
 ): { verdict: ScanVerdict; failFindings: FailFinding[] } {
   if (parsed?.tiers.fail) return { verdict: 'fail', failFindings: parsed.failFindings };
-  if (parsed === null || exitCode !== 0) return { verdict: 'unknown', failFindings: [] };
+  // The CLI exits 1 on any fail; when every fail was a GitLab-only one, that exit is explained.
+  const explained = exitCode === 1 && (parsed?.gitlabOnly ?? 0) > 0;
+  if (parsed === null || (exitCode !== 0 && !explained)) {
+    return { verdict: 'unknown', failFindings: [] };
+  }
   return { verdict: parsed.tiers.warn ? 'warn' : 'pass', failFindings: [] };
 }
 
