@@ -16,6 +16,7 @@ import type { Finding } from '../findings/finding';
 import { parseCrawlConfig } from './config';
 import { composeReport } from './disclose';
 import { createDisclosure, emptyLedger, serializeLedger, type Ledger } from './ledger';
+import type { RepoScan } from './ledger';
 import { main } from './index';
 import { cloneReader, renderPacket, runReview, type PacketInput } from './review';
 import { buildRequestBody } from './submit';
@@ -355,5 +356,80 @@ describe('crawl review CLI (0093)', () => {
     await expect(
       main(['review', '--ledger', join(dir, 'ledger.json'), '--out', join(HERE, 'nope')], {}),
     ).rejects.toThrow(/public/);
+  });
+});
+
+describe('runReview retries unscannable repos once, serially (0112)', () => {
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'bg-review-retry-'));
+  });
+  const scan = (verdict: RepoScan['verdict']): RepoScan => ({
+    fullSha: SHA,
+    engineVersion: '9.9.9',
+    verdict,
+    scannedAt: NOW,
+    failFindings: [],
+  });
+  const setup = (...repos: string[]): string => {
+    let ledger = emptyLedger();
+    for (const r of repos) ledger = held(ledger, r, [`${r}=>id`]);
+    writeFileSync(p('ledger.json'), serializeLedger(ledger));
+    return p('ledger.json');
+  };
+
+  it('a repo whose clone fails under the full pass is retried alone and then judged', async () => {
+    const calls: Array<{ repos: string[]; jobs: string | undefined }> = [];
+    const r = await runReview(
+      { ledger: setup('acme/big', 'acme/small'), out: p('packets') },
+      {
+        log: () => {},
+        scanRepos: async (repos, opts) => {
+          calls.push({ repos: [...repos], jobs: opts.env?.JOBS });
+          return Object.fromEntries(
+            repos.map((x) => [
+              x,
+              scan(calls.length === 1 && x === 'acme/big' ? 'clone-failed' : 'pass'),
+            ]),
+          );
+        },
+      },
+    );
+    expect(calls).toEqual([
+      { repos: ['acme/big', 'acme/small'], jobs: undefined },
+      { repos: ['acme/big'], jobs: '1' },
+    ]);
+    expect(r).toEqual({ packets: 0, resolved: ['acme/big', 'acme/small'], unscannable: [] });
+  });
+
+  it('a repo that still cannot be scanned after the one retry is unscannable, never a pass', async () => {
+    let n = 0;
+    const r = await runReview(
+      { ledger: setup('acme/gone'), out: p('packets') },
+      {
+        log: () => {},
+        scanRepos: async (repos) => {
+          n++;
+          return Object.fromEntries(repos.map((x) => [x, scan('unknown')]));
+        },
+      },
+    );
+    expect(n).toBe(2);
+    expect(r.unscannable).toEqual(['acme/gone']);
+    expect(r.resolved).toEqual([]);
+  });
+
+  it('does not rescan when everything scanned the first time', async () => {
+    let n = 0;
+    await runReview(
+      { ledger: setup('acme/ok'), out: p('packets') },
+      {
+        log: () => {},
+        scanRepos: async (repos) => {
+          n++;
+          return Object.fromEntries(repos.map((x) => [x, scan('pass')]));
+        },
+      },
+    );
+    expect(n).toBe(1);
   });
 });

@@ -1630,3 +1630,15 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
   and is reset, so a moved HEAD still gets a fresh review.
 - Checked on a copy of the 2026-10-08 ops packets: 0 reset, 28 refuted kept, 21 approved kept,
   no file changed.
+## 2026-10-08 — 0112: crawl review retries unscannable repos once
+
+- Deviation from the ticket's diagnosis: it blamed the per-clone timeout, but the review ran
+  on stock macOS with no `timeout`/`gtimeout`, where eval-scan.sh runs clones unbounded. The
+  failure was a clone that stayed incomplete after eval-scan's own re-clone, during the
+  6-way parallel pass. Same remedy either way.
+- Chose a single retry pass in `runReview` (only the failed repos, `JOBS=1`) over changing
+  eval-scan.sh, so the crawler's scan job keeps its current behavior. A repo that fails the
+  retry is still unscannable, never a pass.
+- Not done: separating "timeout" from "clone error" in the log. eval-scan.sh only reports
+  `clone-failed`, and the clone's stderr lives in the deleted temp dir. Revisit if retries
+  are not enough.

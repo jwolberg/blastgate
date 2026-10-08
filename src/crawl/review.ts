@@ -25,7 +25,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Finding } from '../findings/finding';
 import { composeReport } from './disclose';
-import { parseLedger } from './ledger';
+import { parseLedger, type RepoScan } from './ledger';
 import { archetypeOf, childEnv, scanRepos as defaultScanRepos } from './scan';
 import { buildRequestBody } from './submit';
 
@@ -304,6 +304,9 @@ function frontField(md: string, key: string): string | undefined {
   return new RegExp(`^${key}: (.*)$`, 'm').exec(md.split('\n---\n')[0] ?? '')?.[1];
 }
 
+const isUnscannable = (s: RepoScan | undefined): boolean =>
+  !s || s.verdict === 'clone-failed' || s.verdict === 'unknown';
+
 export async function runReview(args: ReviewArgs, deps: ReviewDeps): Promise<ReviewSummary> {
   const out = resolve(args.out);
   if (out === ROOT || out.startsWith(ROOT + sep)) {
@@ -323,15 +326,24 @@ export async function runReview(args: ReviewArgs, deps: ReviewDeps): Promise<Rev
   const summary: ReviewSummary = { packets: 0, resolved: [], unscannable: [] };
   const rows: Array<{ skeptic: string; line: string }> = [];
   try {
-    const scans = await (deps.scanRepos ?? defaultScanRepos)(repos, {
-      workdir: join(work, 'clones'),
-      outdir: join(work, 'eval'),
-      env: childEnv(deps.env ?? {}),
-    });
+    const runScan = deps.scanRepos ?? defaultScanRepos;
+    const opts = { workdir: join(work, 'clones'), outdir: join(work, 'eval') };
+    const scans = await runScan(repos, { ...opts, env: childEnv(deps.env ?? {}) });
+    // 0112: a clone that fails during the parallel pass is often transient (a large repo
+    // losing a race for the network). Retry those once, one at a time, before calling them
+    // unscannable. A repo that still fails stays unscannable, never a pass.
+    const failed = repos.filter((r) => isUnscannable(scans[r]));
+    if (failed.length > 0) {
+      deps.log(`review: retrying ${failed.length} unscannable repo(s) one at a time`);
+      Object.assign(
+        scans,
+        await runScan(failed, { ...opts, env: childEnv({ ...(deps.env ?? {}), JOBS: '1' }) }),
+      );
+    }
     mkdirSync(out, { recursive: true });
     for (const repo of repos) {
       const scan = scans[repo];
-      if (!scan || scan.verdict === 'clone-failed' || scan.verdict === 'unknown') {
+      if (!scan || isUnscannable(scan)) {
         summary.unscannable.push(repo);
         continue;
       }
