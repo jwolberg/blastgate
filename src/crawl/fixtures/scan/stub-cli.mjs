@@ -34,6 +34,18 @@ switch (mode) {
   case 'fail':
     out([finding('warn', 'e1=>s1'), finding('fail', 'e2=>s2')]);
     break;
+  // 0113: a GitLab merge-request entry in a GitHub repo, as the real CLI exits on a fail.
+  case 'gitlab-fail':
+    out([finding('fail', 'entry:fork-mr:.gitlab-ci.yml#lint=>sink:secret:TOKEN')]);
+    process.exit(1);
+    break;
+  case 'gitlab-and-github':
+    out([
+      finding('fail', 'entry:fork-mr:.gitlab-ci.yml#lint=>sink:secret:TOKEN'),
+      finding('fail', 'e2=>s2'),
+    ]);
+    process.exit(1);
+    break;
   case 'exit1':
     out([finding('warn', 'e1=>s1')]);
     process.exit(1);
