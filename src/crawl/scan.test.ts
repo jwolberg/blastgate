@@ -40,7 +40,17 @@ const env = (): NodeJS.ProcessEnv => ({
   JOBS: '1',
 });
 
-const MODES = ['pass', 'warn', 'fail', 'exit1', 'exit1-clean', 'exit2', 'garbage'];
+const MODES = [
+  'pass',
+  'warn',
+  'fail',
+  'exit1',
+  'exit1-clean',
+  'exit2',
+  'garbage',
+  'gitlab-fail',
+  'gitlab-and-github',
+];
 
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), 'crawl-scan-'));
@@ -69,6 +79,18 @@ describe('scanRepos — KTD3 verdict table', () => {
     ['garbage', 'unknown'], // unparseable JSON
   ])('%s -> %s', (mode, verdict) => {
     expect(results[`acme/${mode}`]?.verdict).toBe(verdict);
+  });
+
+  it('a GitLab-CI-only fail in a GitHub repo is a warn, not a reportable fail (0113)', () => {
+    expect(results['acme/gitlab-fail']?.verdict).toBe('warn');
+    expect(results['acme/gitlab-fail']?.failFindings).toEqual([]);
+  });
+
+  it('a GitHub fail next to a GitLab one keeps only the GitHub finding (0113)', () => {
+    expect(results['acme/gitlab-and-github']?.verdict).toBe('fail');
+    expect(results['acme/gitlab-and-github']?.failFindings).toEqual([
+      { id: 'e2=>s2', archetype: 'pull_request_target->agent' },
+    ]);
   });
 
   it('records a clone failure as clone-failed, never pass', () => {

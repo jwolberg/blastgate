@@ -227,6 +227,18 @@ describe('runScan', () => {
     expect(raw).not.toContain('attacker.example');
   });
 
+  it('a GitLab-only finding never rides along in a GitHub repo report (0113)', async () => {
+    makeRemote('acme/fail', 'fail-with-gitlab');
+    makeRemote('acme/pass', 'pass');
+    const res = await runScan(scanArgs(), localScanDeps({ scanRepos, reverify }));
+    expect(res.scans['acme/fail']?.verdict).toBe('fail');
+    expect(res.candidates).toHaveLength(1);
+    const ids = res.candidates[0]?.findingIds ?? [];
+    expect(ids).toHaveLength(1);
+    expect(ids.some((id) => id.startsWith('entry:fork-mr:'))).toBe(false);
+    expect(ids).toEqual(res.currentFails['acme/fail']);
+  });
+
   describe('resilient, incremental discovery (0083)', () => {
     const CLAUDE_ACTION = 'anthropics/claude-code-action';
     const dstate = (over: Partial<DiscoveryState['sweep']> = {}): DiscoveryState => ({
