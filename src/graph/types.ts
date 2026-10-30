@@ -12,6 +12,8 @@ export type NodeKind = 'entry' | 'dependency' | 'ci-job' | 'agent-grant' | 'sink
  * hook) that fires without any prompt injection, surfaced as a scope-review advisory
  * rather than an injectable surface (U18). `ci-divergent` is an install/build script
  * engineered to behave differently under observation to evade CI (0021).
+ * `open-time-exec` is committed editor/agent config that runs a command as the developer
+ * the moment a clone is opened — the repo itself is the attacker (`--pre-open`, 0114).
  */
 export type EntryKind =
   | 'new-dependency'
@@ -21,7 +23,8 @@ export type EntryKind =
   | 'privileged-hook'
   | 'untrusted-text-injection'
   | 'agent-config-change'
-  | 'gate-tamper';
+  | 'gate-tamper'
+  | 'open-time-exec';
 
 /** A sensitive thing a reachable path can arrive at. */
 export type SinkKind = 'secret' | 'credential' | 'privileged-capability';
@@ -52,6 +55,19 @@ export interface EntryNode {
   evidence?: SourceEvidence;
   /** Rule-of-Two assessment of the agent step (`agent-ingested` entries only, 0059). */
   agent?: AgentAssessment;
+  /** What runs when the clone is opened (`open-time-exec` entries only, 0114). */
+  openExec?: OpenExecDetail;
+}
+
+/** A command committed editor/agent config runs on open (0114). */
+export interface OpenExecDetail {
+  /** What fires it, e.g. `Claude Code SessionStart hook`. */
+  trigger: string;
+  command: string;
+  /** Repo files the command runs. */
+  targets: string[];
+  /** Observations about the targets (size, one-line obfuscation). */
+  notes: string[];
 }
 
 /** Repository visibility (KTD5): supplied by the surface, never guessed. */

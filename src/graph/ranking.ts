@@ -28,6 +28,8 @@ const ENTRY_KIND_EXPOSURE: Record<EntryKind, number> = {
   'agent-config-change': 3,
   // A change that removes the gate's own enforcement — disabling the control itself.
   'gate-tamper': 3,
+  // Committed config that runs a command as the developer on open — the repo is the attacker (0114).
+  'open-time-exec': 3,
   'fork-pr': 3,
   'injectable-agent-surface': 2,
   'ci-divergent': 2,

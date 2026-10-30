@@ -14,6 +14,11 @@ import { GATE_CONFIG_PATHS } from '../analyzers/integrity/self-integrity';
 import { PYTHON_INSTALL_MANIFESTS } from '../analyzers/pydeps/index';
 import type { RubyGemsInputs } from '../analyzers/rubygems/index';
 import type { ExecInputs, ExecScript } from '../analyzers/exec/index';
+import {
+  OPEN_EXEC_CONFIG_PATHS,
+  openExecTargets,
+  type OpenExecInputs,
+} from '../analyzers/openexec/index';
 import { parseAcknowledgements } from '../engine/acknowledge';
 import { parsePolicy, ruleKey } from '../engine/policy';
 import type { EngineInputs, RepoVisibility } from '../engine/build';
@@ -88,10 +93,44 @@ export interface CollectOptions {
   now?: string;
   /** Repository visibility (KTD5); default `unknown`. */
   visibility?: RepoVisibility;
+  /**
+   * Audit a clone before opening it (0114): collect only the editor/agent config that runs
+   * commands on open. The repo is untrusted, so its own acks and policy are never read.
+   */
+  preOpen?: boolean;
+}
+
+/** Longest line length without splitting a multi-megabyte file into an array. */
+function longestLine(content: string): number {
+  let max = 0;
+  let start = 0;
+  for (let i = content.indexOf('\n'); i !== -1; i = content.indexOf('\n', start)) {
+    max = Math.max(max, i - start);
+    start = i + 1;
+  }
+  return Math.max(max, content.length - start);
+}
+
+/** The open-time execution layer (0114): configs at head, plus size facts for what they run. */
+function collectOpenExec(fs: RepoFs): OpenExecInputs {
+  const configs = OPEN_EXEC_CONFIG_PATHS.flatMap((path) => {
+    const content = fs.read(path);
+    return content === null ? [] : [{ path, content }];
+  });
+  const targets: OpenExecInputs['targets'] = {};
+  for (const path of openExecTargets(configs)) {
+    const content = fs.read(path);
+    targets[path] =
+      content === null ? null : { size: content.length, longestLine: longestLine(content) };
+  }
+  return { configs, targets };
 }
 
 /** Collect per-layer inputs from a repo checkout. Layers with no source files are omitted. */
 export function collectInputs(fs: RepoFs, opts: CollectOptions = {}): EngineInputs {
+  if (opts.preOpen) {
+    return { openExec: collectOpenExec(fs), visibility: opts.visibility ?? 'unknown' };
+  }
   const inputs: EngineInputs = {};
 
   const headLock = fs.read('package-lock.json');

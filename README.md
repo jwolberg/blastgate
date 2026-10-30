@@ -225,6 +225,7 @@ npx blastgate .                 # scan the current repo; exits non-zero on a fai
 npx blastgate . --base main     # add diff signals (new deps, .npmrc changes) vs a ref
 npx blastgate . --provenance    # opt-in npm provenance-regression check (needs --base)
 npx blastgate . --public        # the repo is public: Actions logs count as an agent exfil channel
+npx blastgate ./clone --pre-open   # before opening a clone you didn't write: fail if it runs code on open
 npx blastgate . --json          # emit the findings array as JSON (has each finding `id`)
 npx blastgate . --json --include-payloads   # also include each fail's example payload (local use only)
 npx blastgate . --format md      # human-readable markdown report (share it, or > report.md)
@@ -232,6 +233,17 @@ npx blastgate . --advisories     # opt-in CVE/advisory enrichment of reachable d
 npx blastgate . --record runs/   # append a run record for the trend dashboard
 npx blastgate report runs/ --out trend.html   # static HTML trend over recorded runs
 ```
+
+`--pre-open` answers a different question from the gate: is this clone safe to open in
+an editor or coding agent? It fails when committed config runs a command as you on open:
+a Claude Code or Gemini CLI hook or status line, a VS Code `folderOpen` task, or an MCP
+server (`.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`) that launches a file
+from the repo. This is the shape of the testmetest campaign, where 42 real repos ran a
+13 MB obfuscated `.github/init.js` on open. The finding cites the config line and the
+script, and notes oversized or one-line-obfuscated scripts. Only those configs are read.
+The repo's CI findings and its own `.blastgate/` exceptions are ignored, because the repo
+is the untrusted party. Run it on the fresh clone before opening it. Blastgate's plugin
+hooks cannot stop a `SessionStart` hook that fires when a session opens.
 
 A fail verdict (a proven exploit path to a secret or code-write credential) exits
 non-zero, and so does `unknown` (a layer could not be evaluated; never treated as a

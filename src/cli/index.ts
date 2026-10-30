@@ -98,6 +98,8 @@ function usage(): string {
     '  --json / --md      shorthands for --format json / --format md',
     '  --provenance       opt-in npm provenance-regression check (network; needs --base)',
     '  --advisories       opt-in CVE/advisory enrichment of reachable deps (network; OSV; never gates)',
+    '  --pre-open         audit a clone before opening it: fail if committed editor/agent config\n' +
+      '                     runs a command on open (Claude/Gemini hooks, MCP servers, VS Code tasks)',
     '  --public           the repo is public: its Actions logs count as an agent exfiltration channel',
     '  --record <dir>     append this run to a directory of records for `blastgate report`',
     "  --include-payloads  with --json, include each fail's illustrative exploit payload (local use only)",
@@ -141,6 +143,7 @@ export function scanCollectOptions(
     ...(base !== undefined ? { base } : {}),
     now,
     visibility: argv.includes('--public') ? 'public' : 'unknown',
+    ...(argv.includes('--pre-open') ? { preOpen: true } : {}),
   };
 }
 
