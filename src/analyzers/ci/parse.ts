@@ -368,21 +368,60 @@ export function checksOutUntrustedRef(job: JobSpec): boolean {
   return untrustedCheckoutStep(job) !== undefined;
 }
 
+/** Whether this step checks out the untrusted PR/workflow_run head (0041/0048). */
+function isUntrustedCheckout(step: StepSpec): boolean {
+  if (typeof step.uses === 'string' && /actions\/checkout/.test(step.uses)) {
+    if (checkoutFetchesUntrusted(step.with?.ref, step.with?.repository)) {
+      return true;
+    }
+  }
+  return (
+    typeof step.run === 'string' &&
+    PR_CHECKOUT_CMD_RE.test(step.run) &&
+    !exitsForForkBeforeFetch(step.run)
+  );
+}
+
 /** Index of the first step that checks out the untrusted PR/workflow_run head (0041/0048). */
 export function untrustedCheckoutStep(job: JobSpec): number | undefined {
-  const i = (job.steps ?? []).findIndex((step) => {
-    if (typeof step.uses === 'string' && /actions\/checkout/.test(step.uses)) {
-      if (checkoutFetchesUntrusted(step.with?.ref, step.with?.repository)) {
-        return true;
-      }
-    }
-    return (
-      typeof step.run === 'string' &&
-      PR_CHECKOUT_CMD_RE.test(step.run) &&
-      !exitsForForkBeforeFetch(step.run)
-    );
-  });
+  const i = (job.steps ?? []).findIndex(isUntrustedCheckout);
   return i >= 0 ? i : undefined;
+}
+
+/**
+ * A workspace-relative directory in normal form: '' is the workspace root. Undefined when the
+ * value is not a plain relative path (an expression, an absolute path, `..`), which callers
+ * treat as the root so they fail closed (0113).
+ */
+function workspaceDir(value: unknown): string | undefined {
+  if (value === undefined) return '';
+  if (typeof value !== 'string' || /\$\{\{|^\s*\/|(^|\/)\.\.(\/|$)/.test(value)) return undefined;
+  return value
+    .trim()
+    .replace(/^(\.\/)+/, '')
+    .replace(/\/+$/, '')
+    .replace(/^\.$/, '');
+}
+
+/**
+ * Whether a local `uses: ./dir` action at step `at` resolves into untrusted code (0113). A
+ * local action is read from the workspace, so it is fork code when an earlier untrusted
+ * checkout landed at the workspace root, or when the action lives under the directory the
+ * untrusted checkout was written to (`with: path:`). An action outside every untrusted
+ * checkout directory comes from the base checkout and runs base-repo code, even if it is
+ * handed the PR directory as data.
+ */
+function localActionIsUntrusted(steps: StepSpec[], at: number, uses: string): boolean {
+  const action = workspaceDir(uses);
+  for (let i = 0; i < at; i++) {
+    const step = steps[i]!;
+    if (!isUntrustedCheckout(step)) continue;
+    // `gh pr checkout` and friends check out into the working directory: the root.
+    const dir = typeof step.uses === 'string' ? workspaceDir(step.with?.path) : '';
+    if (dir === undefined || dir === '' || action === undefined) return true;
+    if (action === dir || action.startsWith(`${dir}/`)) return true;
+  }
+  return false;
 }
 
 /**
@@ -411,8 +450,15 @@ export function untrustedExecutionStep(
   };
   // Cite the step that plainly runs build tooling when there is one; otherwise the first step
   // that cannot be shown to run nothing (0096 review).
+  // A local `./` action outside every untrusted checkout directory is base-repo code (0113).
+  const baseAction = (i: number): boolean => {
+    const uses = steps[i]!.uses;
+    return (
+      typeof uses === 'string' && uses.startsWith('./') && !localActionIsUntrusted(steps, i, uses)
+    );
+  };
   for (let i = checkout + 1; i < steps.length; i++) {
-    if (runsBuildTooling(steps[i]!)) {
+    if (runsBuildTooling(steps[i]!) && !baseAction(i)) {
       return i;
     }
   }
@@ -420,7 +466,7 @@ export function untrustedExecutionStep(
     const step = steps[i]!;
     if (
       runsWorkspaceCode(step, context) ||
-      (typeof step.uses === 'string' && step.uses.startsWith('./'))
+      (typeof step.uses === 'string' && step.uses.startsWith('./') && !baseAction(i))
     ) {
       return i;
     }

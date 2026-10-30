@@ -1642,3 +1642,26 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Not done: separating "timeout" from "clone error" in the log. eval-scan.sh only reports
   `clone-failed`, and the clone's stderr lives in the deleted temp dir. Revisit if retries
   are not enough.
+## 2026-10-08 — 0113: base-repo local actions; GitLab-only fails in the crawler
+
+- Engine: a `uses: ./dir` step after an untrusted checkout counts as running PR code only
+  when that checkout landed at the workspace root, or `dir` is inside the checkout's
+  `with: path:`. A `path:` that is an expression, absolute, or uses `..` fails closed as the
+  root. `gh pr checkout`-style run steps check out into the root. Both citation loops
+  (build tooling first, then anything not shown inert) skip base-repo local actions.
+- Crawler: a fail-tier finding with an `entry:fork-mr:` id (GitLab merge-request entry) is
+  kept as a warn, not a fail, in the crawler's scan ingest, and is filtered out of report
+  candidates and review packets. Chose warn over dropping it: the crawler's `warn` is not a
+  public pass, and the repo might be mirrored to GitLab. Found while doing this: the GitLab
+  analyzer's entry kind maps to the `fork-pr->credential` archetype, which is allowlisted,
+  so before this a GitLab-only finding could have been reported to a GitHub repo; and a
+  mixed GitHub+GitLab group failed candidate validation, which would have dropped the real
+  GitHub report too.
+- Deviation, item 1 of the ticket (cited step only runs `gh pr edit`/`gh pr checkout`/`jq`):
+  not suppressed. In the reviewed cases the job also runs claude-code-action over the
+  fork's checkout with secrets, which may be a real path that the engine mis-cites. That is
+  0108 (third-party actions that run workspace files), not a NON_EXECUTING_COMMANDS change,
+  which 0096 deliberately keeps minimal.
+- Rescan of all 49 held repos at HEAD with this build: exactly two fails dropped (the
+  reviewed local-action and GitLab-only false fails); every other packet's finding ids and
+  cited lines are unchanged.

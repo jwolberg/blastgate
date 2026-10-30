@@ -63,7 +63,15 @@ import {
   serializeLedger,
 } from './ledger';
 import { publishSite } from './publish';
-import { type Runner, archetypeOf, childEnv, defaultRunner, reverify, scanRepos } from './scan';
+import {
+  type Runner,
+  archetypeOf,
+  childEnv,
+  defaultRunner,
+  reverify,
+  scanRepos,
+  isGitLabOnly,
+} from './scan';
 import { renderSite } from './site';
 import { resetSkeptic, runApprove } from './approve';
 import { runReview } from './review';
@@ -372,7 +380,11 @@ function readFailFindings(evalDir: string, repo: string): Finding[] | null {
   try {
     const data: unknown = JSON.parse(readFileSync(join(evalDir, evalFileName(repo)), 'utf8'));
     if (!Array.isArray(data)) return null;
-    return data.filter((f): f is Finding => isObj(f) && f.tier === 'fail');
+    // 0113: a GitLab-only fail cannot run on GitHub and is never reported here.
+    return data.filter(
+      (f): f is Finding =>
+        isObj(f) && f.tier === 'fail' && !(typeof f.id === 'string' && isGitLabOnly(f.id)),
+    );
   } catch {
     return null;
   }
