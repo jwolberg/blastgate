@@ -10,7 +10,9 @@ if (process.argv[2] === '--version') {
   process.exit(0);
 }
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const real = JSON.parse(fs.readFileSync(path.join(dir, '..', 'disclose', 'real-fails.json'), 'utf8'));
+const real = JSON.parse(
+  fs.readFileSync(path.join(dir, '..', 'disclose', 'real-fails.json'), 'utf8'),
+);
 const template = Object.values(real)[0][0];
 let mode = 'pass';
 try {
@@ -21,6 +23,13 @@ try {
 if (mode === 'fail') {
   const f = { ...template, evidence: { ...template.evidence, payload: 'PAYLOAD-SECRET-TEXT' } };
   process.stdout.write(JSON.stringify([f]));
+} else if (mode === 'fail-with-gitlab') {
+  // 0113: the same fail plus a GitLab merge-request twin of it (same archetype).
+  const gitlab = {
+    ...template,
+    id: `entry:fork-mr:.gitlab-ci.yml#lint=>${template.id.split('=>')[1]}`,
+  };
+  process.stdout.write(JSON.stringify([template, gitlab]));
 } else {
   process.stdout.write('[]');
 }
