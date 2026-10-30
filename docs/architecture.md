@@ -29,16 +29,17 @@ Pure functions from collected file contents to an `AnalyzerResult` (nodes, intra
 edges, diagnostics; `src/analyzers/types.ts`). They never touch the filesystem or the
 network, and never add cross-layer edges.
 
-| Analyzer                 | Reads                                                             | Emits                                                                                                                                                      |
-| ------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deps/`                  | `package.json`, `package-lock.json`, `.npmrc` (+ base-ref copies) | new/changed dependencies with install scripts; `.npmrc` hygiene. `deps/provenance.ts` is the opt-in, network-backed provenance check                       |
-| `jsdeps/`                | `yarn.lock`, `pnpm-lock.yaml`                                     | added/bumped deps, treated as install-capable (no `hasInstallScript` flag)                                                                                 |
-| `pydeps/`, `rubygems/`   | `setup.py`, `requirements.txt`; `Gemfile.lock`                    | install-time execution in Python and RubyGems                                                                                                              |
-| `ci/`                    | `.github/workflows/*.yml`                                         | CI jobs, their secrets and token permissions, fork-PR and untrusted-text entries, agent-step assessments (see [2.2])                                       |
-| `gitlabci/`, `circleci/` | `.gitlab-ci.yml`, `.circleci/config.yml`                          | MR-triggerable jobs holding CI/CD variables; CircleCI is advisory only                                                                                     |
-| `agent/`                 | `.mcp.json`, `.claude/settings.json`, agent instruction files     | agent/MCP grants by capability class (filesystem, network, shell, tool); privileged command hooks; review-time instruction-file changes (`config-diff.ts`) |
-| `exec/`                  | the repo's own lifecycle scripts                                  | CI-divergent execution (code that behaves differently under CI), warn-only                                                                                 |
-| `integrity/`             | Blastgate's own gate config                                       | removal of Blastgate's enforcement by the change (`gate-tamper`)                                                                                           |
+| Analyzer                 | Reads                                                                                                   | Emits                                                                                                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deps/`                  | `package.json`, `package-lock.json`, `.npmrc` (+ base-ref copies)                                       | new/changed dependencies with install scripts; `.npmrc` hygiene. `deps/provenance.ts` is the opt-in, network-backed provenance check                       |
+| `jsdeps/`                | `yarn.lock`, `pnpm-lock.yaml`                                                                           | added/bumped deps, treated as install-capable (no `hasInstallScript` flag)                                                                                 |
+| `pydeps/`, `rubygems/`   | `setup.py`, `requirements.txt`; `Gemfile.lock`                                                          | install-time execution in Python and RubyGems                                                                                                              |
+| `ci/`                    | `.github/workflows/*.yml`                                                                               | CI jobs, their secrets and token permissions, fork-PR and untrusted-text entries, agent-step assessments (see [2.2])                                       |
+| `gitlabci/`, `circleci/` | `.gitlab-ci.yml`, `.circleci/config.yml`                                                                | MR-triggerable jobs holding CI/CD variables; CircleCI is advisory only                                                                                     |
+| `agent/`                 | `.mcp.json`, `.claude/settings.json`, agent instruction files                                           | agent/MCP grants by capability class (filesystem, network, shell, tool); privileged command hooks; review-time instruction-file changes (`config-diff.ts`) |
+| `exec/`                  | the repo's own lifecycle scripts                                                                        | CI-divergent execution (code that behaves differently under CI), warn-only                                                                                 |
+| `integrity/`             | Blastgate's own gate config                                                                             | removal of Blastgate's enforcement by the change (`gate-tamper`)                                                                                           |
+| `openexec/`              | `.claude/settings.json`, `.gemini/settings.json`, `.mcp.json`, `.cursor/mcp.json`, `.vscode/tasks.json` | `--pre-open` only: commands committed config runs when a clone is opened (`open-time-exec`), fail-tier with the config line (0114)                         |
 
 ### [2.2] The GitHub Actions analyzer — `src/analyzers/ci/`
 
@@ -74,7 +75,7 @@ The largest analyzer, and the source of most fail-eligible entries.
 - `types.ts` — the node model: `entry`, `dependency`, `ci-job`, `agent-grant`, `sink`.
   Entry kinds include `new-dependency`, `fork-pr`, `untrusted-text-injection`,
   `injectable-agent-surface`, `agent-config-change`, `ci-divergent`, `privileged-hook`,
-  and `gate-tamper`. Sinks are `secret`, `credential`, or `privileged-capability`.
+  `gate-tamper`, and `open-time-exec` (`--pre-open` only). Sinks are `secret`, `credential`, or `privileged-capability`.
 - `graph.ts` — `AttackGraph`, a thin wrapper over graphology.
 - `reachability.ts` — one single-source BFS per entry, keeping the shortest path per
   (entry, sink).

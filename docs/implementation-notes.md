@@ -1665,3 +1665,36 @@ Plan: `docs/plans/2026-09-29-001-feat-precision-core-plan.md`.
 - Rescan of all 49 held repos at HEAD with this build: exactly two fails dropped (the
   reviewed local-action and GitLab-only false fails); every other packet's finding ids and
   cited lines are unchanged.
+## 2026-10-29 — 0114: `--pre-open` audit for clones that run code on open
+
+- Chose a separate opt-in `--pre-open` mode over changing the default `privileged-hook`
+  tier, so CI-gate users whose own repos use hooks see no change (backward compatibility).
+- `--pre-open` collects only the open-time configs. The repo's CI findings are not the
+  opener's problem, and its own `.blastgate/acknowledged.json` / `policy.json` are never
+  read, because the repo under audit is the untrusted party.
+- Tiering: every Claude/Gemini command hook (all events, not only `SessionStart`, since
+  any of them fires in normal use), the Claude status line, and VS Code `folderOpen` tasks
+  fail, including inline commands with no repo file. An MCP server fails only when it
+  launches a repo file that exists. A published-package server stays with the capability
+  analyzer, or every MCP config would fail.
+- Size (>= 1 MB) and long-line (>= 10k chars) notes only add context to the reason. They
+  never decide the tier.
+- The script-path extractor is the analyzer's own (`repoLocalFiles`), not collect.ts's
+  `referencedLocalFiles`. It resolves `$CLAUDE_PROJECT_DIR` / `${workspaceFolder}`,
+  adds `.ps1`, and rejects absolute and `..` paths. I kept it separate so the 0021 exec
+  analyzer's behavior does not change.
+- The reader stays gitignore-aware, so this repo's own (ignored) `.claude/settings.json`
+  passes. A clone would not contain it.
+- Fixes from a fresh-context review, before the first commit:
+  - Duplicate JSON keys made the yaml locator lose the line, which would have demoted the
+    fail. An unlocatable command now adds an error diagnostic, so the run is `unknown`
+    and exits 1.
+  - MCP servers are also matched on whole `command`/`args` tokens checked against the
+    repo, so paths with spaces, no extension, or uppercase extensions are caught.
+  - A trailing comma followed by a comment, and a BOM, no longer break parsing.
+  - Added VS Code per-platform task commands and Claude `apiKeyHelper` /
+    `awsAuthRefresh` / `otelHeadersHelper`.
+- Not covered (follow-ups): hook entries with no `type` and flat hook arrays (Claude Code
+  requires the `{hooks: [{type}]}` shape), `.vscode/mcp.json` (`servers` key),
+  `.cursor/rules/*.mdc` (instructions, not execution), and the fake-CodeQL
+  `printenv` → `upload-artifact` exfil shape.

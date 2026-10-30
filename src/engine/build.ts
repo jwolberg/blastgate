@@ -18,6 +18,7 @@ import { analyzeCircleCi, type CircleCiInputs } from '../analyzers/circleci/inde
 import { analyzeDependencies, type DependencyInputs } from '../analyzers/deps/index';
 import { analyzeExec, type ExecInputs } from '../analyzers/exec/index';
 import { analyzeJsDeps, type JsDepsInputs } from '../analyzers/jsdeps/index';
+import { analyzeOpenExec, type OpenExecInputs } from '../analyzers/openexec/index';
 import {
   analyzeSelfIntegrity,
   type SelfIntegrityInputs,
@@ -53,6 +54,8 @@ export interface EngineInputs {
   agentDiff?: AgentDiffInputs;
   /** Gate-config files diffed to detect Blastgate's own enforcement being removed (0024). */
   selfIntegrity?: SelfIntegrityInputs;
+  /** Editor/agent config that runs commands when a clone is opened (`--pre-open`, 0114). */
+  openExec?: OpenExecInputs;
   /** Human-accepted findings (`.blastgate/acknowledged.json`); downgrades fail→warn (U14). */
   acknowledged?: Acknowledgement[];
   /**
@@ -132,6 +135,7 @@ export function buildGraph(inputs: EngineInputs): BuildResult {
     inputs.exec ? analyzeExec(inputs.exec) : undefined,
     inputs.agentDiff ? analyzeAgentDiff(inputs.agentDiff) : undefined,
     inputs.selfIntegrity ? analyzeSelfIntegrity(inputs.selfIntegrity) : undefined,
+    inputs.openExec ? analyzeOpenExec(inputs.openExec) : undefined,
     // Merged last: its entry→dep edge targets a dependency node the deps analyzer emits.
     inputs.provenance,
   ];

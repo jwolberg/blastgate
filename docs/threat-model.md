@@ -233,6 +233,14 @@ fails a change on it — an honest gap beats a false PASS. It does not do deep
 per-layer rule coverage, runtime enforcement, or laptop endpoint monitoring (see the
 plan's Scope Boundaries).
 
+The `--pre-open` audit (0114) turns the model around: the cloned repo is the attacker
+and the developer's machine is the sink. It is static too. It names the committed
+command that would run on open and the script it runs, but never decodes or runs that
+script. Two known limits: a native addon in a dependency that stays dormant under CI,
+containers, and debuggers (the testmetest `.napi_cache` loader) cannot be seen from repo
+files at all. And commit metadata such as `skip-checks:true` trailers and forged author
+dates is not read.
+
 ## [5] OWASP mapping
 
 Blastgate labels every finding with at most one OWASP Agentic category and at most one
