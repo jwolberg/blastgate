@@ -39,6 +39,9 @@ one engine, so every surface produces identical findings.
   path. Blastgate judges each agent step against the Agents Rule of Two and fails only
   when an outsider can trigger it, its tools can read a credential, and it can get data
   out.
+- **Anyone who opens repos they didn't write** in Claude Code, Cursor, Gemini CLI, or
+  VS Code. A cloned repo can commit a hook or task that runs its own code as you the
+  moment you open it. `blastgate <clone> --pre-open` checks for that before you open it.
 - **npm / PyPI / RubyGems maintainers** worried about supply-chain compromise —
   install-time execution and newly introduced dependencies, evaluated offline from the
   lockfile (plus opt-in npm provenance regressions).
@@ -62,6 +65,7 @@ one artifact on it:
 | **npm provenance regression** (the CVE-2025-54313 shape)                                                                             | A dependency that _had_ npm attestations and silently _lost_ them between versions — a strong compromise signal (opt-in, `--provenance`)                           | `ASI04` / `MCP04` |
 | **Over-privileged coding agent**                                                                                                     | A committed MCP server rooted at `/` or an unrestricted `Bash(*)` / wrapper-bypass grant — a prompt-injectable path to out-of-repo filesystem/network/shell        | `ASI01` / `MCP02` |
 | **Slopsquatting & unsigned agent marketplaces**                                                                                      | A newly introduced dependency or agent grant from an unaudited source, evaluated for reachability rather than trusted by name                                      | `ASI04` / `MCP02` |
+| **Armed repo that runs on open** (the testmetest campaign, Oct 2026)                                                                 | A cloned repo's committed `SessionStart` hook, VS Code `folderOpen` task, or MCP server runs its `.github/init.js` as you when you open it — opt-in, `--pre-open`  | `ASI04` / `MCP04` |
 
 Each of these is named and modeled in [`docs/threat-model.md`](docs/threat-model.md),
 which also maps every OWASP category Blastgate emits.
@@ -100,6 +104,14 @@ what it holds.
   that do not exist, and attackers register those names with malicious code. Agent add-ons from
   unreviewed marketplaces carry the same risk. Blastgate does not trust a new package or add-on
   by its name; it checks what the newcomer could actually reach.
+
+- **A repo that runs itself when you open it.** Coding assistants and editors can run
+  commands that a repository's own settings ask for: when a session starts, when the folder
+  opens, or to start a helper server. An attacker who takes over a repository commits such
+  a setting pointing at their own script, and anyone who clones the repo and opens it runs
+  that script with their own passwords and tokens. In October 2026, 42 real repositories
+  were armed this way with a 13 MB disguised script. Here the repository itself is the
+  stranger, so this check is opt-in: run `--pre-open` on a clone before you open it.
 
 In every case, any one piece looks harmless on its own: a new package, an automated job, a
 stored password. The danger is when they line up, and that lineup is what Blastgate checks for.
@@ -243,7 +255,10 @@ from the repo. This is the shape of the testmetest campaign, where 42 real repos
 script, and notes oversized or one-line-obfuscated scripts. Only those configs are read.
 The repo's CI findings and its own `.blastgate/` exceptions are ignored, because the repo
 is the untrusted party. Run it on the fresh clone before opening it. Blastgate's plugin
-hooks cannot stop a `SessionStart` hook that fires when a session opens.
+hooks cannot stop a `SessionStart` hook that fires when a session opens. On 2026-10-29
+it was run on the real config files of armed campaign repos that were still public. Every
+one failed with five findings: the Claude and Gemini hooks, the Cursor MCP server, and the
+VS Code task (plus its Windows variant). A default scan of the same repos only warns.
 
 A fail verdict (a proven exploit path to a secret or code-write credential) exits
 non-zero, and so does `unknown` (a layer could not be evaluated; never treated as a
@@ -286,6 +301,9 @@ jobs:
 - **CI providers** — GitHub Actions and GitLab CI (full gate), CircleCI (advisory only —
   the fork-secret toggle is out-of-repo).
 - **Agent / MCP** — committed grants checked against a least-privilege baseline.
+- **Before opening a clone** (`--pre-open`) — Claude Code and Gemini CLI hooks, the
+  Claude status line and helper commands, VS Code `folderOpen` tasks, and MCP servers that
+  launch a repo file. It is static: the script is named, never run.
 - **AI agents in CI** — `claude-code-action`, `codex-action`, and `run-gemini-cli`
   assessed against the Agents Rule of Two; tool-less LLM steps (`actions/ai-inference`)
   warn only. Pass `--public` (the Action reads it from the event) so public Actions logs
